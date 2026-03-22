@@ -1,14 +1,17 @@
 import time
 import uuid
 from typing import Optional
+import logging
 
 from open_webui.internal.db import Base, get_db
 from open_webui.models.users import Users, UserResponse
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Boolean, Column, String, Text, JSON
+from sqlalchemy import BigInteger, Boolean, Column, String, Text, JSON, inspect, text
 
 from open_webui.utils.access_control import has_access
+
+log = logging.getLogger(__name__)
 
 ####################
 # Prompts DB Schema
@@ -125,30 +128,66 @@ class PromptMetaForm(BaseModel):
 
 
 class PromptsTable:
+    def _uses_legacy_integer_id(self, db) -> bool:
+        try:
+            column_info = next(
+                (
+                    column
+                    for column in inspect(db.bind).get_columns("prompt")
+                    if column["name"] == "id"
+                ),
+                None,
+            )
+            if column_info is None:
+                return False
+
+            try:
+                return column_info["type"].python_type is int
+            except Exception:
+                return "INT" in str(column_info["type"]).upper()
+        except Exception:
+            return False
+
+    def _coerce_prompt_id(self, db, prompt_id: str):
+        if not self._uses_legacy_integer_id(db):
+            return prompt_id
+
+        if isinstance(prompt_id, str) and prompt_id.strip().isdigit():
+            return int(prompt_id.strip())
+
+        return prompt_id
+
+    def _next_legacy_prompt_id(self, db) -> int:
+        result = db.execute(text('SELECT COALESCE(MAX(id), 0) + 1 FROM "prompt"'))
+        return int(result.scalar() or 1)
+
     def insert_new_prompt(
         self, user_id: str, form_data: PromptForm
     ) -> Optional[PromptModel]:
         now = int(time.time())
-        prompt_id = str(uuid.uuid4())
-
-        prompt = PromptModel(
-            id=prompt_id,
-            user_id=user_id,
-            command=form_data.command,
-            name=form_data.name,
-            content=form_data.content,
-            data=form_data.data,
-            meta=form_data.meta,
-            tags=form_data.tags,
-            is_active=form_data.is_active if form_data.is_active is not None else True,
-            access_control=form_data.access_control,
-            created_at=now,
-            updated_at=now,
-        )
 
         try:
             with get_db() as db:
-                result = Prompt(**prompt.model_dump())
+                prompt_id = (
+                    self._next_legacy_prompt_id(db)
+                    if self._uses_legacy_integer_id(db)
+                    else str(uuid.uuid4())
+                )
+
+                result = Prompt(
+                    id=prompt_id,
+                    user_id=user_id,
+                    command=form_data.command,
+                    name=form_data.name,
+                    content=form_data.content,
+                    data=form_data.data,
+                    meta=form_data.meta,
+                    tags=form_data.tags,
+                    is_active=form_data.is_active if form_data.is_active is not None else True,
+                    access_control=form_data.access_control,
+                    created_at=now,
+                    updated_at=now,
+                )
                 # Legacy compat fields
                 result.title = form_data.name
                 result.timestamp = now
@@ -159,12 +198,17 @@ class PromptsTable:
                     return PromptModel.model_validate(result)
                 return None
         except Exception:
+            log.exception("Failed to insert prompt %s", form_data.command)
             return None
 
     def get_prompt_by_id(self, prompt_id: str) -> Optional[PromptModel]:
         try:
             with get_db() as db:
-                prompt = db.query(Prompt).filter_by(id=prompt_id).first()
+                prompt = (
+                    db.query(Prompt)
+                    .filter_by(id=self._coerce_prompt_id(db, prompt_id))
+                    .first()
+                )
                 if prompt:
                     return PromptModel.model_validate(prompt)
                 return None
@@ -245,7 +289,11 @@ class PromptsTable:
     ) -> Optional[PromptModel]:
         try:
             with get_db() as db:
-                prompt = db.query(Prompt).filter_by(id=prompt_id).first()
+                prompt = (
+                    db.query(Prompt)
+                    .filter_by(id=self._coerce_prompt_id(db, prompt_id))
+                    .first()
+                )
                 if not prompt:
                     return None
 
@@ -310,7 +358,11 @@ class PromptsTable:
     ) -> Optional[PromptModel]:
         try:
             with get_db() as db:
-                prompt = db.query(Prompt).filter_by(id=prompt_id).first()
+                prompt = (
+                    db.query(Prompt)
+                    .filter_by(id=self._coerce_prompt_id(db, prompt_id))
+                    .first()
+                )
                 if not prompt:
                     return None
 
@@ -330,7 +382,11 @@ class PromptsTable:
     ) -> Optional[PromptModel]:
         try:
             with get_db() as db:
-                prompt = db.query(Prompt).filter_by(id=prompt_id).first()
+                prompt = (
+                    db.query(Prompt)
+                    .filter_by(id=self._coerce_prompt_id(db, prompt_id))
+                    .first()
+                )
                 if not prompt:
                     return None
                 prompt.is_active = is_active
@@ -359,7 +415,7 @@ class PromptsTable:
     def delete_prompt_by_id(self, prompt_id: str) -> bool:
         try:
             with get_db() as db:
-                db.query(Prompt).filter_by(id=prompt_id).delete()
+                db.query(Prompt).filter_by(id=self._coerce_prompt_id(db, prompt_id)).delete()
                 db.commit()
                 return True
         except Exception:

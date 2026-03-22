@@ -4,6 +4,7 @@
 
 	import { flyAndScale } from '$lib/utils/transitions';
 	import { createEventDispatcher, getContext, tick } from 'svelte';
+	import { Pin, SlidersHorizontal, Star } from 'lucide-svelte';
 
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import Search from '$lib/components/icons/Search.svelte';
@@ -41,6 +42,7 @@
 	export let searchPlaceholder = $i18n.t('Search a model');
 
 	export let showTemporaryChatControl = false;
+	export let showSetDefaultAction = false;
 
 	export let items: {
 		label: string;
@@ -73,6 +75,7 @@
 
 	let pinnedModels: string[] = [];
 	let pinnedModelSet: Set<string> = new Set();
+	let defaultModelId = '';
 
 	// Filter out stale pins: models that were deleted or hidden should not stay pinned
 	$: {
@@ -92,6 +95,20 @@
 			: [...current, modelId];
 		settings.set({ ...$settings, pinnedModels: updated });
 		await updateUserSettings(localStorage.token, { ui: { ...$settings, pinnedModels: updated } });
+	};
+
+	$: defaultModelId =
+		($settings?.models ?? []).find((id) => typeof id === 'string' && id.trim() !== '') ??
+		$config?.default_models?.split(',').find((id) => id.trim() !== '') ??
+		'';
+
+	const setDefaultModel = async (modelId: string) => {
+		value = modelId;
+		const nextSettings = { ...$settings, models: [modelId] };
+		settings.set(nextSettings);
+		await updateUserSettings(localStorage.token, { ui: nextSettings });
+		toast.success($i18n.t('Default model updated'));
+		show = false;
 	};
 
 	let ollamaVersion = null;
@@ -651,6 +668,30 @@
 						</div>
 
 						<div class="flex items-center gap-0.5 shrink-0 pl-4">
+							{#if showSetDefaultAction}
+								<!-- svelte-ignore a11y-click-events-have-key-events -->
+								<div
+									role="button"
+									tabindex="-1"
+									title={defaultModelId === item.value
+										? $i18n.t('Default')
+										: $i18n.t('Set as default')}
+									class="p-1.5 rounded-lg {defaultModelId === item.value
+										? 'text-amber-500 dark:text-amber-400 bg-amber-50/90 dark:bg-amber-900/20'
+										: 'opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-amber-500 dark:hover:text-amber-300 hover:bg-amber-50/80 dark:hover:bg-amber-900/15'} cursor-pointer transition-colors duration-150"
+									on:click|stopPropagation={async () => {
+										selectedModelIdx = index;
+										await setDefaultModel(item.value);
+									}}
+								>
+									<Star
+										class="size-3.5"
+										strokeWidth={2.05}
+										fill={defaultModelId === item.value ? 'currentColor' : 'none'}
+									/>
+								</div>
+							{/if}
+
 							<!-- svelte-ignore a11y-click-events-have-key-events -->
 							<div
 								role="button"
@@ -665,44 +706,24 @@
 									togglePinModel(item.value);
 								}}
 							>
-								<svg
-									xmlns="http://www.w3.org/2000/svg"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
+								<Pin
 									class="size-3.5"
-								>
-									<path d="M12 17v5"/>
-									<path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 1 1 0 0 0 1-1V4a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1 1 1 0 0 1 1 1z"
-										fill={pinnedModelSet.has(item.value) ? 'currentColor' : 'none'}/>
-								</svg>
+									strokeWidth={2.1}
+									style="transform: rotate(34deg); transform-origin: center;"
+									fill={pinnedModelSet.has(item.value) ? 'currentColor' : 'none'}
+								/>
 							</div>
 
-								{#if $user?.role === 'admin' && item.model?.info}
-									<a
-										href={getAdminEditHref(item)}
-										title={$i18n.t('编辑模型')}
-										class="p-1.5 rounded-lg opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
-										on:click|stopPropagation={() => {
-											show = false;
+							{#if $user?.role === 'admin' && item.model?.info}
+								<a
+									href={getAdminEditHref(item)}
+									title={$i18n.t('编辑模型')}
+									class="p-1.5 rounded-lg opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+									on:click|stopPropagation={() => {
+										show = false;
 									}}
 								>
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="2"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										class="size-3.5"
-									>
-										<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
-										<path d="m15 5 4 4"/>
-									</svg>
+									<SlidersHorizontal class="size-3.5" strokeWidth={2.1} />
 								</a>
 							{/if}
 						</div>

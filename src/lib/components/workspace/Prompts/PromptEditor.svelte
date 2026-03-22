@@ -217,6 +217,7 @@
 					saving={loading}
 					saveAsSubmit={true}
 					align="start"
+					forceShow={!edit}
 					on:reset={handleReset}
 				/>
 			</div>
@@ -294,46 +295,6 @@
 					on:blur={addTag}
 				/>
 			</div>
-		</div>
-
-		<div class="my-4 flex justify-end pb-20">
-			<button
-				class=" text-sm w-full lg:w-fit px-4 py-2 transition rounded-lg {loading
-					? ' cursor-not-allowed bg-black hover:bg-gray-900 text-white dark:bg-white dark:hover:bg-gray-100 dark:text-black'
-					: 'bg-black hover:bg-gray-900 text-white dark:bg-white dark:hover:bg-gray-100 dark:text-black'} flex items-center w-full justify-center"
-				type="submit"
-				disabled={loading}
-			>
-				<div class=" self-center font-medium">{$i18n.t('Save & Create')}</div>
-
-				{#if loading}
-					<div class="ml-1.5 self-center">
-						<svg
-							class=" w-4 h-4"
-							viewBox="0 0 24 24"
-							fill="currentColor"
-							xmlns="http://www.w3.org/2000/svg"
-							><style>
-								.spinner_ajPY {
-									transform-origin: center;
-									animation: spinner_AtaB 0.75s infinite linear;
-								}
-								@keyframes spinner_AtaB {
-									100% {
-										transform: rotate(360deg);
-									}
-								}
-							</style><path
-								d="M12,1A11,11,0,1,0,23,12,11,11,0,0,0,12,1Zm0,19a8,8,0,1,1,8-8A8,8,0,0,1,12,20Z"
-								opacity=".25"
-							/><path
-								d="M10.14,1.16a11,11,0,0,0-9,8.92A1.59,1.59,0,0,0,2.46,12,1.52,1.52,0,0,0,4.11,10.7a8,8,0,0,1,6.66-6.61A1.42,1.42,0,0,0,12,2.69h0A1.57,1.57,0,0,0,10.14,1.16Z"
-								class="spinner_ajPY"
-							/></svg
-						>
-					</div>
-				{/if}
-			</button>
 		</div>
 	</form>
 </div>

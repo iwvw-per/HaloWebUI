@@ -233,6 +233,10 @@
 			error instanceof Error ? error.message : typeof error === 'string' ? error : `${error ?? ''}`;
 
 		return raw
+			.replaceAll('OpenAI: ', 'OpenAI：')
+			.replaceAll('Gemini: ', 'Gemini：')
+			.replaceAll('Anthropic: ', 'Anthropic：')
+			.replaceAll('URL is required', $i18n.t('URL is required'))
 			.replaceAll('Network Problem', $i18n.t('Network Problem'))
 			.replaceAll(
 				'Open WebUI: Server Connection Error',

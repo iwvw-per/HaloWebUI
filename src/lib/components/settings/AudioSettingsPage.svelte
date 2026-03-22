@@ -139,14 +139,14 @@
 
 					<!-- Tab buttons -->
 					{#if isAdmin}
-						<div class="inline-flex w-fit flex-col lg:flex-row rounded-2xl bg-gray-100 p-1 dark:bg-gray-850 lg:mt-11">
-							<button type="button" class={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all ${selectedTab === 'personal' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`} on:click={() => { selectedTab = 'personal'; }}>
+						<div class="grid w-full grid-cols-2 rounded-2xl bg-gray-100 p-1 dark:bg-gray-850 md:inline-flex md:w-fit md:flex-col lg:mt-11 lg:flex-row">
+							<button type="button" class={`flex min-w-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all ${selectedTab === 'personal' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`} on:click={() => { selectedTab = 'personal'; }}>
 								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-4">
 									<path fill-rule="evenodd" d="M7.5 6a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM3.751 20.105a8.25 8.25 0 0116.498 0 .75.75 0 01-.437.695A18.683 18.683 0 0112 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 01-.437-.695z" clip-rule="evenodd" />
 								</svg>
 								<span>{$i18n.t('Personal Settings')}</span>
 							</button>
-							<button type="button" class={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all ${selectedTab === 'global' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`} on:click={() => { selectedTab = 'global'; }}>
+							<button type="button" class={`flex min-w-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all ${selectedTab === 'global' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`} on:click={() => { selectedTab = 'global'; }}>
 								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-4">
 									<path fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.855 1.567L8.982 5.38a7.269 7.269 0 00-.877.506l-1.524-.4a1.875 1.875 0 00-2.164.876l-.922 1.597a1.875 1.875 0 00.31 2.443l1.184.943a7.11 7.11 0 000 1.012l-1.184.944a1.875 1.875 0 00-.31 2.443l.922 1.597a1.875 1.875 0 002.164.876l1.524-.4c.28.19.573.36.877.506l.241 1.563a1.875 1.875 0 001.855 1.567h1.844c.916 0 1.699-.663 1.855-1.567l.24-1.563c.305-.146.598-.316.878-.506l1.524.4a1.875 1.875 0 002.163-.876l.922-1.597a1.875 1.875 0 00-.31-2.443l-1.183-.944a7.11 7.11 0 000-1.012l1.183-.943a1.875 1.875 0 00.31-2.443l-.922-1.597a1.875 1.875 0 00-2.163-.876l-1.524.4a7.268 7.268 0 00-.878-.506l-.24-1.563a1.875 1.875 0 00-1.855-1.567h-1.844zM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5z" clip-rule="evenodd" />
 								</svg>
