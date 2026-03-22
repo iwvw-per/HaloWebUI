@@ -28,6 +28,7 @@
 	import GlobeAlt from '$lib/components/icons/GlobeAlt.svelte';
 	import Gift from '$lib/components/icons/Gift.svelte';
 	import Photo from '$lib/components/icons/Photo.svelte';
+	import { formatConnectionErrorToast } from '$lib/utils/connection-errors';
 
 	export let show = false;
 	export let modelIds: string[] = [];
@@ -47,20 +48,12 @@
 	let loading = false;
 	let availableModels: Array<{ id: string; name?: string }> = [];
 
-	const localizeConnectionError = (error: unknown) => {
-		const raw =
-			error instanceof Error ? error.message : typeof error === 'string' ? error : `${error ?? ''}`;
+	const describeConnectionError = (error: unknown) => {
+		const { title, description } = formatConnectionErrorToast(error, (key, options) =>
+			$i18n.t(key, options)
+		);
 
-		return raw
-			.replaceAll('OpenAI: ', 'OpenAI：')
-			.replaceAll('Gemini: ', 'Gemini：')
-			.replaceAll('Anthropic: ', 'Anthropic：')
-			.replaceAll('URL is required', $i18n.t('URL is required'))
-			.replaceAll('Network Problem', $i18n.t('Network Problem'))
-			.replaceAll(
-				'Open WebUI: Server Connection Error',
-				$i18n.t('Open WebUI: Server Connection Error')
-			);
+		return description ? `${title} ${description}` : title;
 	};
 
 	// 本地选中状态
@@ -180,11 +173,10 @@
 
 			toast.success($i18n.t('Found {{count}} models', { count: availableModels.length }));
 		} catch (error) {
-			toast.error(
-				$i18n.t('Failed to fetch models: {{error}}', {
-					error: localizeConnectionError(error)
-				})
-			);
+			toast.error($i18n.t('Failed to fetch models'), {
+				description: describeConnectionError(error),
+				duration: 6000
+			});
 			availableModels = [];
 		} finally {
 			loading = false;

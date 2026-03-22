@@ -75,7 +75,9 @@
 
 	let pinnedModels: string[] = [];
 	let pinnedModelSet: Set<string> = new Set();
+	let userDefaultModelId = '';
 	let defaultModelId = '';
+	let defaultModelItem: (typeof items)[number] | null = null;
 
 	// Filter out stale pins: models that were deleted or hidden should not stay pinned
 	$: {
@@ -97,10 +99,15 @@
 		await updateUserSettings(localStorage.token, { ui: { ...$settings, pinnedModels: updated } });
 	};
 
+	$: userDefaultModelId =
+		($settings?.models ?? []).find((id) => typeof id === 'string' && id.trim() !== '') ?? '';
+
 	$: defaultModelId =
-		($settings?.models ?? []).find((id) => typeof id === 'string' && id.trim() !== '') ??
-		$config?.default_models?.split(',').find((id) => id.trim() !== '') ??
+		userDefaultModelId ||
+		$config?.default_models?.split(',').find((id) => id.trim() !== '') ||
 		'';
+
+	$: defaultModelItem = items.find((item) => item.value === defaultModelId) ?? null;
 
 	const setDefaultModel = async (modelId: string) => {
 		value = modelId;
@@ -108,6 +115,15 @@
 		settings.set(nextSettings);
 		await updateUserSettings(localStorage.token, { ui: nextSettings });
 		toast.success($i18n.t('Default model updated'));
+		show = false;
+	};
+
+	const clearDefaultModel = async () => {
+		const currentSettings = $settings ?? {};
+		const { models: _models, ...nextSettings } = currentSettings;
+		settings.set(nextSettings);
+		await updateUserSettings(localStorage.token, { ui: nextSettings });
+		toast.success($i18n.t('Restore Default'));
 		show = false;
 	};
 
@@ -473,6 +489,25 @@
 				</div>
 			{/if}
 
+			{#if showSetDefaultAction}
+				<div class="px-5 pb-1.5">
+					<div
+						class="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-100/80 bg-gray-50/70 px-2 py-1 text-[11px] text-gray-500 dark:border-gray-800/80 dark:bg-gray-900/40 dark:text-gray-400"
+					>
+						<Star
+							class="size-3.5 shrink-0"
+							strokeWidth={2.05}
+							color={defaultModelId ? '#f59e0b' : 'currentColor'}
+							fill={defaultModelId ? '#f59e0b' : 'none'}
+						/>
+						<span class="shrink-0">{$i18n.t('Default Model')}:</span>
+						<span class="truncate text-gray-700 dark:text-gray-300">
+							{(defaultModelItem?.label ?? defaultModelId) || $i18n.t('None')}
+						</span>
+					</div>
+				</div>
+			{/if}
+
 			<div class="px-3 max-h-64 overflow-y-auto scrollbar-hidden relative">
 				{#if tags && hasVisibleItems}
 					<div
@@ -673,14 +708,25 @@
 								<div
 									role="button"
 									tabindex="-1"
-									title={defaultModelId === item.value
-										? $i18n.t('Default')
+									title={userDefaultModelId === item.value
+										? $i18n.t('Restore Default')
+										: defaultModelId === item.value
+											? $i18n.t('Default')
 										: $i18n.t('Set as default')}
 									class="p-1.5 rounded-lg {defaultModelId === item.value
 										? 'text-amber-500 dark:text-amber-400 bg-amber-50/90 dark:bg-amber-900/20'
 										: 'opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-amber-500 dark:hover:text-amber-300 hover:bg-amber-50/80 dark:hover:bg-amber-900/15'} cursor-pointer transition-colors duration-150"
 									on:click|stopPropagation={async () => {
 										selectedModelIdx = index;
+										if (userDefaultModelId === item.value) {
+											await clearDefaultModel();
+											return;
+										}
+
+										if (defaultModelId === item.value) {
+											return;
+										}
+
 										await setDefaultModel(item.value);
 									}}
 								>
@@ -700,16 +746,16 @@
 									? $i18n.t('取消置顶')
 									: $i18n.t('置顶模型')}
 								class="p-1.5 rounded-lg {pinnedModelSet.has(item.value)
-									? 'text-blue-500 dark:text-blue-400'
-									: 'opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700'} cursor-pointer"
+									? 'text-blue-500 dark:text-blue-400 bg-blue-50/90 dark:bg-blue-900/20'
+									: 'opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-blue-500 dark:hover:text-blue-300 hover:bg-blue-50/70 dark:hover:bg-blue-900/15'} cursor-pointer transition-colors duration-150"
 								on:click|stopPropagation={() => {
 									togglePinModel(item.value);
 								}}
 							>
 								<Pin
-									class="size-3.5"
+									class="size-3.5 transition-transform duration-150"
 									strokeWidth={2.1}
-									style="transform: rotate(34deg); transform-origin: center;"
+									style={`transform: rotate(${pinnedModelSet.has(item.value) ? 40 : 0}deg); transform-origin: center;`}
 									fill={pinnedModelSet.has(item.value) ? 'currentColor' : 'none'}
 								/>
 							</div>

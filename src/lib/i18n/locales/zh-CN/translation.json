@@ -344,6 +344,7 @@
 	"Connection Name": "连接名称",
 	"Connection name is required": "连接名称是必填项",
 	"Connection successful": "连接成功",
+	"connection.error.check_key_matches_url": "请检查 API 密钥是否填写正确，并确认它与当前 API 地址属于同一服务商后重试。",
 	"Configuration": "配置管理",
 	"Connections": "接口配置",
 	"Connections are saved per account. Other users cannot see or use your keys.": "连接按账号保存，其他用户无法看到或使用你的密钥。",

@@ -24,6 +24,7 @@
 	import ModelSelectorModal from '$lib/components/common/ModelSelectorModal.svelte';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import HaloSelect from '$lib/components/common/HaloSelect.svelte';
+	import { formatConnectionErrorToast } from '$lib/utils/connection-errors';
 
 	interface ConnectionConfig {
 		enable?: boolean;
@@ -228,20 +229,15 @@
 		!ollama &&
 		(inputUrl || '').trim().replace(/\/+$/, '').endsWith(OPENAI_CHAT_COMPLETIONS_SUFFIX);
 
-	const localizeConnectionError = (error: unknown) => {
-		const raw =
-			error instanceof Error ? error.message : typeof error === 'string' ? error : `${error ?? ''}`;
+	const showConnectionErrorToast = (error: unknown) => {
+		const { title, description } = formatConnectionErrorToast(error, (key, options) =>
+			$i18n.t(key, options)
+		);
 
-		return raw
-			.replaceAll('OpenAI: ', 'OpenAI：')
-			.replaceAll('Gemini: ', 'Gemini：')
-			.replaceAll('Anthropic: ', 'Anthropic：')
-			.replaceAll('URL is required', $i18n.t('URL is required'))
-			.replaceAll('Network Problem', $i18n.t('Network Problem'))
-			.replaceAll(
-				'Open WebUI: Server Connection Error',
-				$i18n.t('Open WebUI: Server Connection Error')
-			);
+		toast.error(title, {
+			...(description ? { description } : {}),
+			duration: description ? 6000 : 4000
+		});
 	};
 
 	const getHostname = (inputUrl: string): string => {
@@ -381,7 +377,7 @@
 			url: verifyUrl,
 			key
 		}).catch((error) => {
-			toast.error(`${error}`);
+			showConnectionErrorToast(error);
 		});
 
 		if (res) {
@@ -423,7 +419,7 @@
 			},
 			direct
 		).catch((error) => {
-			toast.error(localizeConnectionError(error));
+			showConnectionErrorToast(error);
 		});
 
 		if (res) {
@@ -458,7 +454,7 @@
 				...(_headers ? { headers: _headers } : {})
 			}
 		}).catch((error) => {
-			toast.error(`${error}`);
+			showConnectionErrorToast(error);
 		});
 
 		if (res) {
@@ -499,7 +495,7 @@
 				...(_headers ? { headers: _headers } : {})
 			}
 		}).catch((error) => {
-			toast.error(`${error}`);
+			showConnectionErrorToast(error);
 		});
 
 		if (res) {
