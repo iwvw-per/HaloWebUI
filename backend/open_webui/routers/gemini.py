@@ -709,6 +709,9 @@ def _extract_content_segments(
             else:
                 text_parts.append(part["text"])
         elif "inlineData" in part:
+            if part.get("thought") is True:
+                log.info("[GEMINI THINKING] Skipping inlineData from thought part")
+                continue
             inline_data = part.get("inlineData", {}) or {}
             mime_type = inline_data.get("mimeType", "image/png")
             data = inline_data.get("data", "")

@@ -31,6 +31,10 @@ from open_webui.config import (
     RAG_EMBEDDING_CONTENT_PREFIX,
     RAG_EMBEDDING_PREFIX_FIELD_NAME,
 )
+from open_webui.utils.error_handling import (
+    build_error_detail,
+    read_requests_error_payload,
+)
 from open_webui.utils.optional_dependencies import format_optional_dependency_error
 
 log = logging.getLogger(__name__)
@@ -399,14 +403,21 @@ def get_embedding_function(
             if isinstance(query, list):
                 embeddings = []
                 for i in range(0, len(query), embedding_batch_size):
-                    batch_result = func(
-                        query[i : i + embedding_batch_size],
-                        prefix=prefix,
-                        user=user,
-                    )
+                    try:
+                        batch_result = func(
+                            query[i : i + embedding_batch_size],
+                            prefix=prefix,
+                            user=user,
+                        )
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Embedding generation failed for batch starting at index {i}: "
+                            f"{build_error_detail(exc)}"
+                        ) from exc
                     if batch_result is None:
-                        raise ValueError(
-                            f"Embedding generation failed for batch starting at index {i}"
+                        raise RuntimeError(
+                            "Embedding generation failed for batch starting at index "
+                            f"{i}: no embedding vectors were returned."
                         )
                     embeddings.extend(batch_result)
                 return embeddings
@@ -669,15 +680,16 @@ def generate_openai_batch_embeddings(
             json=json_data,
             timeout=60,
         )
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(build_error_detail(read_requests_error_payload(r), r.reason))
         data = r.json()
         if "data" in data:
             return [elem["embedding"] for elem in data["data"]]
         else:
-            raise "Something went wrong :/"
+            raise RuntimeError("Embedding API returned no embedding data.")
     except Exception as e:
         log.exception(f"Error generating openai batch embeddings: {e}")
-        return None
+        raise RuntimeError(build_error_detail(e)) from e
 
 
 def generate_ollama_batch_embeddings(
@@ -715,16 +727,17 @@ def generate_ollama_batch_embeddings(
             json=json_data,
             timeout=60,
         )
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(build_error_detail(read_requests_error_payload(r), r.reason))
         data = r.json()
 
         if "embeddings" in data:
             return data["embeddings"]
         else:
-            raise "Something went wrong :/"
+            raise RuntimeError("Embedding API returned no embeddings.")
     except Exception as e:
         log.exception(f"Error generating ollama batch embeddings: {e}")
-        return None
+        raise RuntimeError(build_error_detail(e)) from e
 
 
 def generate_embeddings(

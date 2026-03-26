@@ -32,12 +32,16 @@
 	import InlineDirtyActions from '$lib/components/admin/Settings/InlineDirtyActions.svelte';
 	import CodeHighlightThemePreview from '$lib/components/settings/CodeHighlightThemePreview.svelte';
 	import MermaidThemePreview from '$lib/components/settings/MermaidThemePreview.svelte';
+	import ChatTransitionPreview from '$lib/components/settings/ChatTransitionPreview.svelte';
 	import { cloneSettingsSnapshot, isSettingsSnapshotEqual } from '$lib/utils/settings-dirty';
 	import {
+		DEFAULT_CHAT_TRANSITION_MODE,
 		DEFAULT_HIGHLIGHTER_THEME,
 		DEFAULT_MERMAID_THEME,
 		LOBE_HIGHLIGHTER_THEMES,
 		LOBE_MERMAID_THEMES,
+		resolveChatTransitionMode,
+		type ChatTransitionMode,
 		normalizeHighlighterTheme,
 		normalizeMermaidTheme,
 		type MermaidThemeId
@@ -125,7 +129,8 @@
 	let scrollOnBranchChange = true;
 	let enableMessageQueue = true;
 	let temporaryChatByDefault = false;
-	let chatFadeStreamingText = true;
+	let transitionMode: ChatTransitionMode = DEFAULT_CHAT_TRANSITION_MODE;
+	let enableAutoScrollOnStreaming = true;
 	let insertSuggestionPrompt = false;
 	let keepFollowUpPrompts = false;
 	let insertFollowUpPrompt = false;
@@ -190,6 +195,8 @@
 			backgroundImageUrl: string | null;
 			mermaidTheme: MermaidThemeId;
 			textScale: number | null;
+			transitionMode: ChatTransitionMode;
+			enableAutoScrollOnStreaming: boolean;
 		};
 		layout: {
 			defaultModelId: string;
@@ -226,7 +233,6 @@
 			scrollOnBranchChange: boolean;
 			enableMessageQueue: boolean;
 			temporaryChatByDefault: boolean;
-			chatFadeStreamingText: boolean;
 			collapseCodeBlocks: boolean;
 			expandDetails: boolean;
 			insertSuggestionPrompt: boolean;
@@ -501,6 +507,12 @@
 		banners = cloneSettingsSnapshot(banners);
 	};
 
+	const transitionModeOptions: Array<{ label: string; value: ChatTransitionMode }> = [
+		{ label: 'None', value: 'none' },
+		{ label: 'Fade In', value: 'fadeIn' },
+		{ label: 'Smooth', value: 'smooth' }
+	];
+
 	const buildSectionSnapshot = (): SectionSnapshot => ({
 		appearance: {
 			selectedTheme: normalizeTheme(selectedTheme),
@@ -508,7 +520,9 @@
 			lang,
 			backgroundImageUrl,
 			mermaidTheme: normalizeMermaidTheme(mermaidTheme),
-			textScale
+			textScale,
+			transitionMode,
+			enableAutoScrollOnStreaming
 		},
 		layout: {
 			defaultModelId: normalizeModelId(defaultModelId),
@@ -545,7 +559,6 @@
 			scrollOnBranchChange,
 			enableMessageQueue,
 			temporaryChatByDefault,
-			chatFadeStreamingText,
 			collapseCodeBlocks,
 			expandDetails,
 			insertSuggestionPrompt,
@@ -580,6 +593,8 @@
 		backgroundImageUrl = snapshot.backgroundImageUrl;
 		mermaidTheme = normalizeMermaidTheme(snapshot.mermaidTheme);
 		textScale = snapshot.textScale;
+		transitionMode = snapshot.transitionMode;
+		enableAutoScrollOnStreaming = snapshot.enableAutoScrollOnStreaming;
 	};
 
 	const applyLayoutSnapshot = (snapshot: SectionSnapshot['layout']) => {
@@ -619,7 +634,6 @@
 		scrollOnBranchChange = snapshot.scrollOnBranchChange;
 		enableMessageQueue = snapshot.enableMessageQueue;
 		temporaryChatByDefault = snapshot.temporaryChatByDefault;
-		chatFadeStreamingText = snapshot.chatFadeStreamingText;
 		collapseCodeBlocks = snapshot.collapseCodeBlocks;
 		expandDetails = snapshot.expandDetails;
 		insertSuggestionPrompt = snapshot.insertSuggestionPrompt;
@@ -684,7 +698,8 @@
 		scrollOnBranchChange;
 		enableMessageQueue;
 		temporaryChatByDefault;
-		chatFadeStreamingText;
+		transitionMode;
+		enableAutoScrollOnStreaming;
 		collapseCodeBlocks;
 		expandDetails;
 		insertSuggestionPrompt;
@@ -874,7 +889,9 @@
 				backgroundImageUrl,
 				highlighterTheme: normalizeHighlighterTheme(highlighterTheme),
 				mermaidTheme: normalizeMermaidTheme(mermaidTheme),
-				textScale
+				textScale,
+				transitionMode,
+				enableAutoScrollOnStreaming
 			});
 			localStorage.setItem('theme', normalizeTheme(selectedTheme));
 			commitThemeSelection(selectedTheme);
@@ -976,7 +993,6 @@
 				scrollOnBranchChange,
 				enableMessageQueue,
 				temporaryChatByDefault,
-				chatFadeStreamingText,
 				collapseCodeBlocks,
 				expandDetails,
 				insertSuggestionPrompt,
@@ -1126,7 +1142,8 @@
 		showChatTitleInTab = $settings?.showChatTitleInTab ?? true;
 		enableMessageQueue = $settings?.enableMessageQueue ?? true;
 		temporaryChatByDefault = $settings?.temporaryChatByDefault ?? false;
-		chatFadeStreamingText = $settings?.chatFadeStreamingText ?? true;
+		transitionMode = resolveChatTransitionMode($settings);
+		enableAutoScrollOnStreaming = $settings?.enableAutoScrollOnStreaming ?? true;
 		insertSuggestionPrompt = $settings?.insertSuggestionPrompt ?? false;
 		keepFollowUpPrompts = $settings?.keepFollowUpPrompts ?? false;
 		insertFollowUpPrompt = $settings?.insertFollowUpPrompt ?? false;
@@ -1381,6 +1398,55 @@
 											</div>
 											<MermaidThemePreview themeId={mermaidTheme} />
 										</div>
+										<div class="space-y-2">
+											<div class="glass-item px-4 py-4 space-y-4">
+												<div
+													class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
+												>
+													<div class="space-y-1">
+														<div class="text-sm font-medium">
+															{$i18n.t('Transition Animation')}
+														</div>
+														<div class="text-xs text-gray-500 dark:text-gray-400">
+															{$i18n.t('Choose how streaming chat messages appear')}
+														</div>
+													</div>
+													<div
+														class="inline-flex items-center gap-1 self-start rounded-xl border border-gray-200/70 bg-white/90 p-1 shadow-xs dark:border-gray-700/60 dark:bg-gray-900/70"
+													>
+														{#each transitionModeOptions as option}
+															<button
+																type="button"
+																class={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+																	transitionMode === option.value
+																		? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
+																		: 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100'
+																}`}
+																on:click={() => {
+																	transitionMode = option.value;
+																}}
+															>
+																{$i18n.t(option.label)}
+															</button>
+														{/each}
+													</div>
+												</div>
+												{#key transitionMode}
+													<ChatTransitionPreview mode={transitionMode} />
+												{/key}
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="space-y-1">
+													<div class="text-sm font-medium">
+														{$i18n.t('Auto-scroll during streaming')}
+													</div>
+													<div class="text-xs text-gray-500 dark:text-gray-400">
+														{$i18n.t('Keep the viewport pinned to the latest tokens while the reply is streaming')}
+													</div>
+												</div>
+												<Switch bind:state={enableAutoScrollOnStreaming} />
+											</div>
+										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
 											<div class="text-sm font-medium">
 												{$i18n.t('Language')}
@@ -1476,6 +1542,7 @@
 												</button>
 											</div>
 										</div>
+
 									</div>
 								</div>
 							{:else if s.key === 'layout'}
@@ -2027,14 +2094,6 @@
 										{$i18n.t('Display')}
 									</div>
 									<div class="space-y-2">
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Fade Effect for Streaming Text')}
-											</div>
-											<Switch
-												bind:state={chatFadeStreamingText}
-											/>
-										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
 											<div class="text-sm font-medium">
 												{$i18n.t('Always Collapse Code Blocks')}

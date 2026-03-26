@@ -26,7 +26,7 @@
 				loading={file.status === 'uploading'}
 				dismissible
 				on:click={() => {
-					if (file.status === 'uploading') {
+					if (file.status === 'uploading' || file.status === 'failed') {
 						return;
 					}
 
@@ -37,7 +37,7 @@
 						return;
 					}
 
-					dispatch('delete', file.id);
+					dispatch('delete', file);
 				}}
 			/>
 		</div>

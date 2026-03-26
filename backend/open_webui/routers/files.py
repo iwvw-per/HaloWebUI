@@ -30,8 +30,14 @@ from open_webui.models.knowledge import Knowledges
 from open_webui.routers.knowledge import get_knowledge, get_knowledge_list
 from open_webui.routers.retrieval import ProcessFileForm, process_file
 from open_webui.routers.audio import transcribe
+from open_webui.retrieval.vector.connector import VECTOR_DB_CLIENT
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.file_upload_diagnostics import (
+    build_file_upload_error_detail,
+    classify_file_upload_error,
+    is_archive_file,
+)
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
@@ -39,6 +45,27 @@ log.setLevel(SRC_LOG_LEVELS["MODELS"])
 
 
 router = APIRouter()
+
+
+def _cleanup_failed_uploaded_file(file_id: str, file_path: str | None) -> None:
+    if file_id:
+        try:
+            file_collection = f"file-{file_id}"
+            if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection):
+                VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
+        except Exception as exc:
+            log.debug("Failed to delete temporary file collection %s: %s", file_id, exc)
+
+        try:
+            Files.delete_file_by_id(file_id)
+        except Exception as exc:
+            log.debug("Failed to delete file record %s: %s", file_id, exc)
+
+    if file_path:
+        try:
+            Storage.delete_file(file_path)
+        except Exception as exc:
+            log.debug("Failed to delete uploaded file %s: %s", file_path, exc)
 
 
 ############################
@@ -87,9 +114,23 @@ def upload_file(
     process: bool = Query(True),
 ):
     log.info(f"file.content_type: {file.content_type}")
+    file_path = None
+    id = None
     try:
         unsanitized_filename = file.filename
         filename = os.path.basename(unsanitized_filename)
+
+        if is_archive_file(filename, file.content_type):
+            diagnostic = classify_file_upload_error(
+                None,
+                filename=filename,
+                content_type=file.content_type,
+                user=user,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=build_file_upload_error_detail(diagnostic),
+            )
 
         # replace filename with uuid
         id = str(uuid.uuid4())
@@ -136,10 +177,24 @@ def upload_file(
             except Exception as e:
                 log.exception(e)
                 log.error(f"Error processing file: {file_item.id}")
+                diagnostic = classify_file_upload_error(
+                    e,
+                    filename=name,
+                    content_type=file.content_type,
+                    user=user,
+                )
+                if diagnostic.get("blocking", True):
+                    _cleanup_failed_uploaded_file(id, file_path)
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=build_file_upload_error_detail(diagnostic),
+                    )
+
                 file_item = FileModelResponse(
                     **{
                         **file_item.model_dump(),
-                        "error": str(e.detail) if hasattr(e, "detail") else str(e),
+                        "error": diagnostic["message"],
+                        "diagnostic": diagnostic,
                     }
                 )
 
@@ -151,11 +206,21 @@ def upload_file(
                 detail=ERROR_MESSAGES.DEFAULT("Error uploading file"),
             )
 
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(e)
+        if id:
+            _cleanup_failed_uploaded_file(id, file_path)
+        diagnostic = classify_file_upload_error(
+            e,
+            filename=getattr(file, "filename", None),
+            content_type=getattr(file, "content_type", None),
+            user=user,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.DEFAULT(e),
+            detail=build_file_upload_error_detail(diagnostic),
         )
 
 

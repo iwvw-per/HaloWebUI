@@ -1,6 +1,6 @@
 <script lang="ts">
 	import DOMPurify from 'dompurify';
-	import { createEventDispatcher, onMount, getContext } from 'svelte';
+	import { createEventDispatcher, getContext } from 'svelte';
 	const i18n = getContext('i18n');
 
 	import fileSaver from 'file-saver';
@@ -36,6 +36,7 @@
 
 	export let onTaskClick: Function = () => {};
 	export let onSourceClick: Function = () => {};
+	export let charAnimation = false;
 
 	const headerComponent = (depth: number) => {
 		return 'h' + depth;
@@ -141,7 +142,12 @@
 			<hr class=" border-gray-100 dark:border-gray-850" />
 		{:else if token.type === 'heading'}
 			<svelte:element this={headerComponent(token.depth)} dir="auto">
-				<MarkdownInlineTokens id={`${id}-${tokenIdx}-h`} tokens={token.tokens} {onSourceClick} />
+				<MarkdownInlineTokens
+					id={`${id}-${tokenIdx}-h`}
+					tokens={token.tokens}
+					{charAnimation}
+					{onSourceClick}
+				/>
 			</svelte:element>
 		{:else if token.type === 'code'}
 			{#if token.raw.includes('```')}
@@ -244,6 +250,7 @@
 						id={`${id}-${tokenIdx}`}
 						{messageId}
 						tokens={token.tokens}
+						{charAnimation}
 						{onTaskClick}
 						{onSourceClick}
 					/>
@@ -252,7 +259,7 @@
 		{:else if token.type === 'list'}
 			{#if token.ordered}
 				<ol start={token.start || 1} dir="auto">
-					{#each token.items as item, itemIdx}
+					{#each token.items ?? [] as item, itemIdx}
 						<li class="text-start">
 							{#if item?.task}
 								<input
@@ -277,6 +284,7 @@
 								{messageId}
 								tokens={item.tokens}
 								top={token.loose}
+								{charAnimation}
 								{onTaskClick}
 								{onSourceClick}
 							/>
@@ -285,7 +293,7 @@
 				</ol>
 			{:else}
 				<ul dir="auto">
-					{#each token.items as item, itemIdx}
+					{#each token.items ?? [] as item, itemIdx}
 						<li class="text-start">
 							{#if item?.task}
 								<input
@@ -310,6 +318,7 @@
 								{messageId}
 								tokens={item.tokens}
 								top={token.loose}
+								{charAnimation}
 								{onTaskClick}
 								{onSourceClick}
 							/>
@@ -333,6 +342,7 @@
 						{messageId}
 						tokens={marked.lexer(token.text)}
 						attributes={token?.attributes}
+						{charAnimation}
 						{onTaskClick}
 						{onSourceClick}
 					/>
@@ -382,6 +392,7 @@
 				<MarkdownInlineTokens
 					id={`${id}-${tokenIdx}-p`}
 					tokens={token.tokens ?? []}
+					{charAnimation}
 					{onSourceClick}
 				/>
 			</p>
@@ -392,6 +403,7 @@
 						<MarkdownInlineTokens
 							id={`${id}-${tokenIdx}-t`}
 							tokens={token.tokens}
+							{charAnimation}
 							{onSourceClick}
 						/>
 					{:else}
@@ -402,6 +414,7 @@
 				<MarkdownInlineTokens
 					id={`${id}-${tokenIdx}-p`}
 					tokens={token.tokens ?? []}
+					{charAnimation}
 					{onSourceClick}
 				/>
 			{:else}

@@ -1,5 +1,14 @@
 import type { MermaidConfig } from 'mermaid';
 
+export type ChatTransitionMode = 'none' | 'fadeIn' | 'smooth';
+
+type ChatTransitionModeSettingsLike = {
+	transitionMode?: unknown;
+	chatFadeStreamingText?: boolean | null;
+};
+
+export const DEFAULT_CHAT_TRANSITION_MODE: ChatTransitionMode = 'fadeIn';
+
 export type HighlighterThemeOption = {
 	displayName: string;
 	id: string;
@@ -706,4 +715,34 @@ export const getEditorChromeTheme = async (themeId: string, isDark: boolean) => 
 		selection: isDark ? 'rgba(96,165,250,0.22)' : 'rgba(37,99,235,0.16)',
 		surface
 	};
+};
+
+export const normalizeChatTransitionMode = (
+	mode: unknown,
+	fallback: ChatTransitionMode = DEFAULT_CHAT_TRANSITION_MODE
+): ChatTransitionMode => {
+	return mode === 'none' || mode === 'fadeIn' || mode === 'smooth' ? mode : fallback;
+};
+
+export const resolveChatTransitionMode = (
+	settingsLike?: ChatTransitionModeSettingsLike | null,
+	fallback: ChatTransitionMode = DEFAULT_CHAT_TRANSITION_MODE
+): ChatTransitionMode => {
+	if (!settingsLike) {
+		return fallback;
+	}
+
+	if (settingsLike.transitionMode !== undefined && settingsLike.transitionMode !== null) {
+		return normalizeChatTransitionMode(settingsLike.transitionMode, fallback);
+	}
+
+	if (settingsLike.chatFadeStreamingText === true) {
+		return 'fadeIn';
+	}
+
+	if (settingsLike.chatFadeStreamingText === false) {
+		return 'none';
+	}
+
+	return fallback;
 };

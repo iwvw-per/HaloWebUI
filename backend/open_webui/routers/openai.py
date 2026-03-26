@@ -285,6 +285,105 @@ def _connection_supports_native_file_inputs(
     return _is_official_openai_connection(url)
 
 
+def _get_default_responses_reasoning_summary(
+    api_config: Optional[dict],
+) -> Optional[str]:
+    cfg = api_config or {}
+
+    setting = cfg.get("responses_reasoning_summary")
+    if setting is None:
+        setting = cfg.get("reasoning_summary")
+
+    if setting is None:
+        # Default to "auto" which selects the richest summarizer each model
+        # supports (e.g. "detailed" for o4-mini, "concise" for computer-use
+        # models).  GPT-5 series does NOT support "concise" — sending it
+        # causes a silent empty summary — so "auto" is the safe default.
+        return "auto"
+
+    if isinstance(setting, bool):
+        return "auto" if setting else None
+
+    if isinstance(setting, str):
+        normalized = setting.strip().lower()
+        if not normalized or normalized in {"false", "off", "no", "disabled", "none"}:
+            return None
+        if normalized in {"true", "on", "yes"}:
+            return "auto"
+        if normalized in {"auto", "concise", "detailed"}:
+            return normalized
+
+    return "auto"
+
+
+def _has_explicit_reasoning_summary_setting(chat_payload: Optional[dict]) -> bool:
+    if not isinstance(chat_payload, dict):
+        return False
+
+    if isinstance(chat_payload.get("reasoning_summary"), str) and chat_payload.get(
+        "reasoning_summary", ""
+    ).strip():
+        return True
+
+    reasoning = chat_payload.get("reasoning")
+    return bool(
+        isinstance(reasoning, dict)
+        and isinstance(reasoning.get("summary"), str)
+        and reasoning.get("summary", "").strip()
+    )
+
+
+def _strip_reasoning_summary_from_payload(payload: Optional[dict]) -> tuple[dict, bool]:
+    if not isinstance(payload, dict):
+        return {}, False
+
+    reasoning = payload.get("reasoning")
+    if not isinstance(reasoning, dict) or "summary" not in reasoning:
+        return dict(payload), False
+
+    next_payload = dict(payload)
+    next_reasoning = dict(reasoning)
+    next_reasoning.pop("summary", None)
+
+    if next_reasoning:
+        next_payload["reasoning"] = next_reasoning
+    else:
+        next_payload.pop("reasoning", None)
+
+    return next_payload, True
+
+
+def _looks_like_reasoning_summary_incompatible(status: int, body) -> bool:
+    if status not in (400, 422):
+        return False
+
+    text = _stringify_upstream_body(body).lower()
+    if not text:
+        return False
+
+    if "reasoning.summary" in text:
+        return True
+
+    if "reasoning" not in text or "summary" not in text:
+        return False
+
+    return any(
+        token in text
+        for token in (
+            "unsupported",
+            "unknown",
+            "invalid",
+            "unexpected",
+            "additional properties",
+            "extra fields not permitted",
+            "not allowed",
+            "not permitted",
+            "unrecognized",
+            "should not exist",
+        )
+    )
+
+
 def _build_upstream_headers(
     base_url: str,
     key: str,
@@ -1561,11 +1660,21 @@ async def generate_chat_completion(
     headers = _build_upstream_headers(url, key, api_config, user=user)
 
     payload_dict = None
+    auto_reasoning_summary_applied = False
     if use_responses_api:
         web_search_tool_type = _get_native_web_search_tool_type(api_config) if native_web_search else None
+        default_reasoning_summary = _get_default_responses_reasoning_summary(
+            api_config
+        )
         payload_dict = convert_chat_completions_to_responses_payload(
             payload,
             native_web_search_tool_type=web_search_tool_type,
+            default_reasoning_summary=default_reasoning_summary,
+        )
+        auto_reasoning_summary_applied = bool(
+            isinstance(payload_dict.get("reasoning"), dict)
+            and payload_dict["reasoning"].get("summary")
+            and not _has_explicit_reasoning_summary_setting(payload)
         )
 
         # Responses API: keep to standard fields; conversion already filters most chat-only fields.
@@ -1597,14 +1706,20 @@ async def generate_chat_completion(
     _diag_keys = sorted(payload_dict.keys()) if isinstance(payload_dict, dict) else "N/A"
     _msg_count = len(payload_dict.get("messages", [])) if isinstance(payload_dict, dict) else "?"
     _tools_count = len(payload_dict.get("tools", [])) if isinstance(payload_dict, dict) and payload_dict.get("tools") else 0
+    _reasoning_info = payload_dict.get("reasoning") if isinstance(payload_dict, dict) else None
+    _store_info = payload_dict.get("store") if isinstance(payload_dict, dict) else None
+    _include_info = payload_dict.get("include") if isinstance(payload_dict, dict) else None
     log.info(
-        "[UPSTREAM REQUEST] POST %s | model=%s | payload_keys=%s | messages=%s | tools=%s | size=%d",
+        "[UPSTREAM REQUEST] POST %s | model=%s | payload_keys=%s | messages=%s | tools=%s | size=%d | reasoning=%s | store=%s | include=%s",
         request_url,
         payload_dict.get("model", "?") if isinstance(payload_dict, dict) else "?",
         _diag_keys,
         _msg_count,
         _tools_count,
         len(payload_json),
+        _reasoning_info or "none",
+        _store_info,
+        _include_info,
     )
     if log.isEnabledFor(logging.DEBUG):
         _diag_headers = {
@@ -1638,24 +1753,43 @@ async def generate_chat_completion(
             timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT),
         )
 
-        r = await session.request(
-            method="POST",
-            url=request_url,
-            data=payload_json,
-            headers=headers,
-        )
+        async def _send_current_request(*, retry_reason: Optional[str] = None):
+            nonlocal r, payload_json
 
-        # ── Log upstream response metadata ──
-        log.info(
-            "[UPSTREAM RESPONSE] status=%d | content-type=%s",
-            r.status,
-            r.headers.get("Content-Type", ""),
-        )
-        if log.isEnabledFor(logging.DEBUG):
-            log.debug(
-                "[UPSTREAM RESPONSE] headers=%s",
-                {k: v for k, v in r.headers.items() if k.lower() not in ("set-cookie",)},
+            if retry_reason:
+                log.warning(
+                    "[UPSTREAM RETRY] reason=%s | url=%s | model=%s",
+                    retry_reason,
+                    request_url,
+                    payload_dict.get("model", "?") if isinstance(payload_dict, dict) else "?",
+                )
+
+            r = await session.request(
+                method="POST",
+                url=request_url,
+                data=payload_json,
+                headers=headers,
             )
+
+            # ── Log upstream response metadata ──
+            log.info(
+                "[UPSTREAM RESPONSE%s] status=%d | content-type=%s",
+                " RETRY" if retry_reason else "",
+                r.status,
+                r.headers.get("Content-Type", ""),
+            )
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "[UPSTREAM RESPONSE%s] headers=%s",
+                    " RETRY" if retry_reason else "",
+                    {
+                        k: v
+                        for k, v in r.headers.items()
+                        if k.lower() not in ("set-cookie",)
+                    },
+                )
+
+        await _send_current_request()
 
         # Chat Completions: normalize non-2xx upstreams into truthful errors
         # instead of letting downstream guess from an empty stream.
@@ -1706,22 +1840,60 @@ async def generate_chat_completion(
 
             if r.status >= 400:
                 response = await _safe_read_upstream_body(r)
-                message = _format_responses_upstream_error(
-                    request_url=request_url, status=r.status, body=response
-                )
 
-                if client_stream:
-                    streaming = True
-                    return StreamingResponse(
-                        error_sse_generator(message, code="responses_api_error"),
-                        media_type="text/event-stream",
-                        status_code=200,
-                        background=BackgroundTask(
-                            cleanup_response, response=r, session=session
-                        ),
+                if (
+                    auto_reasoning_summary_applied
+                    and _looks_like_reasoning_summary_incompatible(r.status, response)
+                ):
+                    next_payload_dict, removed = _strip_reasoning_summary_from_payload(
+                        payload_dict
+                    )
+                    if removed:
+                        log.warning(
+                            "[RESPONSES RETRY] reasoning.summary rejected by upstream; retrying once without summary"
+                        )
+                        payload_dict = next_payload_dict
+                        payload_json = json.dumps(
+                            payload_dict, ensure_ascii=False, default=str
+                        )
+                        response = None
+                        auto_reasoning_summary_applied = False
+                        r.close()
+                        await _send_current_request(
+                            retry_reason="reasoning_summary_incompatible"
+                        )
+
+                        if r.status < 400:
+                            content_type = r.headers.get("Content-Type", "") or ""
+                            looks_streaming = any(
+                                t in content_type.lower()
+                                for t in (
+                                    "text/event-stream",
+                                    "application/x-ndjson",
+                                    "application/ndjson",
+                                    "application/jsonl",
+                                )
+                            )
+                        else:
+                            response = await _safe_read_upstream_body(r)
+
+                if r.status >= 400:
+                    message = _format_responses_upstream_error(
+                        request_url=request_url, status=r.status, body=response
                     )
 
-                raise HTTPException(status_code=r.status, detail=message)
+                    if client_stream:
+                        streaming = True
+                        return StreamingResponse(
+                            error_sse_generator(message, code="responses_api_error"),
+                            media_type="text/event-stream",
+                            status_code=200,
+                            background=BackgroundTask(
+                                cleanup_response, response=r, session=session
+                            ),
+                        )
+
+                    raise HTTPException(status_code=r.status, detail=message)
 
             # Stream conversion: upstream Responses events -> ChatCompletions SSE for frontend.
             if client_stream and looks_streaming:
@@ -1763,10 +1935,13 @@ async def generate_chat_completion(
                         choice0 = (cc.get("choices") or [{}])[0] if isinstance(cc.get("choices"), list) else {}
                         msg = choice0.get("message") or {}
                         content = msg.get("content") or ""
+                        reasoning_content = msg.get("reasoning_content") or ""
                         tool_calls = msg.get("tool_calls")
                         delta = {}
                         if content:
                             delta["content"] = content
+                        if reasoning_content:
+                            delta["reasoning_content"] = reasoning_content
                         if tool_calls:
                             delta["tool_calls"] = tool_calls
                         yield (

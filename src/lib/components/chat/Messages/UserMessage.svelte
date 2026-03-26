@@ -45,6 +45,7 @@
 	let edit = false;
 	let editedContent = '';
 	let messageEditTextAreaElement: HTMLTextAreaElement;
+	let messageEditScrollElement: HTMLDivElement;
 
 	let message = history.messages?.[messageId];
 	$: message = history.messages?.[messageId];
@@ -62,10 +63,37 @@
 
 		await tick();
 
-		messageEditTextAreaElement.style.height = '';
-		messageEditTextAreaElement.style.height = `${messageEditTextAreaElement.scrollHeight}px`;
+		resizeMessageEditTextArea();
 
 		messageEditTextAreaElement?.focus();
+	};
+
+	const resizeMessageEditTextArea = (
+		textarea: HTMLTextAreaElement | null = messageEditTextAreaElement
+	) => {
+		if (!textarea) {
+			return;
+		}
+
+		const previousHeight = textarea.offsetHeight;
+		const previousScrollTop = messageEditScrollElement?.scrollTop ?? 0;
+
+		textarea.style.height = 'auto';
+		textarea.style.height = `${textarea.scrollHeight}px`;
+
+		if (messageEditScrollElement) {
+			const nextScrollTop =
+				previousHeight > 0
+					? Math.max(previousScrollTop + textarea.offsetHeight - previousHeight, 0)
+					: previousScrollTop;
+			messageEditScrollElement.scrollTop = nextScrollTop;
+
+			requestAnimationFrame(() => {
+				if (messageEditScrollElement) {
+					messageEditScrollElement.scrollTop = nextScrollTop;
+				}
+			});
+		}
 	};
 
 	const editMessageConfirmHandler = async (submit = true) => {
@@ -161,15 +189,17 @@
 			{#if message.content !== ''}
 				{#if edit === true}
 					<div class=" w-full bg-gray-50 dark:bg-gray-800 rounded-3xl px-5 py-3 mb-2">
-						<div class="max-h-96 overflow-auto">
+						<div bind:this={messageEditScrollElement} class="max-h-96 overflow-auto">
 							<textarea
 								id="message-edit-{message.id}"
 								bind:this={messageEditTextAreaElement}
 								class=" bg-transparent outline-hidden w-full resize-none"
 								bind:value={editedContent}
-								on:input={(e) => {
-									e.target.style.height = '';
-									e.target.style.height = `${e.target.scrollHeight}px`;
+								on:focus={() => {
+									resizeMessageEditTextArea();
+								}}
+								on:input={() => {
+									resizeMessageEditTextArea();
 								}}
 								on:keydown={(e) => {
 									if (e.key === 'Escape') {

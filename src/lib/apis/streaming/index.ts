@@ -90,9 +90,11 @@ export async function createOpenAITextStream(
 		.pipeThrough(new EventSourceParserStream())
 		.getReader();
 	let iterator = openAIStreamToIterator(eventStream);
+
 	if (splitLargeDeltas) {
 		iterator = streamLargeDeltasAsRandomChunks(iterator);
 	}
+
 	return iterator;
 }
 

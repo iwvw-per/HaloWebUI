@@ -36,6 +36,18 @@
 			return str;
 		}
 	};
+
+	$: failed = item?.status === 'failed';
+	$: failureTitle = item?.errorTitle ?? item?.diagnostic?.title ?? $i18n.t('Upload failed');
+	$: failureMessage = item?.error ?? item?.diagnostic?.message ?? '';
+	$: failureHint = item?.errorHint ?? item?.diagnostic?.hint ?? '';
+	$: resolvedColorClassName = failed
+		? `${colorClassName} border border-red-200/80 bg-red-50/70 text-red-950 dark:border-red-500/30 dark:bg-red-950/20 dark:text-red-100`
+		: colorClassName;
+	$: tooltipContent =
+		failed && (failureMessage || failureHint)
+			? [decodeString(name), failureMessage, failureHint].filter(Boolean).join('\n')
+			: decodeString(name);
 </script>
 
 {#if item}
@@ -43,7 +55,7 @@
 {/if}
 
 <button
-	class="relative group p-1.5 {className} flex items-center gap-1 {colorClassName} {small
+	class="relative group p-1.5 {className} flex items-center gap-1 {resolvedColorClassName} {small
 		? 'rounded-xl'
 		: 'rounded-2xl'} text-left"
 	type="button"
@@ -64,23 +76,42 @@
 	}}
 >
 	{#if !small}
-		<div class="p-3 bg-black/20 dark:bg-white/10 text-white rounded-xl">
+		<div
+			class="p-3 rounded-xl {failed
+				? 'bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-200'
+				: 'bg-black/20 dark:bg-white/10 text-white'}"
+		>
 			{#if !loading}
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 24 24"
-					fill="currentColor"
-					class=" size-5"
-				>
-					<path
-						fill-rule="evenodd"
-						d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0 0 16.5 9h-1.875a1.875 1.875 0 0 1-1.875-1.875V5.25A3.75 3.75 0 0 0 9 1.5H5.625ZM7.5 15a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5h-7.5A.75.75 0 0 1 7.5 15Zm.75 2.25a.75.75 0 0 0 0 1.5H12a.75.75 0 0 0 0-1.5H8.25Z"
-						clip-rule="evenodd"
-					/>
-					<path
-						d="M12.971 1.816A5.23 5.23 0 0 1 14.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 0 1 3.434 1.279 9.768 9.768 0 0 0-6.963-6.963Z"
-					/>
-				</svg>
+				{#if failed}
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						viewBox="0 0 20 20"
+						fill="currentColor"
+						class="size-5"
+					>
+						<path
+							fill-rule="evenodd"
+							d="M8.257 3.099c.765-1.36 2.72-1.36 3.485 0l5.58 9.92c.75 1.334-.213 2.981-1.742 2.981H4.42c-1.53 0-2.492-1.647-1.742-2.98l5.58-9.921ZM11 7a1 1 0 1 0-2 0v3a1 1 0 1 0 2 0V7Zm-1 7a1.25 1.25 0 1 0 0-2.5A1.25 1.25 0 0 0 10 14Z"
+							clip-rule="evenodd"
+						/>
+					</svg>
+				{:else}
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						viewBox="0 0 24 24"
+						fill="currentColor"
+						class=" size-5"
+					>
+						<path
+							fill-rule="evenodd"
+							d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0 0 16.5 9h-1.875a1.875 1.875 0 0 1-1.875-1.875V5.25A3.75 3.75 0 0 0 9 1.5H5.625ZM7.5 15a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5h-7.5A.75.75 0 0 1 7.5 15Zm.75 2.25a.75.75 0 0 0 0 1.5H12a.75.75 0 0 0 0-1.5H8.25Z"
+							clip-rule="evenodd"
+						/>
+						<path
+							d="M12.971 1.816A5.23 5.23 0 0 1 14.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 0 1 3.434 1.279 9.768 9.768 0 0 0-6.963-6.963Z"
+						/>
+					</svg>
+				{/if}
 			{:else}
 				<Spinner />
 			{/if}
@@ -107,9 +138,14 @@
 					<span class="capitalize">{formatFileSize(size)}</span>
 				{/if}
 			</div>
+			{#if failed}
+				<div class="mt-1 text-[11px] text-red-600 dark:text-red-300 line-clamp-2">
+					{failureTitle}
+				</div>
+			{/if}
 		</div>
 	{:else}
-		<Tooltip content={decodeString(name)} className="flex flex-col w-full" placement="top-start">
+		<Tooltip content={tooltipContent} className="flex flex-col w-full" placement="top-start">
 			<div class="flex flex-col justify-center -space-y-0.5 px-2.5 w-full">
 				<div class=" dark:text-gray-100 text-sm flex justify-between items-center">
 					{#if loading}
@@ -120,6 +156,11 @@
 					<div class="font-medium line-clamp-1 flex-1">{decodeString(name)}</div>
 					<div class="text-gray-500 text-xs capitalize shrink-0">{formatFileSize(size)}</div>
 				</div>
+				{#if failed}
+					<div class="mt-1 text-[11px] text-red-600 dark:text-red-300 line-clamp-1">
+						{failureTitle}
+					</div>
+				{/if}
 			</div>
 		</Tooltip>
 	{/if}

@@ -6,8 +6,15 @@
 
 	const i18n = getContext('i18n');
 
-	import { config, mobile, settings, socket } from '$lib/stores';
+	import { config, mobile, settings, socket, user } from '$lib/stores';
 	import { blobToFile, compressImage } from '$lib/utils';
+	import {
+		buildIgnoredFailedFilesMessage,
+		getFileUploadDiagnostic,
+		getLocalizedFileUploadDiagnostic,
+		isFailedUploadFile,
+		localizeFileUploadError
+	} from '$lib/utils/file-upload-errors';
 
 	import Tooltip from '../common/Tooltip.svelte';
 	import RichTextInput from '../common/RichTextInput.svelte';
@@ -192,6 +199,9 @@
 			status: 'uploading',
 			size: file.size,
 			error: '',
+			errorTitle: '',
+			errorHint: '',
+			diagnostic: null,
 			itemId: tempItemId
 		};
 
@@ -215,7 +225,11 @@
 
 				if (uploadedFile.error) {
 					console.warn('File upload warning:', uploadedFile.error);
-					toast.warning(uploadedFile.error);
+					toast.warning(
+						localizeFileUploadError(uploadedFile.error, $i18n.t.bind($i18n), {
+							isAdmin: $user?.role === 'admin'
+						})
+					);
 				}
 
 				fileItem.status = 'uploaded';
@@ -227,12 +241,39 @@
 
 				files = files;
 			} else {
-				files = files.filter((item) => item?.itemId !== tempItemId);
+				setUploadFailure(tempItemId, new Error($i18n.t('Failed to upload file.')));
 			}
 		} catch (e) {
-			toast.error(`${e}`);
-			files = files.filter((item) => item?.itemId !== tempItemId);
+			setUploadFailure(tempItemId, e);
 		}
+	};
+
+	const setUploadFailure = (tempItemId: string, error: unknown) => {
+		const localized = getLocalizedFileUploadDiagnostic(error, $i18n.t.bind($i18n), {
+			isAdmin: $user?.role === 'admin'
+		});
+		const diagnostic = getFileUploadDiagnostic(error) ?? {
+			code: localized.code,
+			title: localized.title,
+			message: localized.message,
+			hint: localized.hint,
+			blocking: localized.blocking
+		};
+
+		files = files.map((item) =>
+			item?.itemId === tempItemId
+				? {
+						...item,
+						status: 'failed',
+						error: localized.message,
+						errorTitle: localized.title,
+						errorHint: localized.hint,
+						diagnostic
+					}
+				: item
+		);
+
+		toast.error(localizeFileUploadError(error, $i18n.t.bind($i18n), { isAdmin: $user?.role === 'admin' }));
 	};
 
 	const handleKeyDown = (event: KeyboardEvent) => {
@@ -273,19 +314,43 @@
 	};
 
 	const submitHandler = async () => {
-		if (content === '' && files.length === 0) {
+		const uploadingFiles = files.filter(
+			(file) => file.type !== 'image' && file.status === 'uploading'
+		);
+		if (uploadingFiles.length > 0) {
+			toast.error(
+				$i18n.t(`Oops! There are files still uploading. Please wait for the upload to complete.`)
+			);
 			return;
+		}
+
+		const failedFiles = files.filter((file) => isFailedUploadFile(file));
+		const validFiles = files.filter((file) => !isFailedUploadFile(file));
+
+		if (content === '' && validFiles.length === 0) {
+			if (failedFiles.length > 0) {
+				toast.warning(
+					$i18n.t(
+						'All selected files failed to upload or index. Remove them or upload them again before sending.'
+					)
+				);
+			}
+			return;
+		}
+
+		if (failedFiles.length > 0) {
+			toast.warning(buildIgnoredFailedFilesMessage(failedFiles, $i18n.t.bind($i18n)));
 		}
 
 		onSubmit({
 			content,
 			data: {
-				files: files
+				files: validFiles
 			}
 		});
 
 		content = '';
-		files = [];
+		files = failedFiles;
 
 		await tick();
 

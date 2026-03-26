@@ -199,6 +199,8 @@ type Settings = {
 	mermaidTheme?: string;
 	temporaryChatByDefault?: boolean;
 	chatFadeStreamingText?: boolean;
+	transitionMode?: 'none' | 'fadeIn' | 'smooth';
+	enableAutoScrollOnStreaming?: boolean;
 	insertSuggestionPrompt?: boolean;
 	keepFollowUpPrompts?: boolean;
 	insertFollowUpPrompt?: boolean;

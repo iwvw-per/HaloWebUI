@@ -30,6 +30,19 @@ export type ImageUsageConfig = {
 	};
 };
 
+export type ImageGenerationModel = {
+	id: string;
+	name?: string;
+	generation_mode?: string;
+	detection_method?: string;
+	supports_background?: boolean;
+	supports_batch?: boolean;
+	size_mode?: 'exact' | 'aspect_ratio' | 'unsupported' | string;
+	text_output_supported?: boolean;
+	source?: 'settings' | 'personal' | 'shared' | string | null;
+	connection_index?: number | null;
+};
+
 export const getConfig = async (token: string = '') => {
 	let error = null;
 
@@ -226,10 +239,30 @@ export const updateImageGenerationConfig = async (token: string = '', config: ob
 	return res;
 };
 
-export const getImageGenerationModels = async (token: string = '') => {
+export const getImageGenerationModels = async (
+	token: string = '',
+	params: {
+		context?: 'settings' | 'runtime' | string;
+		credentialSource?: 'auto' | 'personal' | 'shared' | string;
+		connectionIndex?: number | null;
+	} = {}
+): Promise<ImageGenerationModel[]> => {
 	let error = null;
+	const query = new URLSearchParams();
 
-	const res = await fetch(`${IMAGES_API_BASE_URL}/models`, {
+	if (params.context) {
+		query.set('context', `${params.context}`);
+	}
+	if (params.credentialSource) {
+		query.set('credential_source', `${params.credentialSource}`);
+	}
+	if (Number.isInteger(params.connectionIndex)) {
+		query.set('connection_index', `${params.connectionIndex}`);
+	}
+
+	const suffix = query.toString() ? `?${query.toString()}` : '';
+
+	const res = await fetch(`${IMAGES_API_BASE_URL}/models${suffix}`, {
 		method: 'GET',
 		headers: {
 			Accept: 'application/json',
@@ -255,7 +288,7 @@ export const getImageGenerationModels = async (token: string = '') => {
 		throw error;
 	}
 
-	return res;
+	return (res ?? []) as ImageGenerationModel[];
 };
 
 export const imageGenerations = async (

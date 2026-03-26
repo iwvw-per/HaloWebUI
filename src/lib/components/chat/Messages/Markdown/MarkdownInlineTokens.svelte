@@ -4,7 +4,6 @@
 
 	import type { Token } from 'marked';
 	import { getContext } from 'svelte';
-	import { readable } from 'svelte/store';
 
 	const i18n = getContext('i18n');
 
@@ -24,20 +23,7 @@
 	export let id: string;
 	export let tokens: Token[] = [];
 	export let onSourceClick: Function = () => {};
-
-	// Streaming context for word-level fade animation
-	const streamingStore =
-		getContext<import('svelte/store').Writable<boolean>>('streamingMessage') || readable(false);
-	$: isStreaming = $streamingStore;
-
-	function segmentText(text: string): string[] {
-		try {
-			const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
-			return [...segmenter.segment(text)].map((s) => s.segment);
-		} catch {
-			return text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]|\S+|\s+/g) || [text];
-		}
-	}
+	export let charAnimation = false;
 
 	let renderTokens: RenderableHtmlToken[] = [];
 	$: renderTokens = mergeSvgMarkupTokens(tokens);
@@ -45,7 +31,11 @@
 
 {#each renderTokens as token}
 	{#if token.type === 'escape'}
-		{unescapeHtml(token.text)}
+		{#if charAnimation}
+			{#each [...unescapeHtml(token.text)] as char}<span class="stream-char">{char}</span>{/each}
+		{:else}
+			{unescapeHtml(token.text)}
+		{/if}
 	{:else if token.type === 'html'}
 		{@const isSvgMarkupToken = isSvgMarkup(token.text)}
 		{@const html = DOMPurify.sanitize(token.text, { ADD_ATTR: ['style'] })}
@@ -63,7 +53,12 @@
 	{:else if token.type === 'link'}
 		{#if token.tokens}
 			<a href={token.href} target="_blank" rel="nofollow" title={token.title}>
-				<svelte:self id={`${id}-a`} tokens={token.tokens} {onSourceClick} />
+				<svelte:self
+					id={`${id}-a`}
+					tokens={token.tokens}
+					{charAnimation}
+					{onSourceClick}
+				/>
 			</a>
 		{:else}
 			<a href={token.href} target="_blank" rel="nofollow" title={token.title}>{token.text}</a>
@@ -71,9 +66,23 @@
 	{:else if token.type === 'image'}
 		<Image src={token.href} alt={token.text} />
 	{:else if token.type === 'strong'}
-		<strong><svelte:self id={`${id}-strong`} tokens={token.tokens} {onSourceClick} /></strong>
+		<strong>
+			<svelte:self
+				id={`${id}-strong`}
+				tokens={token.tokens}
+				{charAnimation}
+				{onSourceClick}
+			/>
+		</strong>
 	{:else if token.type === 'em'}
-		<em><svelte:self id={`${id}-em`} tokens={token.tokens} {onSourceClick} /></em>
+		<em>
+			<svelte:self
+				id={`${id}-em`}
+				tokens={token.tokens}
+				{charAnimation}
+				{onSourceClick}
+			/>
+		</em>
 	{:else if token.type === 'codespan'}
 		<!-- svelte-ignore a11y-click-events-have-key-events -->
 		<!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
@@ -87,7 +96,14 @@
 	{:else if token.type === 'br'}
 		<br />
 	{:else if token.type === 'del'}
-		<del><svelte:self id={`${id}-del`} tokens={token.tokens} {onSourceClick} /></del>
+		<del>
+			<svelte:self
+				id={`${id}-del`}
+				tokens={token.tokens}
+				{charAnimation}
+				{onSourceClick}
+			/>
+		</del>
 	{:else if token.type === 'inlineKatex'}
 		{#if token.text}
 			<KatexRenderer content={token.text} displayMode={false} />
@@ -104,16 +120,10 @@
 	{:else if token.type === 'citation'}
 		<SourceToken {id} {token} onClick={onSourceClick} />
 	{:else if token.type === 'text'}
-		{#if isStreaming}
-			{#each segmentText(token.raw) as segment}
-				{#if /^\s+$/.test(segment)}
-					{segment}
-				{:else}
-					<span class="streaming-word">{segment}</span>
-				{/if}
-			{/each}
+		{#if charAnimation}
+			{#each [...(token.raw ?? token.text)] as char}<span class="stream-char">{char}</span>{/each}
 		{:else}
-			{token.raw}
+			{token.raw ?? token.text}
 		{/if}
 	{/if}
 {/each}

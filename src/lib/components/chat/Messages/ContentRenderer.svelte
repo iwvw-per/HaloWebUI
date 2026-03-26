@@ -1,6 +1,5 @@
 <script>
-	import { onDestroy, onMount, tick, getContext, setContext, createEventDispatcher } from 'svelte';
-	import { writable } from 'svelte/store';
+	import { onDestroy, onMount, tick, getContext, createEventDispatcher } from 'svelte';
 	const i18n = getContext('i18n');
 	const dispatch = createEventDispatcher();
 
@@ -17,6 +16,9 @@
 	import FloatingButtons from '../ContentRenderer/FloatingButtons.svelte';
 	import { createMessagesList } from '$lib/utils';
 	import { getCitationEntries } from '$lib/utils/citations';
+	import {
+		resolveChatTransitionMode
+	} from '$lib/utils/lobehub-chat-appearance';
 
 	export let id;
 	export let content;
@@ -36,6 +38,7 @@
 
 	let contentContainerElement;
 	let floatingButtonsElement;
+	let currentTransitionMode = 'none';
 
 	// Long content truncation
 	const MAX_CONTENT_HEIGHT = 1500;
@@ -48,14 +51,12 @@
 		needsTruncation = contentContainerElement.scrollHeight > MAX_CONTENT_HEIGHT;
 	}
 
-	const streamingStore = writable(false);
-	setContext('streamingMessage', streamingStore);
-
-	$: streamingStore.set(streaming);
 	$: if (!streaming && contentContainerElement) {
 		// Re-check when streaming ends
 		tick().then(checkTruncation);
 	}
+
+	$: currentTransitionMode = resolveChatTransitionMode($settings);
 
 	const updateButtonPosition = (event) => {
 		const buttonsContainerElement = document.getElementById(`floating-buttons-${id}`);
@@ -176,75 +177,77 @@
 		? `max-height: ${MAX_CONTENT_HEIGHT}px; overflow: hidden;`
 		: ''}
 >
-		<Markdown
+	<Markdown
 			{id}
 			content={content || ''}
 			{model}
 			{save}
-			sourceIds={(sources ?? []).reduce((acc, s) => {
-				if (!s || typeof s !== 'object') {
-					return acc;
-				}
-
-				let ids = [];
-				getCitationEntries(s).forEach(({ metadata }) => {
-					if (model?.info?.meta?.capabilities?.citations == false) {
-						ids.push('N/A');
-						return;
+			{streaming}
+			transitionMode={currentTransitionMode}
+				sourceIds={(sources ?? []).reduce((acc, s) => {
+					if (!s || typeof s !== 'object') {
+						return acc;
 					}
 
-					const id = metadata?.source ?? 'N/A';
+					let ids = [];
+					getCitationEntries(s).forEach(({ metadata }) => {
+						if (model?.info?.meta?.capabilities?.citations == false) {
+							ids.push('N/A');
+							return;
+						}
 
-					if (metadata?.name) {
-						ids.push(metadata.name);
-						return;
-					}
+						const id = metadata?.source ?? 'N/A';
 
-					if (
-						typeof id === 'string' &&
-						(id.startsWith('http://') || id.startsWith('https://'))
-					) {
-						ids.push(id);
+						if (metadata?.name) {
+							ids.push(metadata.name);
+							return;
+						}
+
+						if (
+							typeof id === 'string' &&
+							(id.startsWith('http://') || id.startsWith('https://'))
+						) {
+							ids.push(id);
+						} else {
+							ids.push(s?.source?.name ?? id);
+						}
+					});
+
+					acc = [...acc, ...ids];
+
+				// remove duplicates
+				return acc.filter((item, index) => acc.indexOf(item) === index);
+			}, [])}
+			{onSourceClick}
+			{onTaskClick}
+			on:update={(e) => {
+				dispatch('update', e.detail);
+			}}
+			on:code={(e) => {
+				const { lang, code } = e.detail;
+				const normalizedLang = String(lang ?? '').toLowerCase();
+				const isSvgCode =
+					normalizedLang === 'svg' || (normalizedLang === 'xml' && code.includes('<svg'));
+				const isHtmlArtifact = normalizedLang === 'html';
+				const shouldAutoOpenSvgPreview =
+					$settings?.svgPreviewAutoOpen ?? ($settings?.detectArtifacts ?? true);
+
+				if (
+					!$mobile &&
+					$chatId &&
+					((($settings?.detectArtifacts ?? true) && isHtmlArtifact) ||
+						(shouldAutoOpenSvgPreview && isSvgCode))
+				) {
+					if (isSvgCode) {
+						artifactPreviewTarget.set({ messageId: id, type: 'svg', content: code });
 					} else {
-						ids.push(s?.source?.name ?? id);
+						artifactPreviewTarget.set(null);
 					}
-				});
-
-				acc = [...acc, ...ids];
-
-			// remove duplicates
-			return acc.filter((item, index) => acc.indexOf(item) === index);
-		}, [])}
-		{onSourceClick}
-		{onTaskClick}
-		on:update={(e) => {
-			dispatch('update', e.detail);
-		}}
-		on:code={(e) => {
-			const { lang, code } = e.detail;
-			const normalizedLang = String(lang ?? '').toLowerCase();
-			const isSvgCode =
-				normalizedLang === 'svg' || (normalizedLang === 'xml' && code.includes('<svg'));
-			const isHtmlArtifact = normalizedLang === 'html';
-			const shouldAutoOpenSvgPreview =
-				$settings?.svgPreviewAutoOpen ?? ($settings?.detectArtifacts ?? true);
-
-			if (
-				!$mobile &&
-				$chatId &&
-				((($settings?.detectArtifacts ?? true) && isHtmlArtifact) ||
-					(shouldAutoOpenSvgPreview && isSvgCode))
-			) {
-				if (isSvgCode) {
-					artifactPreviewTarget.set({ messageId: id, type: 'svg', content: code });
-				} else {
-					artifactPreviewTarget.set(null);
+					showArtifacts.set(true);
+					showControls.set(true);
 				}
-				showArtifacts.set(true);
-				showControls.set(true);
-			}
-		}}
-	/>
+			}}
+		/>
 </div>
 
 {#if needsTruncation && !isExpanded}

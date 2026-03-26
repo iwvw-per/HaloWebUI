@@ -30,6 +30,11 @@
 		isAnimatedImage,
 		isHeicFile
 	} from '$lib/utils';
+	import {
+		getFileUploadDiagnostic,
+		getLocalizedFileUploadDiagnostic,
+		localizeFileUploadError
+	} from '$lib/utils/file-upload-errors';
 	import { transcribeAudio } from '$lib/apis/audio';
 	import { uploadFile } from '$lib/apis/files';
 	import { generateAutoCompletion } from '$lib/apis';
@@ -219,7 +224,7 @@
 		const element = document.getElementById('messages-container');
 		element.scrollTo({
 			top: element.scrollHeight,
-			behavior: 'smooth'
+			behavior: 'auto'
 		});
 	};
 
@@ -260,6 +265,40 @@
 		}
 	};
 
+	const getUploadLocalizeOptions = () => ({
+		isAdmin: $_user?.role === 'admin'
+	});
+
+	const setUploadFailure = (tempItemId: string, error: unknown) => {
+		const localized = getLocalizedFileUploadDiagnostic(
+			error,
+			$i18n.t.bind($i18n),
+			getUploadLocalizeOptions()
+		);
+		const diagnostic = getFileUploadDiagnostic(error) ?? {
+			code: localized.code,
+			title: localized.title,
+			message: localized.message,
+			hint: localized.hint,
+			blocking: localized.blocking
+		};
+
+		files = files.map((item) =>
+			item?.itemId === tempItemId
+				? {
+						...item,
+						status: 'failed',
+						error: localized.message,
+						errorTitle: localized.title,
+						errorHint: localized.hint,
+						diagnostic
+					}
+				: item
+		);
+
+		toast.error(localizeFileUploadError(error, $i18n.t.bind($i18n), getUploadLocalizeOptions()));
+	};
+
 	const uploadFileHandler = async (file, fullContext: boolean = false) => {
 		if ($_user?.role !== 'admin' && !($_user?.permissions?.chat?.file_upload ?? true)) {
 			toast.error($i18n.t('You do not have permission to upload files.'));
@@ -277,6 +316,9 @@
 			status: 'uploading',
 			size: file.size,
 			error: '',
+			errorTitle: '',
+			errorHint: '',
+			diagnostic: null,
 			itemId: tempItemId,
 			...(fullContext ? { context: 'full' } : {})
 		};
@@ -301,7 +343,13 @@
 
 				if (uploadedFile.error) {
 					console.warn('File upload warning:', uploadedFile.error);
-					toast.warning(uploadedFile.error);
+					toast.warning(
+						localizeFileUploadError(
+							uploadedFile.error,
+							$i18n.t.bind($i18n),
+							getUploadLocalizeOptions()
+						)
+					);
 				}
 
 				fileItem.status = 'uploaded';
@@ -313,11 +361,10 @@
 
 				files = files;
 			} else {
-				files = files.filter((item) => item?.itemId !== tempItemId);
+				setUploadFailure(tempItemId, new Error($i18n.t('Failed to upload file.')));
 			}
 		} catch (e) {
-			toast.error(`${e}`);
-			files = files.filter((item) => item?.itemId !== tempItemId);
+			setUploadFailure(tempItemId, e);
 		}
 	};
 

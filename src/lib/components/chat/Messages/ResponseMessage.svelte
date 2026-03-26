@@ -138,6 +138,27 @@
 	let message: MessageType = history.messages?.[messageId] as MessageType;
 	$: message = history.messages?.[messageId] as MessageType;
 
+	function getVisibleAssistantOutput(content: string): string {
+		return sanitizeResponseContent(
+			removeAllDetails(stripThinkingBlocks(content ?? '')).replace(/<tool_calls\b[^>]*\/>/gi, '')
+		);
+	}
+
+	$: hasVisibleAssistantOutput = getVisibleAssistantOutput(message?.content ?? '') !== '';
+	$: displayStatusHistory = (
+		message?.statusHistory ?? [...(message?.status ? [message?.status] : [])]
+	).filter((status) => {
+		if (status?.action === 'model_request') {
+			return false;
+		}
+
+		if (hasVisibleAssistantOutput && status?.action === 'tool_loading') {
+			return false;
+		}
+
+		return true;
+	});
+
 	export let siblings;
 
 	export let gotoMessage: Function = () => {};
@@ -599,9 +620,9 @@
 		const input = data.prompt_tokens ?? data.input_tokens;
 		const output = data.completion_tokens ?? data.output_tokens;
 		const total = data.total_tokens;
-		const compDetails = data.completion_tokens_details as Record<string, unknown> | null;
+		const compDetails = (data.completion_tokens_details ?? data.output_tokens_details) as Record<string, unknown> | null;
 		const reasoning = compDetails?.reasoning_tokens;
-		const promptDetails = data.prompt_tokens_details as Record<string, unknown> | null;
+		const promptDetails = (data.prompt_tokens_details ?? data.input_tokens_details) as Record<string, unknown> | null;
 		const cached = promptDetails?.cached_tokens;
 
 		const dk = document.documentElement.classList.contains('dark');
@@ -818,12 +839,8 @@
 					<div>
 						{#if message.content !== '' || message.error}
 							<!-- Only show status section when content is streaming (not during initial loading) -->
-							{#if (message?.statusHistory ?? [...(message?.status ? [message?.status] : [])]).filter((s) => s.action !== 'model_request').length > 0}
-								{@const status = (
-									message?.statusHistory ?? [...(message?.status ? [message?.status] : [])]
-								)
-									.filter((s) => s.action !== 'model_request')
-									.at(-1)}
+							{#if displayStatusHistory.length > 0}
+								{@const status = displayStatusHistory.at(-1)}
 								{#if !status?.hidden}
 									<div class="status-description flex items-center gap-2 py-0.5">
 										{#if status?.done === false}
@@ -1010,12 +1027,10 @@
 								class="w-full flex flex-col relative {!message.done ? 'streaming-fade' : ''}"
 								id="response-content-container"
 							>
-								{#if !message.done && !message.error && (message?.statusHistory ?? []).filter((s) => s.action !== 'model_request').length > 0}
-									<!-- Thinking indicator: stays visible throughout streaming, even after content appears -->
+								{#if !message.done && !message.error && !hasVisibleAssistantOutput && displayStatusHistory.length > 0}
+									<!-- Show the full progress steps only before user-visible output starts -->
 									<ThinkingIndicator
-										statusHistory={message?.statusHistory ?? [
-											...(message?.status ? [message?.status] : [])
-										]}
+										statusHistory={displayStatusHistory}
 										messageTimestamp={message.timestamp}
 									/>
 								{/if}
@@ -1034,7 +1049,7 @@
 										id={message.id}
 										{history}
 										content={message.content}
-										streaming={($settings?.chatFadeStreamingText ?? true) ? !message.done : false}
+										streaming={!message.done}
 										sources={message.sources}
 										floatingButtons={message?.done &&
 											!readOnly &&

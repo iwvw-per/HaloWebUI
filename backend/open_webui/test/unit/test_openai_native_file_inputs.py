@@ -8,6 +8,8 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from open_webui.routers.openai import (  # noqa: E402
     _connection_supports_native_file_inputs,
+    _get_default_responses_reasoning_summary,
+    _looks_like_reasoning_summary_incompatible,
     _should_use_responses_api,
 )
 
@@ -76,4 +78,43 @@ def test_connection_supports_native_file_inputs_honors_explicit_flag_and_guards(
             {"use_responses_api": False, "native_file_inputs_enabled": True},
         )
         is False
+    )
+
+
+def test_default_responses_reasoning_summary_defaults_to_auto_and_honors_overrides():
+    assert _get_default_responses_reasoning_summary({"use_responses_api": True}) == "auto"
+    assert (
+        _get_default_responses_reasoning_summary(
+            {"use_responses_api": True, "responses_reasoning_summary": False}
+        )
+        is None
+    )
+    assert (
+        _get_default_responses_reasoning_summary(
+            {"use_responses_api": True, "responses_reasoning_summary": "detailed"}
+        )
+        == "detailed"
+    )
+
+
+def test_looks_like_reasoning_summary_incompatible_matches_schema_errors():
+    assert _looks_like_reasoning_summary_incompatible(
+        400,
+        {
+            "error": {
+                "message": "Unknown parameter: reasoning.summary",
+            }
+        },
+    )
+    assert _looks_like_reasoning_summary_incompatible(
+        422,
+        "Additional properties are not allowed ('summary' was unexpected in reasoning).",
+    )
+    assert not _looks_like_reasoning_summary_incompatible(
+        400,
+        {
+            "error": {
+                "message": "Unknown parameter: temperature",
+            }
+        },
     )

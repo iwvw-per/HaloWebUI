@@ -24,6 +24,11 @@
 
 	import { transcribeAudio } from '$lib/apis/audio';
 	import { blobToFile } from '$lib/utils';
+	import {
+		getFileUploadDiagnostic,
+		getLocalizedFileUploadDiagnostic,
+		localizeFileUploadError
+	} from '$lib/utils/file-upload-errors';
 	import { processFile } from '$lib/apis/retrieval';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -70,7 +75,7 @@
 	let filteredItems = [];
 	$: if (knowledge && knowledge.files) {
 		fuse = new Fuse(knowledge.files, {
-			keys: ['meta.name', 'meta.description']
+			keys: ['meta.name', 'name', 'meta.description']
 		});
 	}
 
@@ -110,6 +115,53 @@
 		return file;
 	};
 
+	const getUploadLocalizeOptions = () => ({
+		isAdmin: $user?.role === 'admin'
+	});
+
+	const mergeKnowledgeWithLocalFiles = (nextKnowledge, excludeItemId: string | null = null) => {
+		const transientFiles = (knowledge?.files ?? []).filter(
+			(file) =>
+				(file?.status === 'uploading' || file?.status === 'failed') &&
+				file?.itemId !== excludeItemId
+		);
+
+		return {
+			...nextKnowledge,
+			files: [...(nextKnowledge?.files ?? []), ...transientFiles]
+		};
+	};
+
+	const setKnowledgeUploadFailure = (tempItemId, error) => {
+		const localized = getLocalizedFileUploadDiagnostic(
+			error,
+			$i18n.t.bind($i18n),
+			getUploadLocalizeOptions()
+		);
+		const diagnostic = getFileUploadDiagnostic(error) ?? {
+			code: localized.code,
+			title: localized.title,
+			message: localized.message,
+			hint: localized.hint,
+			blocking: localized.blocking
+		};
+
+		knowledge.files = (knowledge.files ?? []).map((item) =>
+			item.itemId === tempItemId
+				? {
+						...item,
+						status: 'failed',
+						error: localized.message,
+						errorTitle: localized.title,
+						errorHint: localized.hint,
+						diagnostic
+					}
+				: item
+		);
+
+		toast.error(localizeFileUploadError(error, $i18n.t.bind($i18n), getUploadLocalizeOptions()));
+	};
+
 	const uploadFileHandler = async (file) => {
 		console.log(file);
 
@@ -123,6 +175,9 @@
 			size: file.size,
 			status: 'uploading',
 			error: '',
+			errorTitle: '',
+			errorHint: '',
+			diagnostic: null,
 			itemId: tempItemId
 		};
 
@@ -150,28 +205,21 @@
 		knowledge.files = [...(knowledge.files ?? []), fileItem];
 
 		try {
-			const uploadedFile = await uploadFile(localStorage.token, file).catch((e) => {
-				toast.error(`${e}`);
-				return null;
-			});
+			const uploadedFile = await uploadFile(localStorage.token, file);
 
 			if (uploadedFile) {
-				console.log(uploadedFile);
-				knowledge.files = knowledge.files.map((item) => {
-					if (item.itemId === tempItemId) {
-						item.id = uploadedFile.id;
-					}
-
-					// Remove temporary item id
-					delete item.itemId;
-					return item;
-				});
-				await addFileHandler(uploadedFile.id);
+				const added = await addFileHandler(uploadedFile, tempItemId);
+				if (!added) {
+					return;
+				}
 			} else {
-				toast.error($i18n.t('Failed to upload file.'));
+				setKnowledgeUploadFailure(
+					tempItemId,
+					new Error($i18n.t('Failed to upload file.'))
+				);
 			}
 		} catch (e) {
-			toast.error(`${e}`);
+			setKnowledgeUploadFailure(tempItemId, e);
 		}
 	};
 
@@ -356,34 +404,53 @@
 		}
 	};
 
-	const addFileHandler = async (fileId) => {
-		const updatedKnowledge = await addFileToKnowledgeById(localStorage.token, id, fileId).catch(
-			(e) => {
-				toast.error(`${e}`);
-				return null;
+	const addFileHandler = async (uploadedFile, tempItemId) => {
+		try {
+			const updatedKnowledge = await addFileToKnowledgeById(
+				localStorage.token,
+				id,
+				uploadedFile.id
+			);
+			if (updatedKnowledge) {
+				knowledge = mergeKnowledgeWithLocalFiles(updatedKnowledge, tempItemId);
+				toast.success($i18n.t('File added successfully.'));
+				return true;
 			}
-		);
-
-		if (updatedKnowledge) {
-			knowledge = updatedKnowledge;
-			toast.success($i18n.t('File added successfully.'));
-		} else {
-			toast.error($i18n.t('Failed to add file.'));
-			knowledge.files = knowledge.files.filter((file) => file.id !== fileId);
+		} catch (e) {
+			if (uploadedFile?.id) {
+				await deleteFileById(localStorage.token, uploadedFile.id).catch(() => null);
+			}
+			setKnowledgeUploadFailure(tempItemId, e);
+			return false;
 		}
+
+		if (uploadedFile?.id) {
+			await deleteFileById(localStorage.token, uploadedFile.id).catch(() => null);
+		}
+		setKnowledgeUploadFailure(tempItemId, new Error($i18n.t('Failed to add file.')));
+		return false;
 	};
 
-	const deleteFileHandler = async (fileId) => {
+	const deleteFileHandler = async (fileRef) => {
+		if (!fileRef?.id) {
+			knowledge.files = (knowledge.files ?? []).filter((file) => file.itemId !== fileRef?.itemId);
+			return;
+		}
+
 		try {
-			console.log('Starting file deletion process for:', fileId);
+			console.log('Starting file deletion process for:', fileRef.id);
 
 			// Remove from knowledge base only
-			const updatedKnowledge = await removeFileFromKnowledgeById(localStorage.token, id, fileId);
+			const updatedKnowledge = await removeFileFromKnowledgeById(
+				localStorage.token,
+				id,
+				fileRef.id
+			);
 
 			console.log('Knowledge base updated:', updatedKnowledge);
 
 			if (updatedKnowledge) {
-				knowledge = updatedKnowledge;
+				knowledge = mergeKnowledgeWithLocalFiles(updatedKnowledge);
 				toast.success($i18n.t('File removed successfully.'));
 			}
 		} catch (e) {

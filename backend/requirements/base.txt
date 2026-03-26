@@ -46,6 +46,7 @@ chromadb==0.6.3
 posthog<6
 
 beautifulsoup4
+chardet==5.2.0
 ftfy==6.2.3
 pypdf==4.3.1
 fpdf2==2.8.2

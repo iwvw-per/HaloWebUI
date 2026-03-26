@@ -131,9 +131,7 @@
 			return;
 		}
 
-		if (config.engine !== 'openai') {
-			models = null;
-		}
+		models = null;
 	};
 
 	const clearUnavailableDefaultModel = (nextModels, { silent = false }: { silent?: boolean } = {}) => {
@@ -146,8 +144,13 @@
 			return;
 		}
 
+		const normalizedModels = Array.isArray(nextModels) ? nextModels : [];
+		if (normalizedModels.length === 0) {
+			return;
+		}
+
 		const availableModelIds = new Set(
-			(Array.isArray(nextModels) ? nextModels : [])
+			normalizedModels
 				.map((model) => `${model?.id ?? ''}`.trim())
 				.filter(Boolean)
 		);
@@ -224,7 +227,9 @@
 		afterSave = false,
 		silent = false
 	}: { afterSave?: boolean; silent?: boolean } = {}) => {
-		const nextModels = await getImageGenerationModels(localStorage.token).catch((error) => {
+		const nextModels = await getImageGenerationModels(localStorage.token, {
+			context: 'settings'
+		}).catch((error) => {
 			if (!silent) {
 				const message = afterSave
 					? $i18n.t(

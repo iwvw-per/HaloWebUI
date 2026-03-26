@@ -22,6 +22,10 @@ from open_webui.storage.provider import Storage
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.utils.auth import get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
+from open_webui.utils.file_upload_diagnostics import (
+    build_file_upload_error_detail,
+    classify_file_upload_error,
+)
 
 
 from open_webui.env import SRC_LOG_LEVELS
@@ -390,11 +394,19 @@ def add_file_to_knowledge_by_id(
             ),
             user=user,
         )
+    except HTTPException as e:
+        raise e
     except Exception as e:
         log.debug(e)
+        diagnostic = classify_file_upload_error(
+            e,
+            filename=file.filename,
+            content_type=file.meta.get("content_type") if file.meta else None,
+            user=user,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail=build_file_upload_error_detail(diagnostic),
         )
 
     if knowledge:
@@ -475,10 +487,18 @@ def update_file_from_knowledge_by_id(
             ProcessFileForm(file_id=form_data.file_id, collection_name=id),
             user=user,
         )
+    except HTTPException as e:
+        raise e
     except Exception as e:
+        diagnostic = classify_file_upload_error(
+            e,
+            filename=file.filename,
+            content_type=file.meta.get("content_type") if file.meta else None,
+            user=user,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail=build_file_upload_error_detail(diagnostic),
         )
 
     if knowledge:
@@ -743,7 +763,11 @@ def add_files_to_knowledge_batch(
         log.error(
             f"add_files_to_knowledge_batch: Exception occurred: {e}", exc_info=True
         )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        diagnostic = classify_file_upload_error(e, user=user)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=build_file_upload_error_detail(diagnostic),
+        )
 
     # Add successful files to knowledge base
     data = knowledge.data or {}

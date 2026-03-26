@@ -148,6 +148,22 @@ def test_convert_chat_completions_to_responses_payload_strips_include_usage_stre
     assert r["stream_options"] == {"include_obfuscation": True}
 
 
+def test_convert_chat_completions_to_responses_payload_enables_reasoning_summary():
+    chat = {
+        "model": "gpt-test",
+        "messages": [{"role": "user", "content": "Think carefully"}],
+        "reasoning_effort": "high",
+    }
+
+    r = convert_chat_completions_to_responses_payload(
+        chat,
+        native_web_search_tool_type=None,
+        default_reasoning_summary="auto",
+    )
+
+    assert r["reasoning"] == {"effort": "high", "summary": "auto"}
+
+
 def test_convert_chat_completions_to_responses_payload_preserves_input_files():
     chat = {
         "model": "gpt-test",
@@ -224,6 +240,66 @@ def test_responses_events_to_chat_sse_text_and_done():
     lines = asyncio.run(run())
     assert any('"content": "Hello"' in line for line in lines)
     assert lines[-1].strip() == "data: [DONE]"
+
+
+def test_convert_responses_to_chat_completions_preserves_reasoning_summary():
+    responses = {
+        "id": "resp_1",
+        "output": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "先检查上下文。"}],
+            },
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "结论。"}],
+            },
+        ],
+    }
+
+    cc = convert_responses_to_chat_completions(responses, model_id="gpt-test")
+    assert cc["choices"][0]["message"]["reasoning_content"] == "先检查上下文。"
+    assert cc["choices"][0]["message"]["content"] == "结论。"
+
+
+def test_responses_events_to_chat_sse_reasoning_summary_part_done():
+    events = [
+        {
+            "type": "response.reasoning_summary_part.done",
+            "item_id": "rs_1",
+            "output_index": 0,
+            "summary_index": 0,
+            "part": {"type": "summary_text", "text": "先看输入，再回答。"},
+        },
+        {"type": "response.completed"},
+    ]
+
+    async def run():
+        sse = responses_events_to_chat_completions_sse(_aiter(events), model_id="gpt-test")
+        return await _collect_async(sse)
+
+    lines = asyncio.run(run())
+    assert any('"reasoning_content": "先看输入，再回答。"' in line for line in lines)
+
+
+def test_responses_events_to_chat_sse_reasoning_text_delta():
+    events = [
+        {
+            "type": "response.reasoning_text.delta",
+            "item_id": "r_1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "正在推理",
+        },
+        {"type": "response.completed"},
+    ]
+
+    async def run():
+        sse = responses_events_to_chat_completions_sse(_aiter(events), model_id="gpt-test")
+        return await _collect_async(sse)
+
+    lines = asyncio.run(run())
+    assert any('"reasoning_content": "正在推理"' in line for line in lines)
 
 
 def test_responses_events_to_chat_sse_tool_call_delta_and_name():

@@ -31,7 +31,7 @@
 
 	type ViewportMode = 'mobile' | 'tablet' | 'desktop';
 
-	const DESKTOP_BREAKPOINT = 1280;
+	const DESKTOP_BREAKPOINT = 1024;
 	const TABLET_BREAKPOINT = 768;
 	const DESKTOP_DEFAULT_WIDTH = 400;
 	const DESKTOP_MIN_WIDTH = 340;

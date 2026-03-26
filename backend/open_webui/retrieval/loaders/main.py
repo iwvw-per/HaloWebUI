@@ -2,6 +2,7 @@ import requests
 import logging
 import ftfy
 import sys
+from os.path import basename
 
 from langchain_core.documents import Document
 
@@ -12,6 +13,12 @@ from open_webui.utils.optional_dependencies import (
     OptionalDependencyError,
     format_optional_dependency_error,
     require_module,
+)
+from open_webui.utils.file_upload_diagnostics import (
+    FileUploadDiagnosticError,
+    classify_file_upload_error,
+    is_archive_file,
+    make_unsupported_binary_diagnostic,
 )
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
@@ -164,7 +171,16 @@ class Loader:
         self, filename: str, file_content_type: str, file_path: str
     ) -> list[Document]:
         loader = self._get_loader(filename, file_content_type, file_path)
-        docs = loader.load()
+        try:
+            docs = loader.load()
+        except Exception as exc:
+            raise FileUploadDiagnosticError(
+                classify_file_upload_error(
+                    exc,
+                    filename=filename,
+                    content_type=file_content_type,
+                )
+            ) from exc
 
         return [
             Document(
@@ -242,6 +258,15 @@ class Loader:
     def _get_loader(self, filename: str, file_content_type: str, file_path: str):
         file_ext = filename.split(".")[-1].lower()
         TextLoader = self._get_text_loader()
+
+        if is_archive_file(filename, file_content_type):
+            raise FileUploadDiagnosticError(
+                classify_file_upload_error(
+                    None,
+                    filename=filename,
+                    content_type=file_content_type,
+                )
+            )
 
         if self.engine == "tika" and self.kwargs.get("TIKA_SERVER_URL"):
             if self._is_text_file(file_ext, file_content_type):
@@ -384,6 +409,8 @@ class Loader:
             elif self._is_text_file(file_ext, file_content_type):
                 loader = TextLoader(file_path, autodetect_encoding=True)
             else:
-                loader = TextLoader(file_path, autodetect_encoding=True)
+                raise FileUploadDiagnosticError(
+                    make_unsupported_binary_diagnostic(basename(filename))
+                )
 
         return loader

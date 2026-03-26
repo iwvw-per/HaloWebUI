@@ -8,7 +8,7 @@
 			getImageUsageConfig,
 			imageGenerations
 		} from '$lib/apis/images';
-		import type { ImageUsageConfig } from '$lib/apis/images';
+		import type { ImageGenerationModel, ImageUsageConfig } from '$lib/apis/images';
 		import { updateUserSettings } from '$lib/apis/users';
 		import HaloSelect from '$lib/components/common/HaloSelect.svelte';
 		import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
@@ -20,11 +20,6 @@
 		import Sparkles from '$lib/components/icons/Sparkles.svelte';
 		import { WEBUI_NAME, settings, user } from '$lib/stores';
 		import { copyToClipboard } from '$lib/utils';
-
-	type ImageModel = {
-		id: string;
-		name?: string;
-	};
 
 		type GeneratedImage = {
 			url: string;
@@ -96,13 +91,15 @@
 		let prompt = '';
 		let negativePrompt = '';
 
-	let imageModels: ImageModel[] = [];
+	let imageModels: ImageGenerationModel[] = [];
 	let selectedModel = '';
 	let defaultSize = '512x512';
 	let selectedSize = '512x512';
 	let batchSize = 1;
 	let steps = 0;
 	let background: 'auto' | 'transparent' | 'opaque' = 'auto';
+	let modelRequestVersion = 0;
+	let lastModelRequestKey = '';
 
 	let generatedImages: GeneratedImage[] = [];
 	let lastPrompt = '';
@@ -197,6 +194,10 @@
 
 		$: selectedModelLabel =
 			modelOptions.find((option) => option.value === selectedModel)?.label ?? selectedModel;
+		$: selectedModelMeta = imageModels.find((model) => model.id === selectedModel) ?? null;
+		$: supportsBackground = Boolean(selectedModelMeta?.supports_background);
+		$: supportsBatch = selectedModelMeta?.supports_batch ?? true;
+		$: availableBatchOptions = supportsBatch ? batchOptions : [1];
 
 		$: {
 			engine = usageConfig?.engine ?? engine;
@@ -281,10 +282,59 @@
 			}
 		}
 
-		$: supportsBackground = selectedModel.includes('gpt-image');
 		$: if (!supportsBackground) {
 			background = 'auto';
 		}
+		$: if (!supportsBatch && batchSize !== 1) {
+			batchSize = 1;
+		}
+
+	const syncSelectedModelWithAvailableModels = (models: ImageGenerationModel[]) => {
+		const availableIds = new Set(
+			(models ?? []).map((model) => `${model?.id ?? ''}`.trim()).filter(Boolean)
+		);
+
+		if (selectedModel && availableIds.has(selectedModel)) {
+			return;
+		}
+
+		const defaultModelId = `${usageConfig?.defaults?.model ?? ''}`.trim();
+		selectedModel =
+			[selectedModel, defaultModelId, models?.[0]?.id ?? ''].find(
+				(candidate) => candidate && availableIds.has(candidate)
+			) ?? '';
+	};
+
+	const loadImageModels = async ({ silent = true }: { silent?: boolean } = {}) => {
+		const requestVersion = ++modelRequestVersion;
+		const nextModels = await getImageGenerationModels(localStorage.token, {
+			context: 'runtime',
+			credentialSource,
+			connectionIndex:
+				credentialSource === 'personal'
+					? selectedPersonalIndex
+					: credentialSource === 'shared'
+						? null
+						: resolvedCredential.source === 'personal'
+							? (resolvedCredential.connectionIndex ?? null)
+							: null
+		}).catch((error) => {
+			if (!silent) {
+				toast.error(`${error}`);
+			} else {
+				console.log('Image models not available:', error);
+			}
+			return [];
+		});
+
+		if (requestVersion !== modelRequestVersion) {
+			return null;
+		}
+
+		imageModels = Array.isArray(nextModels) ? nextModels : [];
+		syncSelectedModelWithAvailableModels(imageModels);
+		return imageModels;
+	};
 
 	const applyPromptIdea = (idea: string) => {
 		const translatedIdea = $i18n.t(idea);
@@ -416,7 +466,7 @@
 			lastPrompt = trimmedPrompt;
 
 			try {
-				const request: any = {
+		const request: any = {
 					prompt: trimmedPrompt,
 					model: selectedModel || undefined,
 					size: selectedSize || undefined,
@@ -430,6 +480,8 @@
 					request.credential_source = credentialSource;
 					if (credentialSource === 'personal') {
 						request.connection_index = selectedPersonalIndex;
+					} else if (credentialSource !== 'shared' && resolvedCredential.source === 'personal') {
+						request.connection_index = resolvedCredential.connectionIndex ?? undefined;
 					}
 				}
 
@@ -473,13 +525,10 @@
 		viewState = 'loading';
 		// Render the loading state immediately for a smoother UX.
 		loaded = true;
-		const [modelsResult, usageResult] = await Promise.allSettled([
-			getImageGenerationModels(localStorage.token),
-			getImageUsageConfig(localStorage.token)
-		]);
+		const usageResult = await getImageUsageConfig(localStorage.token).catch((error) => error);
 
-		if (usageResult.status === 'fulfilled' && usageResult.value) {
-			usageConfig = usageResult.value;
+		if (!(usageResult instanceof Error) && usageResult && typeof usageResult === 'object' && 'enabled' in usageResult) {
+			usageConfig = usageResult as ImageUsageConfig;
 			engine = usageConfig.engine ?? engine;
 
 			const defaults = (usageConfig.defaults ?? {}) as any;
@@ -495,23 +544,32 @@
 			}
 
 			viewState = usageConfig.enabled ? 'ready' : 'disabled';
-		} else if (usageResult.status === 'rejected') {
-			loadError = `${usageResult.reason ?? ''}`;
-			viewState = 'error';
-		}
-
-		if (modelsResult.status === 'fulfilled') {
-			imageModels = modelsResult.value ?? [];
 		} else {
-			console.log('Image models not available:', modelsResult.reason);
-		}
-
-		if (!selectedModel && imageModels.length > 0) {
-			selectedModel = imageModels[0].id;
+			loadError = `${usageResult ?? ''}`;
+			viewState = 'error';
 		}
 
 		loaded = true;
 	});
+
+	$: if (loaded && usageConfig && viewState === 'ready') {
+		const requestKey = JSON.stringify({
+			engine,
+			credentialSource,
+			showCredentialControls,
+			selectedPersonalIndex,
+			firstPersonalIndex,
+			personalProvider,
+			sharedKeyEnabled,
+			sharedKeyAvailable,
+			selectedPersonalUsable
+		});
+
+		if (requestKey !== lastModelRequestKey) {
+			lastModelRequestKey = requestKey;
+			void loadImageModels();
+		}
+	}
 </script>
 
 <svelte:head>
@@ -693,7 +751,7 @@
 							<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Output Count')}</div>
 							<HaloSelect
 								value={String(batchSize)}
-								options={batchOptions.map((n) => ({ value: String(n), label: `x${n}` }))}
+								options={availableBatchOptions.map((n) => ({ value: String(n), label: `x${n}` }))}
 								className="w-full text-xs"
 								on:change={(e) => { batchSize = Number(e.detail.value); }}
 							/>
@@ -1346,7 +1404,7 @@
 											{$i18n.t('Output Count')}
 										</div>
 										<div class="flex gap-2">
-											{#each batchOptions as option}
+											{#each availableBatchOptions as option}
 												<button
 													type="button"
 													class={segmentedButtonClass(batchSize === option)}

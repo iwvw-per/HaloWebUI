@@ -87,6 +87,10 @@ from open_webui.config import (
 )
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.constants import ERROR_MESSAGES
+from open_webui.utils.file_upload_diagnostics import (
+    build_file_upload_error_detail,
+    classify_file_upload_error,
+)
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["RAG"])
@@ -1031,6 +1035,7 @@ def process_file(
     form_data: ProcessFileForm,
     user=Depends(get_verified_user),
 ):
+    file = None
     try:
         file = Files.get_file_by_id(form_data.file_id)
 
@@ -1204,15 +1209,25 @@ def process_file(
 
     except Exception as e:
         log.exception(e)
+        if isinstance(e, HTTPException):
+            raise e
         if "No pandoc was found" in str(e):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ERROR_MESSAGES.PANDOC_NOT_INSTALLED,
             )
         else:
+            file_name = file.filename if file else None
+            file_content_type = file.meta.get("content_type") if file and file.meta else None
+            diagnostic = classify_file_upload_error(
+                e,
+                filename=file_name,
+                content_type=file_content_type,
+                user=user,
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(e),
+                detail=build_file_upload_error_detail(diagnostic),
             )
 
 

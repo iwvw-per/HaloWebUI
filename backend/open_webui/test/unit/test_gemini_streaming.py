@@ -105,6 +105,66 @@ def test_build_stream_chunks_from_gemini_obj_emits_image_delta_and_finish():
     assert finished is True
 
 
+def test_extract_content_segments_skips_thought_inline_images():
+    candidate = {
+        "content": {
+            "parts": [
+                {"text": "internal", "thought": True},
+                {
+                    "inlineData": {"mimeType": "image/png", "data": "thought-image"},
+                    "thought": True,
+                },
+                {"inlineData": {"mimeType": "image/png", "data": "final-image"}},
+            ]
+        }
+    }
+
+    text, images, grounding_md, thinking_content, tool_calls, next_index = (
+        gemini_router._extract_content_segments(candidate)
+    )
+
+    assert text == ""
+    assert images == [{"mime_type": "image/png", "data": "final-image"}]
+    assert grounding_md == ""
+    assert thinking_content == "internal"
+    assert tool_calls == []
+    assert next_index == 0
+
+
+def test_build_stream_chunks_ignore_thought_inline_images():
+    gemini_obj = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {"mimeType": "image/png", "data": "thought-image"},
+                            "thought": True,
+                        },
+                        {"inlineData": {"mimeType": "image/png", "data": "final-image"}},
+                    ]
+                }
+            }
+        ],
+        "usageMetadata": {"totalTokenCount": 1},
+    }
+
+    chunks, _next_index, finished = gemini_router._build_stream_chunks_from_gemini_obj(
+        gemini_obj,
+        "stream-1",
+        "gemini-test",
+        0,
+        default_finish_reason="stop",
+    )
+
+    decoded = [_decode_sse_chunk(chunk) for chunk in chunks]
+    image_chunks = [chunk for chunk in decoded if chunk["choices"][0]["delta"].get("image")]
+
+    assert len(image_chunks) == 1
+    assert image_chunks[0]["choices"][0]["delta"]["image"]["data"] == "final-image"
+    assert finished is True
+
+
 def test_image_compat_payloads_keep_response_modalities():
     payload = {
         "contents": [{"role": "user", "parts": [{"text": "draw a cat"}]}],

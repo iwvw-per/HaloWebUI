@@ -66,6 +66,14 @@ class FileMeta(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class FileDiagnostic(BaseModel):
+    code: str
+    title: str
+    message: str
+    hint: str
+    blocking: bool = True
+
+
 class FileModelResponse(BaseModel):
     id: str
     user_id: str
@@ -77,6 +85,8 @@ class FileModelResponse(BaseModel):
 
     created_at: int  # timestamp in epoch
     updated_at: int  # timestamp in epoch
+    error: Optional[str] = None
+    diagnostic: Optional[FileDiagnostic] = None
 
     model_config = ConfigDict(extra="allow")
 

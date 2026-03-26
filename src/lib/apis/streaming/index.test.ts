@@ -24,6 +24,8 @@ const collectUpdates = async (iterator: AsyncGenerator<any>) => {
 
 describe('createOpenAITextStream', () => {
 	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
 	});
 

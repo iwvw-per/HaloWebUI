@@ -1157,15 +1157,16 @@ input[type='range']::-moz-range-thumb {
 /* =========================================
    STREAMING ANIMATION
    ========================================= */
-@keyframes streamingWordFadeIn {
+/* 逐字渐隐动画（复刻 LobeHub stream-char） */
+@keyframes streamCharFadeIn {
 	from {
-		opacity: 0.15;
+		opacity: 0;
 	}
 	to {
 		opacity: 1;
 	}
 }
 
-.streaming-word {
-	animation: streamingWordFadeIn 0.3s ease-out both;
+.stream-char {
+	animation: streamCharFadeIn 280ms cubic-bezier(0.33, 0, 0.67, 1) forwards;
 }

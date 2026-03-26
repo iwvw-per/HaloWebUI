@@ -80,6 +80,7 @@
 	import { processWeb, processWebSearch, processYoutubeVideo } from '$lib/apis/retrieval';
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { queryMemory } from '$lib/apis/memories';
+	import { uploadFile } from '$lib/apis/files';
 	import { getAndUpdateUserLocation, getUserSettings } from '$lib/apis/users';
 	import {
 		chatCompleted,
@@ -102,6 +103,13 @@
 	import Placeholder from './Placeholder.svelte';
 	import NotificationToast from '../NotificationToast.svelte';
 	import Spinner from '../common/Spinner.svelte';
+	import {
+		buildIgnoredFailedFilesMessage,
+		getFileUploadDiagnostic,
+		getLocalizedFileUploadDiagnostic,
+		isFailedUploadFile,
+		localizeFileUploadError
+	} from '$lib/utils/file-upload-errors';
 
 	export let chatIdProp = '';
 
@@ -138,6 +146,9 @@
 	let messagesContainerElement: HTMLDivElement;
 	let scrollSentinel: HTMLDivElement;
 	let scrollObserver: IntersectionObserver;
+	let userHasScrolled = false;
+	let isAutoScrolling = false;
+	let _scrollResetRafId: number | null = null;
 
 	let navbarElement;
 
@@ -631,19 +642,20 @@
 						message.statusHistory = [data];
 					}
 				} else if (type === 'chat:completion') {
-					chatCompletionEventHandler(data, message, event.chat_id);
+					await chatCompletionEventHandler(data, message, event.chat_id);
 				} else if (type === 'chat:message:delta' || type === 'message') {
-					message.content += data.content;
+					getResponseAnimationController(message).enqueue(data.content ?? '');
 				} else if (type === 'chat:message' || type === 'replace') {
+					await releaseResponseAnimationController(message.id, { flush: false });
 					message.content = data.content;
 				} else if (type === 'chat:message:files' || type === 'files') {
 					message.files = mergeMessageFiles(message.files, data.files ?? []);
-					if (autoScroll) {
+					if (shouldAutoScrollOnStreaming()) {
 						scrollToBottom();
 					}
 				} else if (type === 'chat:message:follow_ups') {
 					message.followUps = data?.follow_ups ?? [];
-					if (autoScroll) {
+					if (shouldAutoScrollOnStreaming()) {
 						scrollToBottom();
 					}
 				} else if (type === 'chat:title') {
@@ -853,12 +865,22 @@
 			});
 		}
 
-		// IntersectionObserver for auto-scroll detection
+		// Restore follow mode when the bottom sentinel becomes visible again.
 		await tick();
 		if (scrollSentinel && messagesContainerElement) {
 			scrollObserver = new IntersectionObserver(
 				([entry]) => {
-					autoScroll = entry.isIntersecting;
+					if (entry.isIntersecting) {
+						userHasScrolled = false;
+						autoScroll = true;
+					} else if (
+						!isAutoScrolling &&
+						(userHasScrolled ||
+							!isStreamingResponseActive() ||
+							!($settings?.enableAutoScrollOnStreaming ?? true))
+					) {
+						autoScroll = false;
+					}
 				},
 				{ root: messagesContainerElement, threshold: 0 }
 			);
@@ -869,12 +891,48 @@
 	onDestroy(() => {
 		chatIdUnsubscriber?.();
 		scrollObserver?.disconnect();
+		cancelScheduledScrollToBottom();
+		clearResponseAnimationControllers();
 		window.removeEventListener('message', onMessageHandler);
 		window.removeEventListener('chat:set-input', onSetInputHandler as EventListener);
 		$socket?.off('chat-events', chatEventHandler);
 	});
 
 	// File upload functions
+
+	const getUploadLocalizeOptions = () => ({
+		isAdmin: $user?.role === 'admin'
+	});
+
+	const setLocalUploadFailure = (tempItemId: string, error: unknown) => {
+		const localized = getLocalizedFileUploadDiagnostic(
+			error,
+			$i18n.t.bind($i18n),
+			getUploadLocalizeOptions()
+		);
+		const diagnostic = getFileUploadDiagnostic(error) ?? {
+			code: localized.code,
+			title: localized.title,
+			message: localized.message,
+			hint: localized.hint,
+			blocking: localized.blocking
+		};
+
+		files = files.map((item) =>
+			item?.itemId === tempItemId
+				? {
+						...item,
+						status: 'failed',
+						error: localized.message,
+						errorTitle: localized.title,
+						errorHint: localized.hint,
+						diagnostic
+					}
+				: item
+		);
+
+		toast.error(localizeFileUploadError(error, $i18n.t.bind($i18n), getUploadLocalizeOptions()));
+	};
 
 	const uploadGoogleDriveFile = async (fileData) => {
 		console.log('Starting uploadGoogleDriveFile with:', {
@@ -901,6 +959,9 @@
 			collection_name: '',
 			status: 'uploading',
 			error: '',
+			errorTitle: '',
+			errorHint: '',
+			diagnostic: null,
 			itemId: tempItemId,
 			size: 0
 		};
@@ -981,12 +1042,7 @@
 			toast.success($i18n.t('File uploaded successfully'));
 		} catch (e) {
 			console.error('Error uploading file:', e);
-			files = files.filter((f) => f.itemId !== tempItemId);
-			toast.error(
-				$i18n.t('Error uploading file: {{error}}', {
-					error: e.message || 'Unknown error'
-				})
-			);
+			setLocalUploadFailure(tempItemId, e);
 		}
 	};
 
@@ -1156,7 +1212,7 @@
 			);
 		}
 
-		autoScroll = true;
+		resetAutoScrollLock();
 
 		await chatId.set('');
 		await chatTitle.set('');
@@ -1165,6 +1221,7 @@
 			messages: {},
 			currentId: null
 		};
+		clearResponseAnimationControllers();
 
 		if (fresh) {
 			chat = null;
@@ -1352,7 +1409,7 @@
 				taskIds = taskRes?.task_ids ?? [];
 				reconcileLoadedAssistantMessages(taskIds);
 
-				autoScroll = true;
+				resetAutoScrollLock();
 				await tick();
 
 				await tick();
@@ -1425,16 +1482,193 @@
 		});
 	};
 
-	let _scrollRafPending = false;
+	const isNearBottom = () => {
+		if (!messagesContainerElement) {
+			return true;
+		}
+
+		return (
+			messagesContainerElement.scrollHeight -
+				messagesContainerElement.scrollTop -
+				messagesContainerElement.clientHeight <
+			20
+		);
+	};
+
+	const isStreamingResponseActive = () => {
+		if (Array.isArray(taskIds) && taskIds.length > 0) {
+			return true;
+		}
+
+		if (!history.currentId) {
+			return false;
+		}
+
+		const currentMessage = history.messages?.[history.currentId];
+		if (!currentMessage) {
+			return false;
+		}
+
+		if (currentMessage.role === 'assistant') {
+			return currentMessage.done !== true;
+		}
+
+		return (currentMessage.childrenIds ?? []).some((messageId) => {
+			const childMessage = history.messages?.[messageId];
+			return childMessage?.role === 'assistant' && childMessage?.done !== true;
+		});
+	};
+
+	const shouldAutoScrollOnStreaming = () => {
+		return ($settings?.enableAutoScrollOnStreaming ?? true) && !userHasScrolled;
+	};
+
+	type ResponseAnimationController = {
+		destroy: () => void;
+		enqueue: (text: string) => void;
+		flush: () => Promise<void>;
+	};
+
+	const responseAnimationControllers = new Map<string, ResponseAnimationController>();
+
+	const emitLatestMessageSentence = (message) => {
+		if (!($showCallOverlay || $settings?.responseAutoPlayback)) {
+			return;
+		}
+
+		const messageContentParts = getMessageContentParts(
+			message.content,
+			$config?.audio?.tts?.split_on ?? 'punctuation'
+		);
+		messageContentParts.pop();
+
+		if (
+			messageContentParts.length > 0 &&
+			messageContentParts[messageContentParts.length - 1] !== message.lastSentence
+		) {
+			message.lastSentence = messageContentParts[messageContentParts.length - 1];
+			eventTarget.dispatchEvent(
+				new CustomEvent('chat', {
+					detail: {
+						id: message.id,
+						content: messageContentParts[messageContentParts.length - 1]
+					}
+				})
+			);
+		}
+	};
+
+	const appendAnimatedMessageContent = (message, text: string) => {
+		if (!text || (message.content == '' && text == '\n')) {
+			return;
+		}
+
+		message.content += text;
+
+		if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
+			navigator.vibrate(5);
+		}
+
+		emitLatestMessageSentence(message);
+		history.messages[message.id] = message;
+
+		if (shouldAutoScrollOnStreaming()) {
+			scrollToBottom();
+		}
+	};
+
+	const createResponseAnimationController = (
+		message
+	): ResponseAnimationController => ({
+		destroy() {},
+		enqueue(text: string) {
+			appendAnimatedMessageContent(message, text);
+		},
+		async flush() {}
+	});
+
+	const getResponseAnimationController = (message) => {
+		let controller = responseAnimationControllers.get(message.id);
+		if (controller) {
+			return controller;
+		}
+
+		controller = createResponseAnimationController(message);
+		responseAnimationControllers.set(message.id, controller);
+		return controller;
+	};
+
+	const releaseResponseAnimationController = async (
+		messageId: string,
+		{ flush = true }: { flush?: boolean } = {}
+	) => {
+		const controller = responseAnimationControllers.get(messageId);
+		if (!controller) {
+			return;
+		}
+
+		if (flush) {
+			await controller.flush();
+		}
+
+		controller.destroy();
+		responseAnimationControllers.delete(messageId);
+	};
+
+	const clearResponseAnimationControllers = () => {
+		for (const controller of responseAnimationControllers.values()) {
+			controller.destroy();
+		}
+		responseAnimationControllers.clear();
+	};
+
+	const resetAutoScrollLock = () => {
+		userHasScrolled = false;
+		autoScroll = true;
+	};
+
+	const cancelScheduledScrollToBottom = () => {
+		if (_scrollRafId !== null) {
+			cancelAnimationFrame(_scrollRafId);
+			_scrollRafId = null;
+		}
+		if (_scrollResetRafId !== null) {
+			cancelAnimationFrame(_scrollResetRafId);
+			_scrollResetRafId = null;
+		}
+	};
+
+	const handleMessagesScroll = () => {
+		if (!messagesContainerElement || isAutoScrolling) {
+			return;
+		}
+
+		if (isNearBottom()) {
+			userHasScrolled = false;
+			autoScroll = true;
+			return;
+		}
+
+		userHasScrolled = true;
+		autoScroll = false;
+	};
+
+	let _scrollRafId: number | null = null;
 	const scrollToBottom = async (behavior: ScrollBehavior = 'auto') => {
-		if (_scrollRafPending) return;
-		_scrollRafPending = true;
-		requestAnimationFrame(() => {
-			_scrollRafPending = false;
+		if (_scrollRafId !== null) return;
+		resetAutoScrollLock();
+		_scrollRafId = requestAnimationFrame(() => {
+			_scrollRafId = null;
 			if (messagesContainerElement) {
+				isAutoScrolling = true;
 				messagesContainerElement.scrollTo({
 					top: messagesContainerElement.scrollHeight,
 					behavior
+				});
+				_scrollResetRafId = requestAnimationFrame(() => {
+					_scrollResetRafId = null;
+					isAutoScrolling = false;
+					autoScroll = isNearBottom();
 				});
 			}
 		});
@@ -1766,7 +2000,7 @@
 
 		if (files) {
 			message.files = mergeMessageFiles(message.files, files);
-			if (autoScroll) {
+			if (shouldAutoScrollOnStreaming()) {
 				scrollToBottom();
 			}
 		}
@@ -1784,97 +2018,39 @@
 			message.sources = sources;
 		}
 
-			if (choices) {
-				if (choices[0]?.message?.content) {
-					// Non-stream response
-					message.content += choices[0]?.message?.content;
-				} else {
-					// Stream response
-					const delta = choices[0]?.delta ?? {};
-					const imageFile = consumeGeminiImageDelta(message.id, delta?.image);
-					if (imageFile) {
-						message.files = mergeMessageFiles(message.files, [imageFile]);
-						if (autoScroll) {
-							scrollToBottom();
-						}
-					}
-
-					const value = delta?.content ?? '';
-					if (!value) {
-						// Partial image chunks are buffered until the final fragment arrives.
-					} else if (message.content == '' && value == '\n') {
-						console.log('Empty response');
-					} else {
-						message.content += value;
-
-						if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
-							navigator.vibrate(5);
-						}
-
-						// J-3-03: Skip TTS sentence parsing when user is not in a voice call
-						// and auto-playback is disabled. getMessageContentParts() involves
-						// regex processing (removeDetails) + sentence splitting on every token.
-						if ($showCallOverlay || $settings?.responseAutoPlayback) {
-							// Emit chat event for TTS
-							const messageContentParts = getMessageContentParts(
-								message.content,
-								$config?.audio?.tts?.split_on ?? 'punctuation'
-							);
-							messageContentParts.pop();
-
-							// dispatch only last sentence and make sure it hasn't been dispatched before
-							if (
-								messageContentParts.length > 0 &&
-								messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-							) {
-								message.lastSentence = messageContentParts[messageContentParts.length - 1];
-								eventTarget.dispatchEvent(
-									new CustomEvent('chat', {
-										detail: {
-											id: message.id,
-											content: messageContentParts[messageContentParts.length - 1]
-										}
-									})
-								);
-							}
-						}
+		if (choices) {
+			if (choices[0]?.message?.content) {
+				await releaseResponseAnimationController(message.id, { flush: false });
+				appendAnimatedMessageContent(message, choices[0]?.message?.content);
+			} else {
+				const delta = choices[0]?.delta ?? {};
+				const imageFile = consumeGeminiImageDelta(message.id, delta?.image);
+				if (imageFile) {
+					message.files = mergeMessageFiles(message.files, [imageFile]);
+					if (shouldAutoScrollOnStreaming()) {
+						scrollToBottom();
 					}
 				}
+
+				const value = delta?.content ?? '';
+				if (!value) {
+					// Partial image chunks are buffered until the final fragment arrives.
+				} else {
+					getResponseAnimationController(message).enqueue(value);
+				}
 			}
+		}
 
 		if (content) {
 			// REALTIME_CHAT_SAVE is disabled
+			await releaseResponseAnimationController(message.id, { flush: false });
 			message.content = content;
 
 			if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
 				navigator.vibrate(5);
 			}
 
-			// J-3-03: Skip TTS sentence parsing for non-voice users
-			if ($showCallOverlay || $settings?.responseAutoPlayback) {
-				// Emit chat event for TTS
-				const messageContentParts = getMessageContentParts(
-					message.content,
-					$config?.audio?.tts?.split_on ?? 'punctuation'
-				);
-				messageContentParts.pop();
-
-				// dispatch only last sentence and make sure it hasn't been dispatched before
-				if (
-					messageContentParts.length > 0 &&
-					messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-				) {
-					message.lastSentence = messageContentParts[messageContentParts.length - 1];
-					eventTarget.dispatchEvent(
-						new CustomEvent('chat', {
-							detail: {
-								id: message.id,
-								content: messageContentParts[messageContentParts.length - 1]
-							}
-						})
-					);
-				}
-			}
+			emitLatestMessageSentence(message);
 		}
 
 		if (usage) {
@@ -1884,6 +2060,7 @@
 		history.messages[message.id] = message;
 
 		if (done) {
+			await releaseResponseAnimationController(message.id);
 			clearPendingGeminiImages(message.id, true);
 			message.done = true;
 			message.completedAt = Date.now() / 1000;
@@ -1935,7 +2112,7 @@
 			);
 		}
 
-		if (autoScroll) {
+		if (shouldAutoScrollOnStreaming()) {
 			scrollToBottom();
 		}
 	};
@@ -1953,7 +2130,18 @@
 			selectedModels = _selectedModels;
 		}
 
-		if (userPrompt === '' && files.length === 0) {
+		const failedFiles = files.filter((file) => isFailedUploadFile(file));
+		const validFiles = files.filter((file) => !isFailedUploadFile(file));
+
+		if (userPrompt === '' && validFiles.length === 0) {
+			if (failedFiles.length > 0) {
+				toast.warning(
+					$i18n.t(
+						'All selected files failed to upload or index. Remove them or upload them again before sending.'
+					)
+				);
+				return;
+			}
 			toast.error($i18n.t('Please enter a prompt'));
 			return;
 		}
@@ -1968,8 +2156,8 @@
 			return;
 		}
 		if (
-			files.length > 0 &&
-			files.filter((file) => file.type !== 'image' && file.status === 'uploading').length > 0
+			validFiles.length > 0 &&
+			validFiles.filter((file) => file.type !== 'image' && file.status === 'uploading').length > 0
 		) {
 			toast.error(
 				$i18n.t(`Oops! There are files still uploading. Please wait for the upload to complete.`)
@@ -1978,7 +2166,7 @@
 		}
 		if (
 			($config?.file?.max_count ?? null) !== null &&
-			files.length + chatFiles.length > $config?.file?.max_count
+			validFiles.length + chatFiles.length > $config?.file?.max_count
 		) {
 			toast.error(
 				$i18n.t(`You can only chat with a maximum of {{maxCount}} file(s) at a time.`, {
@@ -1992,10 +2180,13 @@
 		const hasRunningResponse = messages.length !== 0 && messages.at(-1).done != true;
 		if (hasPendingTask || hasRunningResponse) {
 			if ($settings?.enableMessageQueue ?? true) {
-				const queuedFiles = structuredClone(files);
+				const queuedFiles = structuredClone(validFiles);
+				if (failedFiles.length > 0) {
+					toast.warning(buildIgnoredFailedFilesMessage(failedFiles, $i18n.t.bind($i18n)));
+				}
 				messageQueue = [...messageQueue, { id: uuidv4(), prompt: userPrompt, files: queuedFiles }];
 				prompt = '';
-				files = [];
+				files = structuredClone(failedFiles);
 				return;
 			}
 
@@ -2015,7 +2206,11 @@
 			}
 		}
 
-		const _files = structuredClone(files);
+		if (failedFiles.length > 0) {
+			toast.warning(buildIgnoredFailedFilesMessage(failedFiles, $i18n.t.bind($i18n)));
+		}
+
+		const _files = structuredClone(validFiles);
 		chatFiles.push(..._files.filter((item) => ['doc', 'file', 'collection'].includes(item.type)));
 		chatFiles = chatFiles.filter(
 			// Remove duplicates
@@ -2023,7 +2218,7 @@
 				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
 		);
 
-		files = [];
+		files = structuredClone(failedFiles);
 		prompt = '';
 
 		// Create user message
@@ -2180,6 +2375,7 @@
 
 					const chatEventEmitter = await getChatEventEmitter(model.id, _chatId);
 
+					resetAutoScrollLock();
 					scrollToBottom();
 					await sendPromptSocket(_history, model, responseMessageId, _chatId);
 
@@ -2211,6 +2407,7 @@
 				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
 		);
 
+		resetAutoScrollLock();
 		scrollToBottom();
 		eventTarget.dispatchEvent(
 			new CustomEvent('chat:start', {
@@ -2875,7 +3072,10 @@
 			);
 
 			if (res && res.ok && res.body) {
-				const textStream = await createOpenAITextStream(res.body, $settings.splitLargeChunks);
+				const textStream = await createOpenAITextStream(
+					res.body,
+					$settings.splitLargeChunks
+				);
 				for await (const update of textStream) {
 					const { value, image, done, sources, error, usage } = update;
 					if (error || done) {
@@ -2893,7 +3093,7 @@
 						history.messages[messageId] = message;
 					}
 
-					if (autoScroll) {
+					if (shouldAutoScrollOnStreaming()) {
 						scrollToBottom();
 					}
 				}
@@ -3027,11 +3227,12 @@
 
 				<div class="flex flex-col flex-auto z-10 w-full @container">
 					{#if $settings?.landingPageMode === 'chat' || hasMessages}
-						<div
-							class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"
-							id="messages-container"
-							bind:this={messagesContainerElement}
-						>
+							<div
+								class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"
+								id="messages-container"
+								bind:this={messagesContainerElement}
+								on:scroll={handleMessagesScroll}
+							>
 							<div class=" h-full w-full flex flex-col">
 								<Messages
 									chatId={$chatId}
