@@ -1,15 +1,16 @@
 import asyncio
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from typing import Optional
+from typing import Dict, List, Literal, Optional
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.config import get_config, save_config
 from open_webui.config import BannerModel
 
 from open_webui.utils.tools import get_tool_server_data, get_tool_servers_data
-from open_webui.utils.mcp import get_mcp_server_data, get_mcp_servers_data
+from open_webui.utils.mcp import get_mcp_server_data
 from open_webui.utils.user_tools import (
     MAX_TOOL_CALL_ROUNDS_DEFAULT,
     MAX_TOOL_CALL_ROUNDS_MAX,
@@ -271,7 +272,11 @@ async def set_native_tools_config(
 
 
 class MCPServerConnection(BaseModel):
-    url: str
+    transport_type: Literal["http", "stdio"] = "http"
+    url: Optional[str] = None
+    command: Optional[str] = None
+    args: List[str] = Field(default_factory=list)
+    env: Dict[str, str] = Field(default_factory=dict)
     name: Optional[str] = None
     description: Optional[str] = None
     auth_type: Optional[str] = None
@@ -279,8 +284,56 @@ class MCPServerConnection(BaseModel):
     config: Optional[dict] = None
     server_info: Optional[dict] = None
     tool_count: Optional[int] = None
+    verified_at: Optional[str] = None
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def validate_transport_fields(self):
+        self.transport_type = (self.transport_type or "http").lower()
+        self.url = (self.url or "").strip() or None
+        self.command = (self.command or "").strip() or None
+        self.args = [str(item) for item in (self.args or [])]
+        self.env = {str(key): str(value) for key, value in (self.env or {}).items()}
+
+        if self.transport_type == "http":
+            if not self.url:
+                raise ValueError("url is required when transport_type is http")
+        elif self.transport_type == "stdio":
+            if not self.command:
+                raise ValueError("command is required when transport_type is stdio")
+
+        return self
+
+
+def _normalize_mcp_server_connection(connection: MCPServerConnection) -> dict:
+    base = {
+        "transport_type": connection.transport_type,
+        "name": connection.name,
+        "description": connection.description,
+        "config": connection.config or {},
+        "server_info": connection.server_info,
+        "tool_count": connection.tool_count,
+        "verified_at": connection.verified_at,
+    }
+
+    if connection.transport_type == "stdio":
+        normalized = {
+            **base,
+            "command": connection.command,
+            "args": [str(item) for item in (connection.args or [])],
+            "env": {str(key): str(value) for key, value in (connection.env or {}).items()},
+        }
+    else:
+        normalized = {
+            **base,
+            "url": (connection.url or "").rstrip("/"),
+            "auth_type": connection.auth_type,
+        }
+        if connection.key:
+            normalized["key"] = connection.key
+
+    return {key: value for key, value in normalized.items() if value is not None}
 
 
 class MCPServersConfigForm(BaseModel):
@@ -298,8 +351,18 @@ async def get_mcp_servers_config(request: Request, user=Depends(get_verified_use
 async def set_mcp_servers_config(
     request: Request, form_data: MCPServersConfigForm, user=Depends(get_verified_user)
 ):
+    if (
+        getattr(user, "role", None) != "admin"
+        and any(
+            connection.transport_type == "stdio"
+            for connection in form_data.MCP_SERVER_CONNECTIONS
+        )
+    ):
+        raise HTTPException(status_code=403, detail="stdio MCP servers are admin-only")
+
     connections = [
-        connection.model_dump() for connection in form_data.MCP_SERVER_CONNECTIONS
+        _normalize_mcp_server_connection(connection)
+        for connection in form_data.MCP_SERVER_CONNECTIONS
     ]
 
     set_user_mcp_server_connections(user, connections)
@@ -314,22 +377,34 @@ async def verify_mcp_server_connection(
     request: Request, form_data: MCPServerConnection, user=Depends(get_verified_user)
 ):
     """
-    Verify the connection to an MCP server (Streamable HTTP).
+    Verify the connection to an MCP server.
     """
     try:
+        if form_data.transport_type == "stdio" and getattr(user, "role", None) != "admin":
+            raise HTTPException(status_code=403, detail="stdio MCP servers are admin-only")
+
+        normalized_connection = _normalize_mcp_server_connection(form_data)
         token = None
-        if (form_data.auth_type or "none").lower() == "session":
+        if (
+            form_data.transport_type == "http"
+            and (form_data.auth_type or "none").lower() == "session"
+        ):
             token = request.state.token.credentials
 
         data = await get_mcp_server_data(
-            form_data.model_dump(),
+            normalized_connection,
             session_token=token,
+            use_temp_stdio_client=form_data.transport_type == "stdio",
         )
 
         tools = data.get("tools", []) or []
         return {
             "server_info": data.get("server_info", {}) or {},
             "tool_count": len(tools),
+            "verified_at": datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
             "tools": [
                 {
                     "name": t.get("name"),
@@ -338,6 +413,8 @@ async def verify_mcp_server_connection(
                 for t in tools[:50]
             ],
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=400,

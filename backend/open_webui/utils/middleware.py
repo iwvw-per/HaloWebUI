@@ -86,7 +86,7 @@ from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
 )
 from open_webui.utils.tools import get_tools, get_tool_servers_data
-from open_webui.utils.mcp import get_mcp_servers_data
+from open_webui.utils.mcp import extract_selected_mcp_indices, get_mcp_servers_data
 from open_webui.utils.builtin_tools import get_builtin_tools
 from open_webui.utils.user_tools import (
     MAX_TOOL_CALL_ROUNDS_DEFAULT,
@@ -2416,12 +2416,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if any(str(tid).startswith("mcp:") for tid in tool_ids) and not getattr(
             request.state, "MCP_SERVERS", None
         ):
+            selected_mcp_indices = extract_selected_mcp_indices(tool_ids)
             request.state.MCP_SERVER_CONNECTIONS = get_user_mcp_server_connections(
                 request, user
             )
             request.state.MCP_SERVERS = await get_mcp_servers_data(
                 request.state.MCP_SERVER_CONNECTIONS,
                 session_token=request.state.token.credentials,
+                selected_indices=selected_mcp_indices,
+                strict_selected=True,
+                user_id=user.id,
             )
 
         tools_dict = get_tools(

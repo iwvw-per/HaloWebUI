@@ -12,7 +12,7 @@ from open_webui.models.skills import SkillForm, SkillModel, Skills
 from open_webui.models.tools import Tools
 from open_webui.utils.access_control import has_access
 from open_webui.utils.auth import get_verified_user
-from open_webui.utils.mcp import get_mcp_server_data
+from open_webui.utils.mcp import get_mcp_servers_cached_meta
 from open_webui.utils.skill_importer import (
     ImportedSkillPayload,
     SkillImportError,
@@ -285,54 +285,40 @@ async def _build_tool_server_items(request: Request, user) -> list[SkillCatalogI
 
 async def _build_mcp_server_items(request: Request, user) -> list[SkillCatalogItem]:
     connections = get_user_mcp_server_connections(request, user)
-    session_token = getattr(getattr(request.state, "token", None), "credentials", None)
-    tasks = [
-        get_mcp_server_data(connection, session_token=session_token)
-        if _is_enabled_connection(connection)
-        else None
-        for connection in connections
-    ]
-    results = await asyncio.gather(
-        *[task for task in tasks if task is not None], return_exceptions=True
-    )
-
-    resolved: list[Any] = []
-    result_idx = 0
-    for task in tasks:
-        if task is None:
-            resolved.append(None)
-        else:
-            resolved.append(results[result_idx])
-            result_idx += 1
+    cached_meta = get_mcp_servers_cached_meta(connections)
 
     items = []
-    for idx, (connection, result) in enumerate(zip(connections, resolved)):
+    for idx, (connection, cached) in enumerate(zip(connections, cached_meta)):
         config = connection.get("config") or {}
+        transport_type = str(cached.get("transport_type") or "http").lower()
+        identifier = cached.get("command") if transport_type == "stdio" else cached.get("url")
+        server_info = cached.get("server_info") or {}
+        verified_at = cached.get("verified_at")
+        tool_count = int(cached.get("tool_count") or 0)
         title = (
-            connection.get("server_info", {}).get("name")
+            server_info.get("name")
             or config.get("remark")
             or connection.get("name")
-            or _hostname(connection.get("url") or "")
+            or (
+                identifier
+                if transport_type == "stdio"
+                else _hostname(identifier or "")
+            )
             or f"MCP Server {idx + 1}"
         )
 
         status_value = "disabled"
         description = "Manage your MCP server connection."
-        tool_count = 0
         if _is_enabled_connection(connection):
-            if isinstance(result, Exception):
-                status_value = "error"
-                description = str(result)
-            elif isinstance(result, dict):
-                status_value = "connected"
-                tool_count = len(result.get("tools") or [])
-                server_info = result.get("server_info") or {}
-                version = server_info.get("version")
+            status_value = "connected"
+            version = server_info.get("version")
+            if verified_at:
                 description = (
                     f"MCP server with {tool_count} tools"
                     + (f" (v{version})" if version else "")
                 )
-                title = server_info.get("name") or title
+            else:
+                description = "MCP server needs verification."
 
         items.append(
             SkillCatalogItem(
@@ -348,7 +334,10 @@ async def _build_mcp_server_items(request: Request, user) -> list[SkillCatalogIt
                 meta={
                     "server_index": idx,
                     "tool_count": tool_count,
+                    "transport_type": transport_type,
                     "url": connection.get("url"),
+                    "command": connection.get("command"),
+                    "verified_at": verified_at,
                 },
             )
         )

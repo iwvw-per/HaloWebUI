@@ -471,6 +471,32 @@ else:
     except Exception:
         AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER_DATA = 10
 
+MCP_STDIO_IDLE_TIMEOUT = os.environ.get("MCP_STDIO_IDLE_TIMEOUT", "180")
+
+try:
+    MCP_STDIO_IDLE_TIMEOUT = int(MCP_STDIO_IDLE_TIMEOUT)
+except Exception:
+    MCP_STDIO_IDLE_TIMEOUT = 180
+
+MCP_STDIO_START_TIMEOUT = os.environ.get("MCP_STDIO_START_TIMEOUT", "60")
+
+try:
+    MCP_STDIO_START_TIMEOUT = int(MCP_STDIO_START_TIMEOUT)
+except Exception:
+    MCP_STDIO_START_TIMEOUT = 60
+
+MCP_STDIO_ALLOWED_COMMANDS = os.environ.get(
+    "MCP_STDIO_ALLOWED_COMMANDS",
+    "npx,node,python,python3,uvx,uv,deno",
+)
+
+MCP_TOOL_CALL_TIMEOUT = os.environ.get("MCP_TOOL_CALL_TIMEOUT", "30")
+
+try:
+    MCP_TOOL_CALL_TIMEOUT = int(MCP_TOOL_CALL_TIMEOUT)
+except Exception:
+    MCP_TOOL_CALL_TIMEOUT = 30
+
 ####################################
 # TOOL SERVER SSL
 ####################################

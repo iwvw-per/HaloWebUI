@@ -14,50 +14,73 @@
 
 	import { verifyMCPServerConnection } from '$lib/apis/configs';
 
+	type TransportType = 'http' | 'stdio';
+
+	interface EnvItem {
+		key: string;
+		value: string;
+	}
+
+	interface VerifyResult {
+		server_info: any;
+		tool_count: number;
+		tools: any[];
+		verified_at?: string;
+	}
+
+	interface MCPPreset {
+		id: string;
+		name: string;
+		description: string;
+		category: 'hosted' | 'stdio';
+		transport_type: TransportType;
+		icon: string;
+		url?: string;
+		command?: string;
+		args?: string[];
+		auth_type?: string;
+		requires_key?: boolean;
+		setup_hint: string;
+		runtime_hint?: string;
+		doc_url?: string;
+	}
+
 	export let show = false;
 	export let connection: any = null;
+	export let isAdmin = false;
 	export let onSubmit: (connection: any) => Promise<void> = async () => {};
 
-	// Tab state
 	let activeTab: 'manual' | 'presets' = 'presets';
+	let hydrating = false;
+	let lastTransportType: TransportType = 'http';
+	let lastVerifiedSignature: string | null = null;
 
-	// Form fields
+	let transport_type: TransportType = 'http';
 	let name = '';
 	let url = '';
+	let command = '';
+	let argsItems: string[] = [];
+	let envItems: EnvItem[] = [];
 	let description = '';
 	let auth_type = 'none';
 	let key = '';
 	let enable = true;
 
-	// Verify state
 	let loading = false;
 	let verifyStatus: 'idle' | 'loading' | 'success' | 'error' = 'idle';
-	let verifyResult: { server_info: any; tool_count: number; tools: any[] } | null = null;
+	let verifyResult: VerifyResult | null = null;
 	let verifyError = '';
 	let showAllTools = false;
-
-	// Presets
-	interface MCPPreset {
-		id: string;
-		name: string;
-		description: string;
-		icon: string;
-		category: 'hosted' | 'self-hosted';
-		url_template: string;
-		auth_type: string;
-		requires_key: boolean;
-		setup_hint: string;
-		doc_url?: string;
-	}
 
 	const MCP_PRESETS: MCPPreset[] = [
 		{
 			id: 'composio',
 			name: 'Composio',
 			description: '200+ 应用集成 (GitHub, Slack, Gmail, Jira 等)',
-			icon: '🔗',
 			category: 'hosted',
-			url_template: 'https://mcp.composio.dev',
+			transport_type: 'http',
+			icon: '🔗',
+			url: 'https://mcp.composio.dev',
 			auth_type: 'bearer',
 			requires_key: true,
 			setup_hint: '在 composio.dev 注册获取 API Key',
@@ -67,9 +90,10 @@
 			id: 'smithery',
 			name: 'Smithery',
 			description: 'MCP 服务器托管平台，支持 fetch/memory/search 等',
-			icon: '🛠️',
 			category: 'hosted',
-			url_template: 'https://server.smithery.ai/{server-name}/mcp',
+			transport_type: 'http',
+			icon: '🛠️',
+			url: 'https://server.smithery.ai/{server-name}/mcp',
 			auth_type: 'bearer',
 			requires_key: true,
 			setup_hint: '在 smithery.ai 注册，选择 MCP 服务器获取端点和 Key',
@@ -79,62 +103,212 @@
 			id: 'zapier',
 			name: 'Zapier MCP',
 			description: '工作流自动化，连接 7000+ 应用',
-			icon: '⚡',
 			category: 'hosted',
-			url_template: 'https://actions.zapier.com/mcp/actions',
+			transport_type: 'http',
+			icon: '⚡',
+			url: 'https://actions.zapier.com/mcp/actions',
 			auth_type: 'bearer',
 			requires_key: true,
 			setup_hint: '在 Zapier 设置中启用 MCP 并获取 Access Token',
 			doc_url: 'https://actions.zapier.com'
 		},
 		{
-			id: 'local-bridge',
-			name: '本地 stdio 桥接',
-			description: '将 fetch/time/memory 等 stdio MCP 服务器转为 HTTP',
-			icon: '🖥️',
-			category: 'self-hosted',
-			url_template: 'http://localhost:8808/mcp',
-			auth_type: 'none',
-			requires_key: false,
-			setup_hint:
-				'npx @anthropic-ai/mcp-proxy --transport http --port 8808 -- npx @anthropic-ai/mcp-server-fetch'
+			id: 'memory',
+			name: 'Memory',
+			description: '本地记忆型 MCP 服务器',
+			category: 'stdio',
+			transport_type: 'stdio',
+			icon: '🧠',
+			command: 'npx',
+			args: ['-y', '@modelcontextprotocol/server-memory'],
+			setup_hint: '无需额外配置，首次启动可能会下载 npm 包。',
+			runtime_hint: '需要 Node.js 与 npx'
+		},
+		{
+			id: 'sequential-thinking',
+			name: 'Sequential Thinking',
+			description: '适合多步拆解与推理过程',
+			category: 'stdio',
+			transport_type: 'stdio',
+			icon: '🪜',
+			command: 'npx',
+			args: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
+			setup_hint: '首次启动可能会下载 npm 包。',
+			runtime_hint: '需要 Node.js 与 npx'
+		},
+		{
+			id: 'context7',
+			name: 'Context7',
+			description: '查询最新文档与框架 API',
+			category: 'stdio',
+			transport_type: 'stdio',
+			icon: '📚',
+			command: 'npx',
+			args: ['-y', '@upstash/context7-mcp'],
+			setup_hint: '首次启动可能会下载 npm 包。',
+			runtime_hint: '需要 Node.js 与 npx'
+		},
+		{
+			id: 'fetch',
+			name: 'Fetch',
+			description: '网页抓取 MCP 服务器',
+			category: 'stdio',
+			transport_type: 'stdio',
+			icon: '🌐',
+			command: 'uvx',
+			args: ['mcp-server-fetch'],
+			setup_hint: '请确保当前运行环境已安装 uv。',
+			runtime_hint: '需要 Python 与 uv/uvx'
+		},
+		{
+			id: 'time',
+			name: 'Time',
+			description: '时间与时区 MCP 服务器',
+			category: 'stdio',
+			transport_type: 'stdio',
+			icon: '⏰',
+			command: 'uvx',
+			args: ['mcp-server-time'],
+			setup_hint: '请确保当前运行环境已安装 uv。',
+			runtime_hint: '需要 Python 与 uv/uvx'
 		}
 	];
 
-	const init = () => {
+	const emptyEnvItem = (): EnvItem => ({ key: '', value: '' });
+
+	const normalizeArgs = () => argsItems.map((item) => item.trim()).filter(Boolean);
+	const normalizeEnv = () =>
+		envItems.reduce((acc, item) => {
+			const envKey = item.key.trim();
+			if (!envKey) return acc;
+			acc[envKey] = item.value;
+			return acc;
+		}, {} as Record<string, string>);
+
+	const formatVerifiedAt = (value?: string) => {
+		if (!value) return '';
+		const parsed = new Date(value);
+		if (Number.isNaN(parsed.getTime())) return value;
+		return parsed.toLocaleString();
+	};
+
+	const buildVerificationSignature = () =>
+		JSON.stringify({
+			transport_type,
+			url: url.trim().replace(/\/$/, ''),
+			command: command.trim(),
+			args: normalizeArgs(),
+			env: normalizeEnv(),
+			auth_type: transport_type === 'http' ? auth_type : 'none',
+			key:
+				transport_type === 'http' && (auth_type === 'bearer' || auth_type === 'oauth21')
+					? key
+					: ''
+		});
+
+	const clearVerifyCache = () => {
 		verifyStatus = 'idle';
 		verifyResult = null;
 		verifyError = '';
 		showAllTools = false;
+		lastVerifiedSignature = null;
+	};
+
+	const resetForTransport = (nextTransport: TransportType) => {
+		if (nextTransport === 'stdio') {
+			url = '';
+			auth_type = 'none';
+			key = '';
+		} else {
+			command = '';
+			argsItems = [];
+			envItems = [];
+		}
+		clearVerifyCache();
+	};
+
+	const buildConnectionPayload = ({ persistVerify }: { persistVerify: boolean }) => {
+		const base: any = {
+			transport_type,
+			name: name.trim() || undefined,
+			description: description.trim() || undefined,
+			config: { enable }
+		};
+
+		if (transport_type === 'http') {
+			base.url = url.trim().replace(/\/$/, '');
+			base.auth_type = auth_type;
+			if ((auth_type === 'bearer' || auth_type === 'oauth21') && key) {
+				base.key = key;
+			}
+		} else {
+			base.command = command.trim();
+			base.args = normalizeArgs();
+			base.env = normalizeEnv();
+		}
+
+		if (persistVerify) {
+			base.server_info = verifyResult?.server_info || undefined;
+			base.tool_count = verifyResult?.tool_count ?? undefined;
+			base.verified_at = verifyResult?.verified_at ?? undefined;
+		}
+
+		return base;
+	};
+
+	const init = () => {
+		hydrating = true;
+		verifyStatus = 'idle';
+		verifyResult = null;
+		verifyError = '';
+		showAllTools = false;
+		lastVerifiedSignature = null;
 
 		if (!connection) {
 			activeTab = 'presets';
+			transport_type = 'http';
 			name = '';
 			url = '';
+			command = '';
+			argsItems = [];
+			envItems = [];
 			description = '';
 			auth_type = 'none';
 			key = '';
 			enable = true;
+			lastTransportType = transport_type;
+			hydrating = false;
 			return;
 		}
 
 		activeTab = 'manual';
+		transport_type = (connection.transport_type ?? 'http') as TransportType;
 		name = connection.name ?? '';
 		url = connection.url ?? '';
+		command = connection.command ?? '';
+		argsItems = Array.isArray(connection.args) ? [...connection.args] : [];
+		envItems = Object.entries(connection.env ?? {}).map(([envKey, envValue]) => ({
+			key: envKey,
+			value: String(envValue ?? '')
+		}));
 		description = connection.description ?? '';
 		auth_type = connection.auth_type ?? 'none';
 		key = connection.key ?? '';
 		enable = connection.config?.enable ?? connection.enabled ?? true;
 
-		// Restore cached verify data
-		if (connection.server_info) {
+		if (connection.server_info || connection.verified_at) {
 			verifyStatus = 'success';
 			verifyResult = {
-				server_info: connection.server_info,
+				server_info: connection.server_info ?? {},
 				tool_count: connection.tool_count ?? 0,
-				tools: []
+				tools: [],
+				verified_at: connection.verified_at
 			};
+			lastVerifiedSignature = buildVerificationSignature();
 		}
+
+		lastTransportType = transport_type;
+		hydrating = false;
 	};
 
 	$: if (show) {
@@ -145,20 +319,42 @@
 		init();
 	});
 
+	$: if (!hydrating && transport_type !== lastTransportType) {
+		resetForTransport(transport_type);
+		lastTransportType = transport_type;
+	}
+
+	$: if (!hydrating && lastVerifiedSignature && buildVerificationSignature() !== lastVerifiedSignature) {
+		clearVerifyCache();
+	}
+
 	const applyPreset = (preset: MCPPreset) => {
+		transport_type = preset.transport_type;
 		name = preset.name;
-		url = preset.url_template;
 		description = preset.description;
-		auth_type = preset.auth_type;
-		key = '';
+		if (preset.transport_type === 'http') {
+			url = preset.url ?? '';
+			auth_type = preset.auth_type ?? 'none';
+			key = '';
+		} else {
+			command = preset.command ?? '';
+			argsItems = [...(preset.args ?? [])];
+			envItems = [];
+			auth_type = 'none';
+			key = '';
+		}
 		activeTab = 'manual';
-		verifyStatus = 'idle';
-		verifyResult = null;
+		clearVerifyCache();
 	};
 
 	const verifyHandler = async () => {
-		if (url.trim() === '') {
+		if (transport_type === 'http' && url.trim() === '') {
 			toast.error($i18n.t('Please enter a valid URL'));
+			return;
+		}
+
+		if (transport_type === 'stdio' && command.trim() === '') {
+			toast.error($i18n.t('Please enter a valid command'));
 			return;
 		}
 
@@ -166,12 +362,10 @@
 		verifyStatus = 'loading';
 		verifyError = '';
 
-		const res = await verifyMCPServerConnection(localStorage.token, {
-			url: url.trim().replace(/\/$/, ''),
-			auth_type,
-			key: auth_type === 'bearer' || auth_type === 'oauth21' ? key : undefined,
-			config: { enable }
-		}).catch((err) => {
+		const res = await verifyMCPServerConnection(
+			localStorage.token,
+			buildConnectionPayload({ persistVerify: false })
+		).catch((err) => {
 			verifyStatus = 'error';
 			verifyError = err?.message || err?.detail || $i18n.t('Connection failed');
 			return null;
@@ -184,9 +378,10 @@
 			verifyResult = {
 				server_info: res.server_info || {},
 				tool_count: res.tool_count ?? 0,
-				tools: res.tools || []
+				tools: res.tools || [],
+				verified_at: res.verified_at
 			};
-			// Auto-fill name from server info if empty
+			lastVerifiedSignature = buildVerificationSignature();
 			if (!name.trim() && res.server_info?.name) {
 				name = res.server_info.name;
 			}
@@ -198,34 +393,56 @@
 	};
 
 	const submitHandler = async () => {
-		if (url.trim() === '') {
+		if (transport_type === 'http' && url.trim() === '') {
 			toast.error($i18n.t('Please enter a valid URL'));
 			return;
 		}
 
+		if (transport_type === 'stdio' && command.trim() === '') {
+			toast.error($i18n.t('Please enter a valid command'));
+			return;
+		}
+
 		loading = true;
+		try {
+			await onSubmit(buildConnectionPayload({ persistVerify: true }));
+			show = false;
+		} catch (error) {
+			// Save failure toast is handled by the parent settings page.
+		} finally {
+			loading = false;
+		}
+	};
 
-		const next: any = {
-			url: url.trim().replace(/\/$/, ''),
-			name: name.trim() || undefined,
-			description: description.trim() || undefined,
-			auth_type,
-			key: auth_type === 'bearer' || auth_type === 'oauth21' ? key : undefined,
-			config: { enable },
-			server_info: verifyResult?.server_info || undefined,
-			tool_count: verifyResult?.tool_count ?? undefined
-		};
+	const addArgRow = () => {
+		argsItems = [...argsItems, ''];
+	};
 
-		await onSubmit(next);
+	const removeArgRow = (idx: number) => {
+		argsItems = argsItems.filter((_, index) => index !== idx);
+	};
 
-		loading = false;
-		show = false;
+	const updateArgRow = (idx: number, value: string) => {
+		argsItems[idx] = value;
+		argsItems = argsItems;
+	};
+
+	const addEnvRow = () => {
+		envItems = [...envItems, emptyEnvItem()];
+	};
+
+	const removeEnvRow = (idx: number) => {
+		envItems = envItems.filter((_, index) => index !== idx);
+	};
+
+	const updateEnvRow = (idx: number, keyName: 'key' | 'value', value: string) => {
+		envItems[idx] = { ...envItems[idx], [keyName]: value };
+		envItems = envItems;
 	};
 </script>
 
 <Modal size="md" bind:show>
 	<div>
-		<!-- Header -->
 		<div class="flex justify-between dark:text-gray-100 px-5 pt-4 pb-2">
 			<div class="text-lg font-medium self-center font-primary">
 				{connection ? $i18n.t('Edit Connection') : $i18n.t('Add Connection')}
@@ -237,12 +454,7 @@
 				}}
 				type="button"
 			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 20 20"
-					fill="currentColor"
-					class="w-5 h-5"
-				>
+				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
 					<path
 						d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
 					/>
@@ -250,7 +462,6 @@
 			</button>
 		</div>
 
-		<!-- Tabs (only show when adding, not editing) -->
 		{#if !connection}
 			<div class="flex px-5 gap-1 border-b border-gray-100 dark:border-gray-800">
 				<button
@@ -275,7 +486,6 @@
 		{/if}
 
 		<div class="flex flex-col w-full px-5 pb-4 dark:text-gray-200">
-			<!-- Manual Tab -->
 			{#if activeTab === 'manual'}
 				<form
 					class="flex flex-col w-full"
@@ -284,7 +494,18 @@
 					}}
 				>
 					<div class="space-y-3 mt-3">
-						<!-- Name -->
+						<div>
+							<div class="text-xs text-gray-500 mb-1">{$i18n.t('传输方式')}</div>
+							<HaloSelect
+								bind:value={transport_type}
+								options={[
+									{ value: 'http', label: 'HTTP' },
+									...(isAdmin ? [{ value: 'stdio', label: 'stdio' }] : [])
+								]}
+								className="w-fit"
+							/>
+						</div>
+
 						<div>
 							<div class="text-xs text-gray-500 mb-1">{$i18n.t('服务器名称（可选）')}</div>
 							<input
@@ -296,53 +517,177 @@
 							/>
 						</div>
 
-						<!-- URL + Enable + Verify -->
-						<div>
-							<div class="flex items-center justify-between mb-1">
-								<div class="text-xs text-gray-500">{$i18n.t('URL')}</div>
-								<Tooltip content={enable ? $i18n.t('Enabled') : $i18n.t('Disabled')}>
-									<Switch bind:state={enable} />
-								</Tooltip>
-							</div>
-							<div class="flex gap-2 items-center">
-								<input
-									class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden border-b border-gray-200 dark:border-gray-700 pb-1"
-									type="text"
-									bind:value={url}
-									placeholder={$i18n.t('API Base URL')}
-									autocomplete="off"
-									required
-								/>
-								<Tooltip content={$i18n.t('Verify Connection')} className="shrink-0">
-									<button
-										class="self-center p-1.5 bg-transparent hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-850 rounded-lg transition {verifyStatus ===
-										'loading'
-											? 'animate-spin'
-											: ''}"
-										on:click={() => {
-											verifyHandler();
-										}}
-										type="button"
-										disabled={loading}
-									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 20 20"
-											fill="currentColor"
-											class="w-4 h-4"
+						{#if transport_type === 'http'}
+							<div>
+								<div class="flex items-center justify-between mb-1">
+									<div class="text-xs text-gray-500">{$i18n.t('URL')}</div>
+									<Tooltip content={enable ? $i18n.t('Enabled') : $i18n.t('Disabled')}>
+										<Switch bind:state={enable} />
+									</Tooltip>
+								</div>
+								<div class="flex gap-2 items-center">
+									<input
+										class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden border-b border-gray-200 dark:border-gray-700 pb-1"
+										type="text"
+										bind:value={url}
+										placeholder={$i18n.t('API Base URL')}
+										autocomplete="off"
+										required
+									/>
+									<Tooltip content={$i18n.t('Verify Connection')} className="shrink-0">
+										<button
+											class="self-center p-1.5 bg-transparent hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-850 rounded-lg transition {verifyStatus ===
+											'loading'
+												? 'animate-spin'
+												: ''}"
+											on:click={() => {
+												verifyHandler();
+											}}
+											type="button"
+											disabled={loading}
 										>
-											<path
-												fill-rule="evenodd"
-												d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
-												clip-rule="evenodd"
-											/>
-										</svg>
-									</button>
-								</Tooltip>
+											<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+												<path
+													fill-rule="evenodd"
+													d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
+													clip-rule="evenodd"
+												/>
+											</svg>
+										</button>
+									</Tooltip>
+								</div>
 							</div>
-						</div>
+						{:else}
+							<div class="space-y-3 rounded-xl border border-gray-200 dark:border-gray-800 p-3">
+								<div class="flex items-center justify-between">
+									<div class="text-xs text-gray-500">{$i18n.t('Command')}</div>
+									<Tooltip content={enable ? $i18n.t('Enabled') : $i18n.t('Disabled')}>
+										<Switch bind:state={enable} />
+									</Tooltip>
+								</div>
+								<div class="flex gap-2 items-center">
+									<input
+										class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden border-b border-gray-200 dark:border-gray-700 pb-1"
+										type="text"
+										bind:value={command}
+										placeholder={$i18n.t('例如: npx / uvx / python')}
+										autocomplete="off"
+										required
+									/>
+									<Tooltip content={$i18n.t('Verify Connection')} className="shrink-0">
+										<button
+											class="self-center p-1.5 bg-transparent hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-850 rounded-lg transition {verifyStatus ===
+											'loading'
+												? 'animate-spin'
+												: ''}"
+											on:click={() => {
+												verifyHandler();
+											}}
+											type="button"
+											disabled={loading}
+										>
+											<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+												<path
+													fill-rule="evenodd"
+													d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
+													clip-rule="evenodd"
+												/>
+											</svg>
+										</button>
+									</Tooltip>
+								</div>
 
-						<!-- Description -->
+								<div>
+									<div class="mb-2 flex items-center justify-between">
+										<div class="text-xs text-gray-500">{$i18n.t('Args')}</div>
+										<button
+											type="button"
+											class="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+											on:click={addArgRow}
+										>
+											{$i18n.t('添加参数')}
+										</button>
+									</div>
+									<div class="space-y-2">
+										{#if argsItems.length === 0}
+											<div class="text-xs text-gray-400">{$i18n.t('暂无参数')}</div>
+										{/if}
+										{#each argsItems as arg, idx}
+											<div class="flex gap-2 items-center">
+												<input
+													class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden border-b border-gray-200 dark:border-gray-700 pb-1"
+													type="text"
+													value={arg}
+													on:input={(event) =>
+														updateArgRow(idx, event.currentTarget.value)}
+													placeholder={$i18n.t('参数')}
+													autocomplete="off"
+												/>
+												<button
+													type="button"
+													class="text-xs text-red-500 hover:underline shrink-0"
+													on:click={() => removeArgRow(idx)}
+												>
+													{$i18n.t('移除')}
+												</button>
+											</div>
+										{/each}
+									</div>
+								</div>
+
+								<div>
+									<div class="mb-2 flex items-center justify-between">
+										<div class="text-xs text-gray-500">{$i18n.t('Env')}</div>
+										<button
+											type="button"
+											class="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+											on:click={addEnvRow}
+										>
+											{$i18n.t('添加环境变量')}
+										</button>
+									</div>
+									<div class="space-y-2">
+										{#if envItems.length === 0}
+											<div class="text-xs text-gray-400">{$i18n.t('暂无环境变量')}</div>
+										{/if}
+										{#each envItems as item, idx}
+											<div class="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+												<input
+													class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden border-b border-gray-200 dark:border-gray-700 pb-1"
+													type="text"
+													value={item.key}
+													on:input={(event) =>
+														updateEnvRow(idx, 'key', event.currentTarget.value)}
+													placeholder="KEY"
+													autocomplete="off"
+												/>
+												<input
+													class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden border-b border-gray-200 dark:border-gray-700 pb-1"
+													type="text"
+													value={item.value}
+													on:input={(event) =>
+														updateEnvRow(idx, 'value', event.currentTarget.value)}
+													placeholder="VALUE"
+													autocomplete="off"
+												/>
+												<button
+													type="button"
+													class="text-xs text-red-500 hover:underline shrink-0"
+													on:click={() => removeEnvRow(idx)}
+												>
+													{$i18n.t('移除')}
+												</button>
+											</div>
+										{/each}
+									</div>
+								</div>
+
+								<div class="text-xs text-amber-700 dark:text-amber-300 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/40 p-2">
+									{$i18n.t('stdio 仅管理员可用。npx 需要 Node.js；uvx 需要 Python + uv。')}
+								</div>
+							</div>
+						{/if}
+
 						<div>
 							<div class="text-xs text-gray-500 mb-1">{$i18n.t('描述（可选）')}</div>
 							<input
@@ -354,74 +699,49 @@
 							/>
 						</div>
 
-						<!-- Advanced (Auth) -->
-						<CollapsibleSection
-							title={$i18n.t('Advanced')}
-							open={auth_type !== 'none'}
-							className="mt-1"
-						>
-							<div class="space-y-3">
-								<div>
-									<div class="text-xs text-gray-500">{$i18n.t('Auth')}</div>
-									<HaloSelect
-										bind:value={auth_type}
-										options={[
-											{ value: 'none', label: 'None' },
-											{ value: 'bearer', label: 'Bearer' },
-											{ value: 'session', label: 'Session' },
-											{ value: 'oauth21', label: 'OAuth 2.1' }
-										]}
-										className="w-fit"
-									/>
-								</div>
-
-								{#if auth_type === 'bearer' || auth_type === 'oauth21'}
-									<div>
-										<div class="text-xs text-gray-500">{$i18n.t('Key')}</div>
-										<SensitiveInput bind:value={key} />
-									</div>
-								{/if}
-							</div>
-						</CollapsibleSection>
-
-						<!-- Verify Result -->
-						{#if verifyStatus === 'loading'}
-							<div
-								class="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 rounded-lg"
+						{#if transport_type === 'http'}
+							<CollapsibleSection
+								title={$i18n.t('Advanced')}
+								open={auth_type !== 'none'}
+								className="mt-1"
 							>
-								<svg
-									class="animate-spin h-4 w-4 text-blue-500"
-									xmlns="http://www.w3.org/2000/svg"
-									fill="none"
-									viewBox="0 0 24 24"
-								>
-									<circle
-										class="opacity-25"
-										cx="12"
-										cy="12"
-										r="10"
-										stroke="currentColor"
-										stroke-width="4"
-									></circle>
-									<path
-										class="opacity-75"
-										fill="currentColor"
-										d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-									></path>
+								<div class="space-y-3">
+									<div>
+										<div class="text-xs text-gray-500">{$i18n.t('Auth')}</div>
+										<HaloSelect
+											bind:value={auth_type}
+											options={[
+												{ value: 'none', label: 'None' },
+												{ value: 'bearer', label: 'Bearer' },
+												{ value: 'session', label: 'Session' },
+												{ value: 'oauth21', label: 'OAuth 2.1' }
+											]}
+											className="w-fit"
+										/>
+									</div>
+
+									{#if auth_type === 'bearer' || auth_type === 'oauth21'}
+										<div>
+											<div class="text-xs text-gray-500">{$i18n.t('Key')}</div>
+											<SensitiveInput bind:value={key} />
+										</div>
+									{/if}
+								</div>
+							</CollapsibleSection>
+						{/if}
+
+						{#if verifyStatus === 'loading'}
+							<div class="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 rounded-lg">
+								<svg class="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+									<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+									<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
 								</svg>
 								<span class="text-sm text-blue-700 dark:text-blue-300">{$i18n.t('验证中...')}</span>
 							</div>
 						{:else if verifyStatus === 'success' && verifyResult}
-							<div
-								class="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/50 rounded-lg space-y-2"
-							>
+							<div class="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/50 rounded-lg space-y-2">
 								<div class="flex items-center gap-2">
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										viewBox="0 0 20 20"
-										fill="currentColor"
-										class="w-4 h-4 text-green-600 dark:text-green-400"
-									>
+									<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-green-600 dark:text-green-400">
 										<path
 											fill-rule="evenodd"
 											d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
@@ -431,27 +751,26 @@
 									<span class="text-sm font-medium text-green-800 dark:text-green-300">
 										{verifyResult.server_info?.name || 'MCP Server'}
 										{#if verifyResult.server_info?.version}
-											<span class="text-xs font-normal opacity-70"
-												>v{verifyResult.server_info.version}</span
-											>
+											<span class="text-xs font-normal opacity-70">v{verifyResult.server_info.version}</span>
 										{/if}
 									</span>
-									<span
-										class="ml-auto px-2 py-0.5 text-xs rounded-full bg-green-100 dark:bg-green-800/40 text-green-700 dark:text-green-300"
-									>
+									<span class="ml-auto px-2 py-0.5 text-xs rounded-full bg-green-100 dark:bg-green-800/40 text-green-700 dark:text-green-300">
 										{verifyResult.tool_count}
 										{$i18n.t('个工具')}
 									</span>
 								</div>
 
-								<!-- Tool list -->
+								{#if verifyResult.verified_at}
+									<div class="text-xs text-green-700 dark:text-green-300/80">
+										{$i18n.t('上次验证于')} {formatVerifiedAt(verifyResult.verified_at)}
+									</div>
+								{/if}
+
 								{#if verifyResult.tools && verifyResult.tools.length > 0}
 									<div class="space-y-1 mt-2">
 										{#each showAllTools ? verifyResult.tools : verifyResult.tools.slice(0, 5) as tool}
 											<div class="flex items-start gap-2 text-xs">
-												<span class="font-mono text-green-700 dark:text-green-400 shrink-0"
-													>{tool.name}</span
-												>
+												<span class="font-mono text-green-700 dark:text-green-400 shrink-0">{tool.name}</span>
 												{#if tool.description}
 													<span class="text-gray-500 truncate">{tool.description}</span>
 												{/if}
@@ -470,24 +789,15 @@
 								{/if}
 							</div>
 						{:else if verifyStatus === 'error'}
-							<div
-								class="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-lg"
-							>
-								<svg
-									xmlns="http://www.w3.org/2000/svg"
-									viewBox="0 0 20 20"
-									fill="currentColor"
-									class="w-4 h-4 text-red-500 shrink-0"
-								>
+							<div class="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-lg">
+								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-red-500 shrink-0">
 									<path
 										fill-rule="evenodd"
 										d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z"
 										clip-rule="evenodd"
 									/>
 								</svg>
-								<span class="text-sm text-red-700 dark:text-red-300"
-									>{verifyError || $i18n.t('Connection failed')}</span
-								>
+								<span class="text-sm text-red-700 dark:text-red-300">{verifyError || $i18n.t('Connection failed')}</span>
 							</div>
 						{/if}
 					</div>
@@ -504,136 +814,73 @@
 						</button>
 					</div>
 				</form>
-
-				<!-- Presets Tab -->
 			{:else if activeTab === 'presets'}
 				<div class="space-y-4 mt-3">
-					<!-- Hosted Services -->
 					<div>
-						<div
-							class="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2"
-						>
-							{$i18n.t('托管服务')}
+						<div class="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
+							{$i18n.t('HTTP 托管服务')}
 						</div>
 						<div class="space-y-2">
-							{#each MCP_PRESETS.filter((p) => p.category === 'hosted') as preset}
+							{#each MCP_PRESETS.filter((preset) => preset.category === 'hosted') as preset}
 								<button
 									type="button"
-									class="w-full text-left p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-850 transition group"
+									class="w-full text-left p-3 rounded-xl border border-gray-200 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900/60 transition"
 									on:click={() => applyPreset(preset)}
 								>
 									<div class="flex items-start gap-3">
-										<span class="text-xl mt-0.5">{preset.icon}</span>
-										<div class="flex-1 min-w-0">
+										<div class="text-lg">{preset.icon}</div>
+										<div class="min-w-0 flex-1">
 											<div class="flex items-center gap-2">
-												<span class="text-sm font-medium text-gray-900 dark:text-gray-100"
-													>{preset.name}</span
-												>
-												{#if preset.requires_key}
-													<span
-														class="px-1.5 py-0.5 text-[10px] rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
-													>
-														{$i18n.t('需要 API Key')}
-													</span>
+												<div class="text-sm font-medium">{preset.name}</div>
+												<span class="px-1.5 py-0.5 text-[10px] rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">HTTP</span>
+											</div>
+											<div class="text-xs text-gray-500 mt-0.5">{preset.description}</div>
+											<div class="text-xs text-gray-400 mt-1">{preset.setup_hint}</div>
+										</div>
+									</div>
+								</button>
+							{/each}
+						</div>
+					</div>
+
+					{#if isAdmin}
+						<div>
+							<div class="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
+								{$i18n.t('stdio 本地服务')}
+							</div>
+							<div class="space-y-2">
+								{#each MCP_PRESETS.filter((preset) => preset.category === 'stdio') as preset}
+									<button
+										type="button"
+										class="w-full text-left p-3 rounded-xl border border-gray-200 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900/60 transition"
+										on:click={() => applyPreset(preset)}
+									>
+										<div class="flex items-start gap-3">
+											<div class="text-lg">{preset.icon}</div>
+											<div class="min-w-0 flex-1">
+												<div class="flex items-center gap-2">
+													<div class="text-sm font-medium">{preset.name}</div>
+													<span class="px-1.5 py-0.5 text-[10px] rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">stdio</span>
+												</div>
+												<div class="text-xs text-gray-500 mt-0.5">{preset.description}</div>
+												{#if preset.command}
+													<div class="text-xs font-mono text-gray-500 mt-1 break-all">
+														{preset.command} {(preset.args ?? []).join(' ')}
+													</div>
+												{/if}
+												<div class="text-xs text-gray-400 mt-1">{preset.setup_hint}</div>
+												{#if preset.runtime_hint}
+													<div class="text-xs text-amber-700 dark:text-amber-300 mt-1">
+														{preset.runtime_hint}
+													</div>
 												{/if}
 											</div>
-											<div class="text-xs text-gray-500 mt-0.5">{preset.description}</div>
-											<div class="text-xs text-gray-400 mt-1 flex items-center gap-1">
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													viewBox="0 0 16 16"
-													fill="currentColor"
-													class="w-3 h-3"
-												>
-													<path
-														fill-rule="evenodd"
-														d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z"
-														clip-rule="evenodd"
-													/>
-												</svg>
-												{preset.setup_hint}
-											</div>
 										</div>
-										<div class="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-											<svg
-												xmlns="http://www.w3.org/2000/svg"
-												viewBox="0 0 20 20"
-												fill="currentColor"
-												class="w-5 h-5 text-gray-400"
-											>
-												<path
-													fill-rule="evenodd"
-													d="M3 10a.75.75 0 01.75-.75h10.638l-3.96-4.158a.75.75 0 011.08-1.04l5.25 5.5a.75.75 0 010 1.04l-5.25 5.5a.75.75 0 11-1.08-1.04l3.96-4.158H3.75A.75.75 0 013 10z"
-													clip-rule="evenodd"
-												/>
-											</svg>
-										</div>
-									</div>
-								</button>
-							{/each}
+									</button>
+								{/each}
+							</div>
 						</div>
-					</div>
-
-					<!-- Self-hosted -->
-					<div>
-						<div
-							class="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2"
-						>
-							{$i18n.t('自托管')}
-						</div>
-						<div class="space-y-2">
-							{#each MCP_PRESETS.filter((p) => p.category === 'self-hosted') as preset}
-								<button
-									type="button"
-									class="w-full text-left p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-850 transition group"
-									on:click={() => applyPreset(preset)}
-								>
-									<div class="flex items-start gap-3">
-										<span class="text-xl mt-0.5">{preset.icon}</span>
-										<div class="flex-1 min-w-0">
-											<div class="flex items-center gap-2">
-												<span class="text-sm font-medium text-gray-900 dark:text-gray-100"
-													>{preset.name}</span
-												>
-												<span
-													class="px-1.5 py-0.5 text-[10px] rounded bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
-												>
-													{$i18n.t('无需认证')}
-												</span>
-											</div>
-											<div class="text-xs text-gray-500 mt-0.5">{preset.description}</div>
-											<div class="text-xs text-gray-400 mt-1">
-												<code
-													class="text-[10px] bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono break-all"
-												>
-													{preset.setup_hint}
-												</code>
-											</div>
-										</div>
-										<div class="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-											<svg
-												xmlns="http://www.w3.org/2000/svg"
-												viewBox="0 0 20 20"
-												fill="currentColor"
-												class="w-5 h-5 text-gray-400"
-											>
-												<path
-													fill-rule="evenodd"
-													d="M3 10a.75.75 0 01.75-.75h10.638l-3.96-4.158a.75.75 0 011.08-1.04l5.25 5.5a.75.75 0 010 1.04l-5.25 5.5a.75.75 0 11-1.08-1.04l3.96-4.158H3.75A.75.75 0 013 10z"
-													clip-rule="evenodd"
-												/>
-											</svg>
-										</div>
-									</div>
-								</button>
-							{/each}
-						</div>
-					</div>
-
-					<!-- Info hint -->
-					<div class="text-xs text-gray-400 dark:text-gray-500 text-center pt-2">
-						{$i18n.t('仅支持 Streamable HTTP 传输方式')}
-					</div>
+					{/if}
 				</div>
 			{/if}
 		</div>

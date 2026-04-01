@@ -2,7 +2,10 @@ import asyncio
 import json
 import pathlib
 import sys
+import textwrap
 from types import SimpleNamespace
+
+import pytest
 
 
 # Ensure `open_webui` is importable when running tests from repo root.
@@ -186,3 +189,333 @@ def test_get_tools_exposes_mcp_tool_and_routes_call(monkeypatch):
     assert called["arguments"] == {"a": "x"}
     assert called["session_token"] == "tok_abc"
 
+
+def test_http_client_protocol_negotiation_retries_on_http_error():
+    from aiohttp import web
+
+    from open_webui.utils.mcp import MCPStreamableHttpClient
+
+    seen_protocol_versions = []
+
+    async def handler(request: web.Request):
+        payload = await request.json()
+        method = payload.get("method")
+        protocol_version = request.headers.get("MCP-Protocol-Version")
+        seen_protocol_versions.append((method, protocol_version))
+
+        if method == "initialize":
+            requested = (payload.get("params") or {}).get("protocolVersion")
+            if requested == "2025-06-18":
+                return web.json_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload.get("id"),
+                        "error": {
+                            "code": -32000,
+                            "message": "Unsupported protocol version (supported versions: 2024-11-05)",
+                        },
+                    },
+                    status=400,
+                )
+
+            return web.json_response(
+                {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id"),
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "serverInfo": {"name": "LegacyMCP"},
+                        "capabilities": {"tools": {}},
+                    },
+                },
+                headers={"Mcp-Session-Id": "legacy_sess"},
+            )
+
+        if method == "notifications/initialized":
+            return web.Response(status=200, headers={"Mcp-Session-Id": "legacy_sess"})
+
+        if method == "tools/list":
+            return web.json_response(
+                {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id"),
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "legacy_tool",
+                                "description": "legacy",
+                                "inputSchema": {"type": "object"},
+                            }
+                        ]
+                    },
+                },
+                headers={"Mcp-Session-Id": "legacy_sess"},
+            )
+
+        return web.json_response({"jsonrpc": "2.0", "id": payload.get("id"), "result": {}})
+
+    async def run():
+        app = web.Application()
+        app.router.add_post("/", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        url = f"http://127.0.0.1:{port}/"
+
+        try:
+            client = MCPStreamableHttpClient(url)
+            result = await client.initialize()
+            assert result.get("serverInfo", {}).get("name") == "LegacyMCP"
+            assert client.protocol_version == "2024-11-05"
+
+            await client.notify_initialized()
+            tools = await client.list_tools()
+            assert tools[0]["name"] == "legacy_tool"
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+    assert ("initialize", "2025-06-18") in seen_protocol_versions
+    assert ("initialize", "2024-11-05") in seen_protocol_versions
+    assert ("tools/list", "2024-11-05") in seen_protocol_versions
+
+
+def _write_stdio_server(tmp_path, script_name: str, body: str) -> str:
+    script_path = tmp_path / script_name
+    script_path.write_text(textwrap.dedent(body), encoding="utf-8")
+    return str(script_path)
+
+
+def test_mcp_stdio_client_lifecycle_and_call(tmp_path, monkeypatch):
+    from open_webui.utils import mcp as mcp_mod
+
+    monkeypatch.setattr(
+        mcp_mod,
+        "DEFAULT_STDIO_ALLOWED_COMMANDS",
+        mcp_mod.DEFAULT_STDIO_ALLOWED_COMMANDS | {pathlib.Path(sys.executable).name.lower()},
+    )
+
+    script_path = _write_stdio_server(
+        tmp_path,
+        "stdio_server.py",
+        """
+        import json
+        import sys
+
+        for raw in sys.stdin:
+            msg = json.loads(raw)
+            method = msg.get("method")
+            if method == "initialize":
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "result": {
+                        "protocolVersion": "2025-06-18",
+                        "serverInfo": {"name": "stdio-test", "version": "1.0.0"},
+                        "capabilities": {"tools": {}},
+                    },
+                }), flush=True)
+            elif method == "notifications/initialized":
+                continue
+            elif method == "tools/list":
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "echo",
+                                "description": "Echo tool",
+                                "inputSchema": {"type": "object"},
+                            }
+                        ]
+                    },
+                }), flush=True)
+            elif method == "tools/call":
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/message",
+                    "params": {"level": "info", "data": "calling"},
+                }), flush=True)
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "result": {"content": [{"type": "text", "text": "ok"}]},
+                }), flush=True)
+        """,
+    )
+
+    async def run():
+        client = mcp_mod.MCPStdioClient(
+            {"transport_type": "stdio", "command": sys.executable, "args": [script_path]}
+        )
+        try:
+            await client.start()
+            tools = await client.list_tools()
+            assert client.server_info["name"] == "stdio-test"
+            assert tools[0]["name"] == "echo"
+
+            notifications = []
+
+            async def on_notification(msg):
+                notifications.append(msg)
+
+            result = await client.call_tool("echo", {"hello": "world"}, on_notification=on_notification)
+            assert result["content"][0]["text"] == "ok"
+            assert notifications[0]["method"] == "notifications/message"
+        finally:
+            await client.stop()
+
+    asyncio.run(run())
+
+
+def test_mcp_stdio_timeout_marks_client_tainted_and_manager_rebuilds(tmp_path, monkeypatch):
+    from open_webui.utils import mcp as mcp_mod
+
+    monkeypatch.setattr(
+        mcp_mod,
+        "DEFAULT_STDIO_ALLOWED_COMMANDS",
+        mcp_mod.DEFAULT_STDIO_ALLOWED_COMMANDS | {pathlib.Path(sys.executable).name.lower()},
+    )
+    monkeypatch.setattr(mcp_mod, "MCP_TOOL_CALL_TIMEOUT", 1)
+
+    script_path = _write_stdio_server(
+        tmp_path,
+        "slow_stdio_server.py",
+        """
+        import json
+        import sys
+        import time
+
+        for raw in sys.stdin:
+            msg = json.loads(raw)
+            method = msg.get("method")
+            if method == "initialize":
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "result": {
+                        "protocolVersion": "2025-06-18",
+                        "serverInfo": {"name": "slow-stdio"},
+                        "capabilities": {"tools": {}},
+                    },
+                }), flush=True)
+            elif method == "notifications/initialized":
+                continue
+            elif method == "tools/list":
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "sleep",
+                                "description": "Sleep tool",
+                                "inputSchema": {"type": "object"},
+                            }
+                        ]
+                    },
+                }), flush=True)
+            elif method == "tools/call":
+                time.sleep(2)
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "result": {"content": [{"type": "text", "text": "done"}]},
+                }), flush=True)
+        """,
+    )
+
+    async def run():
+        manager = mcp_mod.MCPStdioProcessManager.instance()
+        connection = {
+            "transport_type": "stdio",
+            "command": sys.executable,
+            "args": [script_path],
+        }
+
+        try:
+            client1 = await manager.get_or_start(connection, "user-1")
+            with pytest.raises(RuntimeError, match="timed out"):
+                await client1.call_tool("sleep", {})
+            assert client1.tainted is True
+
+            client2 = await manager.get_or_start(connection, "user-1")
+            assert client2 is not client1
+        finally:
+            await manager.stop_all()
+
+    asyncio.run(run())
+
+
+def test_get_mcp_servers_data_only_fetches_selected_indices(monkeypatch):
+    from open_webui.utils import mcp as mcp_mod
+
+    seen = []
+
+    async def fake_get_mcp_server_data(connection, **_kwargs):
+        seen.append(connection["url"])
+        return {
+            "server_info": {"name": connection["url"]},
+            "capabilities": {},
+            "tools": [],
+        }
+
+    monkeypatch.setattr(mcp_mod, "get_mcp_server_data", fake_get_mcp_server_data)
+
+    async def run():
+        results = await mcp_mod.get_mcp_servers_data(
+            [
+                {"url": "http://one", "config": {"enable": True}},
+                {"url": "http://two", "config": {"enable": True}},
+                {"url": "http://three", "config": {"enable": True}},
+            ],
+            selected_indices={1},
+            strict_selected=True,
+        )
+        assert [result["idx"] for result in results] == [1]
+
+    asyncio.run(run())
+    assert seen == ["http://two"]
+
+
+def test_get_mcp_servers_data_strict_selected_rejects_invalid_index():
+    from open_webui.utils import mcp as mcp_mod
+
+    async def run():
+        with pytest.raises(RuntimeError, match="所选 MCP 服务器当前不可用"):
+            await mcp_mod.get_mcp_servers_data(
+                [{"url": "http://one", "config": {"enable": True}}],
+                selected_indices={2},
+                strict_selected=True,
+            )
+
+    asyncio.run(run())
+
+
+def test_mcp_server_connection_validates_transport_fields():
+    from pydantic import ValidationError
+
+    from open_webui.routers.configs import MCPServerConnection
+
+    with pytest.raises(ValidationError):
+        MCPServerConnection(transport_type="http")
+
+    with pytest.raises(ValidationError):
+        MCPServerConnection(transport_type="stdio")
+
+    http_conn = MCPServerConnection(transport_type="http", url="http://example.com")
+    assert http_conn.transport_type == "http"
+    assert http_conn.url == "http://example.com"
+
+    stdio_conn = MCPServerConnection(
+        transport_type="stdio",
+        command="python",
+        args=["server.py"],
+        env={"TOKEN": "abc"},
+    )
+    assert stdio_conn.transport_type == "stdio"
+    assert stdio_conn.command == "python"

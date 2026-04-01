@@ -20,7 +20,7 @@ from open_webui.utils.access_control import has_access, has_permission
 from open_webui.env import SRC_LOG_LEVELS
 
 from open_webui.utils.tools import get_tool_servers_data
-from open_webui.utils.mcp import get_mcp_servers_data
+from open_webui.utils.mcp import get_mcp_servers_cached_meta
 from open_webui.utils.user_tools import (
     get_user_mcp_server_connections,
     get_user_tool_server_connections,
@@ -71,10 +71,11 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
         tool_server_connections,
         session_token=request.state.token.credentials,
     )
-    mcp_servers_data = await get_mcp_servers_data(
-        mcp_server_connections,
-        session_token=request.state.token.credentials,
-    )
+    mcp_servers_data = [
+        server
+        for server in get_mcp_servers_cached_meta(mcp_server_connections)
+        if (server.get("config") or {}).get("enable", True)
+    ]
 
     # Workspace tools are already scoped via access_control and/or ownership.
     tools = Tools.get_tools_list_by_user_id(user.id, permission="read")
@@ -102,8 +103,24 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
 
     for server in mcp_servers_data:
         server_info = server.get("server_info", {}) or {}
-        server_name = server_info.get("name") or server.get("url") or "MCP Server"
+        transport_type = str(server.get("transport_type") or "http").lower()
+        identifier = (
+            server.get("url")
+            if transport_type == "http"
+            else server.get("command")
+        )
+        server_name = (
+            server_info.get("name")
+            or server.get("name")
+            or identifier
+            or "MCP Server"
+        )
         server_version = server_info.get("version")
+        verified_at = server.get("verified_at")
+        transport_label = "HTTP" if transport_type == "http" else "stdio"
+        status_label = (
+            f"已验证 {verified_at}" if verified_at else "未验证"
+        )
 
         tools.append(
             ToolUserResponse(
@@ -113,7 +130,9 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
                     "name": server_name,
                     "meta": {
                         "description": (
-                            f"MCP (Streamable HTTP){' - v' + str(server_version) if server_version else ''}"
+                            f"MCP ({transport_label})"
+                            f"{' - v' + str(server_version) if server_version else ''}"
+                            f" - {status_label}"
                         ),
                     },
                     "access_control": None,

@@ -107,6 +107,7 @@ from open_webui.utils.user_tools import (
     get_user_native_tools_config,
     normalize_tool_calling_mode,
 )
+from open_webui.utils.mcp import MCPStdioProcessManager
 
 from open_webui.config import (
     LICENSE_KEY,
@@ -540,6 +541,11 @@ async def lifespan(app: FastAPI):
         await shutdown_haloclaw(app)
     except Exception as e:
         log.error(f"Error during HaloClaw shutdown: {e}")
+
+    try:
+        await MCPStdioProcessManager.instance().stop_all()
+    except Exception as e:
+        log.error(f"Error during MCP stdio shutdown: {e}")
 
 
 app = FastAPI(
