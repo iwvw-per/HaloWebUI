@@ -82,7 +82,7 @@
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { queryMemory } from '$lib/apis/memories';
 	import { uploadFile } from '$lib/apis/files';
-	import { getAndUpdateUserLocation, getUserSettings } from '$lib/apis/users';
+	import { getAndUpdateUserLocation } from '$lib/apis/users';
 	import {
 		chatCompleted,
 		generateQueries,
@@ -1461,6 +1461,9 @@
 	const loadChat = async () => {
 		const navigationId = chatIdProp;
 		chatId.set(chatIdProp);
+		tags = [];
+		taskIds = null;
+
 		chat = await getChatById(localStorage.token, $chatId).catch(async (error) => {
 			await goto('/');
 			return null;
@@ -1469,12 +1472,6 @@
 		if (navigationId !== chatIdProp) return null;
 
 		if (chat) {
-			tags = await getTagsById(localStorage.token, $chatId).catch(async (error) => {
-				return [];
-			});
-
-			if (navigationId !== chatIdProp) return null;
-
 			const chatContent = chat.chat;
 
 			if (chatContent) {
@@ -1489,31 +1486,27 @@
 
 				chatTitle.set(chatContent.title);
 
-				const userSettings = await getUserSettings(localStorage.token);
-
-				if (navigationId !== chatIdProp) return null;
-
-				if (userSettings) {
-					await settings.set(userSettings.ui);
-				} else {
+				if (!$settings || Object.keys($settings).length === 0) {
 					await settings.set(safeParseStoredJson(localStorage.getItem('settings'), {}));
 				}
 
 				params = chatContent?.params ?? {};
 				chatFiles = chatContent?.files ?? [];
 
-				const taskRes = await getTaskIdsByChatId(localStorage.token, $chatId).catch((error) => {
-					return null;
-				});
+				void (async () => {
+					const [nextTags, taskRes] = await Promise.all([
+						getTagsById(localStorage.token, $chatId).catch(() => []),
+						getTaskIdsByChatId(localStorage.token, $chatId).catch(() => null)
+					]);
 
-				if (navigationId !== chatIdProp) return null;
+					if (navigationId !== chatIdProp) return;
 
-				taskIds = taskRes?.task_ids ?? [];
-				reconcileLoadedAssistantMessages(taskIds);
+					tags = nextTags;
+					taskIds = taskRes?.task_ids ?? [];
+					reconcileLoadedAssistantMessages(taskIds);
+				})();
 
 				resetAutoScrollLock();
-				await tick();
-
 				await tick();
 
 				return true;
