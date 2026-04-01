@@ -126,6 +126,8 @@
 	"Auth": "",
 	"Authenticate": "",
 	"Authentication": "",
+	"API Version": "",
+	"Usually not required. HaloWebUI only uses api-version when it needs to fall back to legacy Azure deployment paths.": "",
 	"Auto": "",
 	"Auto-Copy Response to Clipboard": "",
 	"Auto-playback response": "",

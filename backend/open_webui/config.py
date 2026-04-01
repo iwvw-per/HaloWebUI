@@ -3142,6 +3142,11 @@ IMAGES_OPENAI_API_BASE_URL = PersistentConfig(
     "image_generation.openai.api_base_url",
     os.getenv("IMAGES_OPENAI_API_BASE_URL", OPENAI_API_BASE_URL),
 )
+IMAGES_OPENAI_API_FORCE_MODE = PersistentConfig(
+    "IMAGES_OPENAI_API_FORCE_MODE",
+    "image_generation.openai.force_mode",
+    os.getenv("IMAGES_OPENAI_API_FORCE_MODE", "False").lower() == "true",
+)
 IMAGES_OPENAI_API_KEY = PersistentConfig(
     "IMAGES_OPENAI_API_KEY",
     "image_generation.openai.api_key",
@@ -3152,6 +3157,11 @@ IMAGES_GEMINI_API_BASE_URL = PersistentConfig(
     "IMAGES_GEMINI_API_BASE_URL",
     "image_generation.gemini.api_base_url",
     os.getenv("IMAGES_GEMINI_API_BASE_URL", GEMINI_API_BASE_URL),
+)
+IMAGES_GEMINI_API_FORCE_MODE = PersistentConfig(
+    "IMAGES_GEMINI_API_FORCE_MODE",
+    "image_generation.gemini.force_mode",
+    os.getenv("IMAGES_GEMINI_API_FORCE_MODE", "False").lower() == "true",
 )
 IMAGES_GEMINI_API_KEY = PersistentConfig(
     "IMAGES_GEMINI_API_KEY",

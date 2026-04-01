@@ -90,6 +90,9 @@ NEGATIVE_IMAGE_HINTS = (
     "upscale",
 )
 NEGATIVE_TOKEN_RE = re.compile(r"(^|[\/._:-])(vision|vl|asr)([\/._:-]|$)", re.IGNORECASE)
+VERSION_LIKE_BASE_URL_RE = re.compile(
+    r"/(?:compatible-mode/)?v\d+(?:[a-z]+\d*)?$", re.IGNORECASE
+)
 
 IMAGE_SIZE_ASPECT_RATIO_OVERRIDES = {
     "512x512": "1:1",
@@ -388,6 +391,77 @@ def _normalize_base_url(url: Optional[str]) -> str:
     return str(url or "").strip().rstrip("/")
 
 
+def _normalize_image_provider_base_url(
+    url: Optional[str],
+    default_version_path: str,
+    *,
+    force_mode: bool = False,
+) -> tuple[str, bool]:
+    raw = str(url or "").strip()
+    explicit_force_mode = raw.endswith("#")
+    if explicit_force_mode:
+        raw = raw[:-1]
+
+    normalized = raw.rstrip("/")
+    effective_force_mode = bool(force_mode or explicit_force_mode)
+
+    if not normalized:
+        return "", effective_force_mode
+
+    if effective_force_mode:
+        return normalized, True
+
+    for suffix in (
+        "/chat/completions",
+        "/models",
+        "/completions",
+        "/images/generations",
+        "/images/edits",
+    ):
+        if normalized.lower().endswith(suffix):
+            normalized = normalized[: -len(suffix)].rstrip("/")
+            break
+
+    if not normalized:
+        return "", False
+
+    if normalized.lower().endswith(default_version_path.lower()):
+        return normalized, False
+
+    if VERSION_LIKE_BASE_URL_RE.search(normalized):
+        return normalized, False
+
+    return f"{normalized}{default_version_path}", False
+
+
+def _sync_image_provider_config_state(request: Request) -> None:
+    cfg = request.app.state.config
+
+    openai_base_url = str(getattr(cfg, "IMAGES_OPENAI_API_BASE_URL", "") or "")
+    openai_force_mode = bool(getattr(cfg, "IMAGES_OPENAI_API_FORCE_MODE", False))
+    normalized_openai_base_url, normalized_openai_force_mode = _normalize_image_provider_base_url(
+        openai_base_url,
+        "/v1",
+        force_mode=openai_force_mode,
+    )
+    if normalized_openai_base_url != openai_base_url:
+        request.app.state.config.IMAGES_OPENAI_API_BASE_URL = normalized_openai_base_url
+    if normalized_openai_force_mode != openai_force_mode:
+        request.app.state.config.IMAGES_OPENAI_API_FORCE_MODE = normalized_openai_force_mode
+
+    gemini_base_url = str(getattr(cfg, "IMAGES_GEMINI_API_BASE_URL", "") or "")
+    gemini_force_mode = bool(getattr(cfg, "IMAGES_GEMINI_API_FORCE_MODE", False))
+    normalized_gemini_base_url, normalized_gemini_force_mode = _normalize_image_provider_base_url(
+        gemini_base_url,
+        "/v1beta",
+        force_mode=gemini_force_mode,
+    )
+    if normalized_gemini_base_url != gemini_base_url:
+        request.app.state.config.IMAGES_GEMINI_API_BASE_URL = normalized_gemini_base_url
+    if normalized_gemini_force_mode != gemini_force_mode:
+        request.app.state.config.IMAGES_GEMINI_API_FORCE_MODE = normalized_gemini_force_mode
+
+
 def _normalize_context(value: Optional[str]) -> str:
     normalized = str(value or "runtime").strip().lower()
     return normalized if normalized in {"runtime", "settings"} else "runtime"
@@ -619,16 +693,31 @@ def _resolve_image_provider_source(
     connection_index: Optional[int] = None,
     strict: bool = False,
 ) -> Optional[dict[str, Any]]:
+    _sync_image_provider_config_state(request)
+
     context = _normalize_context(context)
     credential_source = _normalize_credential_source(credential_source)
     cfg = request.app.state.config
+    image_api_config: dict[str, Any] = {}
 
     if provider == "openai":
-        shared_base_url = _normalize_base_url(getattr(cfg, "IMAGES_OPENAI_API_BASE_URL", ""))
+        shared_base_url, persisted_force_mode = _normalize_image_provider_base_url(
+            getattr(cfg, "IMAGES_OPENAI_API_BASE_URL", ""),
+            "/v1",
+            force_mode=bool(getattr(cfg, "IMAGES_OPENAI_API_FORCE_MODE", False)),
+        )
         shared_key = str(getattr(cfg, "IMAGES_OPENAI_API_KEY", "") or "").strip()
+        if persisted_force_mode:
+            image_api_config["force_mode"] = True
     elif provider == "gemini":
-        shared_base_url = _normalize_base_url(getattr(cfg, "IMAGES_GEMINI_API_BASE_URL", ""))
+        shared_base_url, persisted_force_mode = _normalize_image_provider_base_url(
+            getattr(cfg, "IMAGES_GEMINI_API_BASE_URL", ""),
+            "/v1beta",
+            force_mode=bool(getattr(cfg, "IMAGES_GEMINI_API_FORCE_MODE", False)),
+        )
         shared_key = str(getattr(cfg, "IMAGES_GEMINI_API_KEY", "") or "").strip()
+        if persisted_force_mode:
+            image_api_config["force_mode"] = True
     else:
         return None
 
@@ -641,15 +730,20 @@ def _resolve_image_provider_source(
             return None
 
         resolved_key = shared_key
+        resolved_api_config = dict(image_api_config)
         if for_settings and not resolved_key and shared_global_key:
             resolved_key = shared_global_key
+            if isinstance(shared_api_config, dict):
+                resolved_api_config = {**shared_api_config, **resolved_api_config}
+        elif not for_settings and isinstance(shared_api_config, dict):
+            resolved_api_config = {**shared_api_config, **resolved_api_config}
 
         return {
             "provider": provider,
             "effective_source": "shared" if not for_settings else "settings",
             "base_url": shared_base_url,
             "key": resolved_key,
-            "api_config": shared_api_config,
+            "api_config": resolved_api_config,
             "connection_index": shared_global_index,
             "cache_scope": f"{provider}:{context}:shared",
         }
@@ -1253,6 +1347,9 @@ async def get_config(request: Request, user=Depends(get_admin_user)):
         ),
         "openai": {
             "OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+            "OPENAI_API_FORCE_MODE": getattr(
+                request.app.state.config, "IMAGES_OPENAI_API_FORCE_MODE", False
+            ),
             "OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
         },
         "automatic1111": {
@@ -1270,6 +1367,9 @@ async def get_config(request: Request, user=Depends(get_admin_user)):
         },
         "gemini": {
             "GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+            "GEMINI_API_FORCE_MODE": getattr(
+                request.app.state.config, "IMAGES_GEMINI_API_FORCE_MODE", False
+            ),
             "GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
         },
     }
@@ -1277,6 +1377,7 @@ async def get_config(request: Request, user=Depends(get_admin_user)):
 
 class OpenAIConfigForm(BaseModel):
     OPENAI_API_BASE_URL: str
+    OPENAI_API_FORCE_MODE: bool = False
     OPENAI_API_KEY: str
 
 
@@ -1297,6 +1398,7 @@ class ComfyUIConfigForm(BaseModel):
 
 class GeminiConfigForm(BaseModel):
     GEMINI_API_BASE_URL: str
+    GEMINI_API_FORCE_MODE: bool = False
     GEMINI_API_KEY: str
 
 
@@ -1315,6 +1417,17 @@ class ConfigForm(BaseModel):
 async def update_config(
     request: Request, form_data: ConfigForm, user=Depends(get_admin_user)
 ):
+    openai_base_url, openai_force_mode = _normalize_image_provider_base_url(
+        form_data.openai.OPENAI_API_BASE_URL,
+        "/v1",
+        force_mode=form_data.openai.OPENAI_API_FORCE_MODE,
+    )
+    gemini_base_url, gemini_force_mode = _normalize_image_provider_base_url(
+        form_data.gemini.GEMINI_API_BASE_URL,
+        "/v1beta",
+        force_mode=form_data.gemini.GEMINI_API_FORCE_MODE,
+    )
+
     request.app.state.config.IMAGE_GENERATION_ENGINE = form_data.engine
     request.app.state.config.ENABLE_IMAGE_GENERATION = form_data.enabled
     request.app.state.config.ENABLE_IMAGE_GENERATION_SHARED_KEY = (
@@ -1325,14 +1438,12 @@ async def update_config(
         form_data.prompt_generation
     )
 
-    request.app.state.config.IMAGES_OPENAI_API_BASE_URL = (
-        form_data.openai.OPENAI_API_BASE_URL
-    )
+    request.app.state.config.IMAGES_OPENAI_API_BASE_URL = openai_base_url
+    request.app.state.config.IMAGES_OPENAI_API_FORCE_MODE = openai_force_mode
     request.app.state.config.IMAGES_OPENAI_API_KEY = form_data.openai.OPENAI_API_KEY
 
-    request.app.state.config.IMAGES_GEMINI_API_BASE_URL = (
-        form_data.gemini.GEMINI_API_BASE_URL
-    )
+    request.app.state.config.IMAGES_GEMINI_API_BASE_URL = gemini_base_url
+    request.app.state.config.IMAGES_GEMINI_API_FORCE_MODE = gemini_force_mode
     request.app.state.config.IMAGES_GEMINI_API_KEY = form_data.gemini.GEMINI_API_KEY
 
     request.app.state.config.AUTOMATIC1111_BASE_URL = (
@@ -1375,6 +1486,9 @@ async def update_config(
         "shared_key_enabled": request.app.state.config.ENABLE_IMAGE_GENERATION_SHARED_KEY,
         "openai": {
             "OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+            "OPENAI_API_FORCE_MODE": getattr(
+                request.app.state.config, "IMAGES_OPENAI_API_FORCE_MODE", False
+            ),
             "OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
         },
         "automatic1111": {
@@ -1392,6 +1506,9 @@ async def update_config(
         },
         "gemini": {
             "GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+            "GEMINI_API_FORCE_MODE": getattr(
+                request.app.state.config, "IMAGES_GEMINI_API_FORCE_MODE", False
+            ),
             "GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
         },
     }

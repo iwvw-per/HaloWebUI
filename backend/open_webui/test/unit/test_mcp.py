@@ -190,6 +190,66 @@ def test_get_tools_exposes_mcp_tool_and_routes_call(monkeypatch):
     assert called["session_token"] == "tok_abc"
 
 
+def test_tools_route_prefers_custom_mcp_title_and_description(monkeypatch):
+    from open_webui.routers import tools as tools_router
+
+    monkeypatch.setattr(tools_router, "get_user_tool_server_connections", lambda _request, _user: [])
+    monkeypatch.setattr(
+        tools_router,
+        "get_user_mcp_server_connections",
+        lambda _request, _user: [
+            {
+                "transport_type": "stdio",
+                "command": "uvx mcp-server-fetch",
+                "name": "网页内容抓取",
+                "description": "把网页正文提取成适合模型阅读的文本",
+                "server_info": {"name": "mcp-fetch", "version": "1.2.3"},
+                "verified_at": "2026-04-02T12:00:00Z",
+                "config": {"enable": True},
+            }
+        ],
+    )
+    monkeypatch.setattr(tools_router.Tools, "get_tools_list_by_user_id", lambda *_args, **_kwargs: [])
+
+    async def fake_get_tool_servers_data(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(tools_router, "get_tool_servers_data", fake_get_tool_servers_data)
+
+    request = SimpleNamespace(
+        state=SimpleNamespace(token=SimpleNamespace(credentials="tok_abc")),
+        app=SimpleNamespace(state=SimpleNamespace()),
+    )
+    user = SimpleNamespace(id="u1", role="admin")
+
+    async def run():
+        return await tools_router.get_tools(request, user)
+
+    tools = asyncio.run(run())
+    mcp_entry = next(tool for tool in tools if tool.id == "mcp:0")
+
+    assert mcp_entry.name == "网页内容抓取"
+    assert mcp_entry.meta.description == "把网页正文提取成适合模型阅读的文本"
+
+
+def test_get_mcp_server_display_metadata_falls_back_when_custom_values_missing():
+    from open_webui.utils.mcp import get_mcp_server_display_metadata
+
+    title, description = get_mcp_server_display_metadata(
+        {
+            "transport_type": "http",
+            "url": "https://mcp.example.com/v1/mcp",
+            "server_info": {"name": "mcp-fetch"},
+        },
+        index=0,
+        default_description="MCP (HTTP) - 未验证",
+        prefer_hostname_for_http=True,
+    )
+
+    assert title == "mcp-fetch"
+    assert description == "MCP (HTTP) - 未验证"
+
+
 def test_http_client_protocol_negotiation_retries_on_http_error():
     from aiohttp import web
 

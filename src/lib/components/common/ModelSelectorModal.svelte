@@ -39,6 +39,8 @@
 	export let url = '';
 	export let force_mode = false;
 	export let key = '';
+	export let azure = false;
+	export let api_version: string | undefined = undefined;
 	export let ollama = false;
 	export let gemini = false;
 	export let anthropic = false;
@@ -172,16 +174,18 @@
 				}));
 			} else {
 				// Use backend proxy to avoid CORS issues
-				data = await verifyOpenAIConnection(localStorage.token, {
-					url,
-					key,
-					purpose: 'models',
-					config: {
-						force_mode,
-						...(auth_type ? { auth_type } : {}),
-						...(headers ? { headers } : {})
-					}
-				});
+					data = await verifyOpenAIConnection(localStorage.token, {
+						url,
+						key,
+						purpose: 'models',
+						config: {
+							force_mode,
+							...(azure ? { azure: true } : {}),
+							...(api_version ? { api_version } : {}),
+							...(auth_type ? { auth_type } : {}),
+							...(headers ? { headers } : {})
+						}
+					});
 					availableModels = (data?.data || []).map((m: any) => ({
 						id: m.id,
 						name: m.name || m.id,

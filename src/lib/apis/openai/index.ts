@@ -5,6 +5,8 @@ const OPENAI_CHAT_COMPLETIONS_SUFFIX = '/chat/completions';
 
 type OpenAIConnectionConfig = Record<string, any> & {
 	force_mode?: boolean;
+	azure?: boolean;
+	api_version?: string;
 };
 
 type OpenAIVerifyPurpose = 'connection' | 'models';
@@ -15,6 +17,100 @@ const isForceModeConnection = (
 ) => {
 	const normalizedUrl = (url || '').trim().replace(/\/+$/, '');
 	return Boolean(config?.force_mode) || normalizedUrl.endsWith(OPENAI_CHAT_COMPLETIONS_SUFFIX);
+};
+
+const isAzureConnection = (url: string, config?: OpenAIConnectionConfig) => {
+	if (config?.azure) return true;
+
+	try {
+		const parsed = new URL(url.trim());
+		const host = parsed.hostname.toLowerCase();
+		return (
+			host.endsWith('.openai.azure.com') ||
+			host.endsWith('.cognitiveservices.azure.com') ||
+			host.endsWith('.cognitive.microsoft.com')
+		);
+	} catch {
+		return false;
+	}
+};
+
+const stripKnownOpenAISuffixes = (path: string) => {
+	let normalizedPath = (path || '').replace(/\/+$/, '');
+
+	for (const suffix of ['/responses', '/models', OPENAI_CHAT_COMPLETIONS_SUFFIX, '/completions']) {
+		if (normalizedPath.endsWith(suffix)) {
+			normalizedPath = normalizedPath.slice(0, -suffix.length).replace(/\/+$/, '');
+		}
+	}
+
+	return normalizedPath;
+};
+
+const buildUrlFromPath = (parsed: URL, path: string) => {
+	const normalizedPath = path ? (path.startsWith('/') ? path : `/${path}`) : '';
+	return `${parsed.protocol}//${parsed.host}${normalizedPath}`;
+};
+
+const normalizeAzureOpenAIBaseUrl = (url: string, config?: OpenAIConnectionConfig) => {
+	const normalizedUrl = (url || '').trim().replace(/\/+$/, '');
+	if (!normalizedUrl || isForceModeConnection(normalizedUrl, config)) {
+		return normalizedUrl;
+	}
+
+	try {
+		const parsed = new URL(normalizedUrl);
+		const path = stripKnownOpenAISuffixes(parsed.pathname);
+
+		if (path.includes('/openai/deployments/')) {
+			const [prefix, remainder] = path.split('/openai/deployments/', 2);
+			const deployment = remainder.split('/', 1)[0]?.trim();
+			const deploymentPath = deployment
+				? `${prefix}/openai/deployments/${deployment}`
+				: `${prefix}/openai/v1`;
+			return buildUrlFromPath(parsed, deploymentPath);
+		}
+
+		if (path.endsWith('/openai/v1')) {
+			return buildUrlFromPath(parsed, path);
+		}
+
+		if (path.endsWith('/openai')) {
+			return buildUrlFromPath(parsed, `${path}/v1`);
+		}
+
+		if (path.endsWith('/v1')) {
+			return buildUrlFromPath(parsed, `${path.slice(0, -'/v1'.length)}/openai/v1`);
+		}
+
+		return buildUrlFromPath(parsed, path ? `${path}/openai/v1` : '/openai/v1');
+	} catch {
+		return normalizedUrl;
+	}
+};
+
+const getAzureResourceBaseUrl = (url: string) => {
+	const normalizedUrl = (url || '').trim().replace(/\/+$/, '');
+	if (!normalizedUrl) return normalizedUrl;
+
+	try {
+		const parsed = new URL(normalizedUrl);
+		let path = stripKnownOpenAISuffixes(parsed.pathname);
+
+		if (path.includes('/openai/deployments/')) {
+			path = path.split('/openai/deployments/', 1)[0];
+		} else if (path.endsWith('/openai/v1')) {
+			path = path.slice(0, -'/openai/v1'.length);
+		} else if (path.endsWith('/openai')) {
+			path = path.slice(0, -'/openai'.length);
+		} else if (path.endsWith('/v1')) {
+			path = path.slice(0, -'/v1'.length);
+		}
+
+		return buildUrlFromPath(parsed, path);
+	} catch {
+		return normalizedUrl;
+	}
 };
 
 const isDashScopeCompatibleConnection = (url: string) => {
@@ -87,6 +183,14 @@ const getOpenAIModelsEndpoint = (
 	const normalizedUrl = (url || '').trim().replace(/\/+$/, '');
 	if (!normalizedUrl) return '';
 
+	if (isAzureConnection(normalizedUrl, config)) {
+		const azureBase = normalizeAzureOpenAIBaseUrl(normalizedUrl, config);
+		if (azureBase.includes('/openai/deployments/')) {
+			return `${getAzureResourceBaseUrl(normalizedUrl)}/openai/v1/models`;
+		}
+		return `${azureBase}/models`;
+	}
+
 	if (isForceModeConnection(normalizedUrl, config)) {
 		if (normalizedUrl.endsWith(OPENAI_CHAT_COMPLETIONS_SUFFIX)) {
 			return `${normalizedUrl.slice(0, -OPENAI_CHAT_COMPLETIONS_SUFFIX.length)}/models`;
@@ -95,6 +199,50 @@ const getOpenAIModelsEndpoint = (
 	}
 
 	return `${normalizedUrl}/models`;
+};
+
+const getOpenAIRequestHeaders = (
+	url: string,
+	key: string,
+	config?: OpenAIConnectionConfig
+) => {
+	const authType = String(config?.auth_type ?? '').trim().toLowerCase();
+	const headers: Record<string, string> = {};
+
+	if (config?.headers && typeof config.headers === 'object') {
+		for (const [headerKey, headerValue] of Object.entries(config.headers)) {
+			if (headerValue == null) continue;
+			headers[String(headerKey)] = String(headerValue);
+		}
+	}
+
+	const lowerHeaders = new Set(Object.keys(headers).map((header) => header.toLowerCase()));
+
+	if (key) {
+		if (authType === 'none' || authType === 'custom' || authType === 'custom_headers_only') {
+			// Leave auth to custom headers.
+		} else if (
+			authType === 'api-key' ||
+			authType === 'x-api-key' ||
+			(isAzureConnection(url, config) &&
+				!['bearer', 'authorization', 'azure_ad', 'microsoft_entra_id'].includes(authType))
+		) {
+			if (!lowerHeaders.has('api-key') && !lowerHeaders.has('authorization')) {
+				headers['api-key'] = key;
+			}
+		} else if (!lowerHeaders.has('authorization') && !lowerHeaders.has('api-key')) {
+			headers.Authorization = `Bearer ${key}`;
+		}
+	}
+
+	if (!lowerHeaders.has('accept')) {
+		headers.Accept = 'application/json';
+	}
+	if (!lowerHeaders.has('content-type')) {
+		headers['Content-Type'] = 'application/json';
+	}
+
+	return headers;
 };
 
 export const getOpenAIConfig = async (token: string = '') => {
@@ -296,11 +444,10 @@ export const getOpenAIModelsDirect = async (
 
 	const res = await fetch(getOpenAIModelsEndpoint(url, config), {
 		method: 'GET',
-		headers: {
-			Accept: 'application/json',
-			'Content-Type': 'application/json',
-			...(key && { authorization: `Bearer ${key}` })
-		}
+		headers: getOpenAIRequestHeaders(url, key, {
+			...config,
+			azure: isAzureConnection(url, config)
+		})
 	})
 		.then(parseJsonResponse)
 		.catch((err) => {
@@ -377,11 +524,10 @@ export const verifyOpenAIConnection = async (
 	if (isDirect) {
 		res = await fetch(getOpenAIModelsEndpoint(url, config), {
 			method: 'GET',
-			headers: {
-				Accept: 'application/json',
-				Authorization: `Bearer ${key}`,
-				'Content-Type': 'application/json'
-			}
+			headers: getOpenAIRequestHeaders(url, key, {
+				...config,
+				azure: isAzureConnection(url, config)
+			})
 		})
 			.then(async (res) => {
 				if (!res.ok) {

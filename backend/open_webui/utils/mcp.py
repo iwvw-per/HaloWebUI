@@ -10,6 +10,7 @@ import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import aiohttp
@@ -1036,6 +1037,54 @@ def get_mcp_servers_cached_meta(servers: List[Dict[str, Any]]) -> List[Dict[str,
             }
         )
     return results
+
+
+def _get_mcp_http_display_target(
+    server: Dict[str, Any], *, prefer_hostname: bool = False
+) -> str:
+    url = _strip_trailing_slash(str(server.get("url") or "").strip())
+    if not url or not prefer_hostname:
+        return url
+
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc or url
+    except Exception:
+        return url
+
+
+def get_mcp_server_display_metadata(
+    server: Dict[str, Any],
+    *,
+    index: Optional[int] = None,
+    default_description: str = "",
+    prefer_hostname_for_http: bool = False,
+) -> Tuple[str, str]:
+    config = server.get("config") or {}
+    transport_type = _get_transport_type(server)
+    server_info = server.get("server_info") or {}
+
+    custom_name = str(server.get("name") or config.get("remark") or "").strip()
+    resolved_server_name = str(server_info.get("name") or "").strip()
+
+    if transport_type == "stdio":
+        fallback_name = str(server.get("command") or "").strip()
+    else:
+        fallback_name = _get_mcp_http_display_target(
+            server, prefer_hostname=prefer_hostname_for_http
+        )
+
+    title = (
+        custom_name
+        or resolved_server_name
+        or fallback_name
+        or (f"MCP Server {index + 1}" if index is not None else "MCP Server")
+    )
+
+    custom_description = str(server.get("description") or "").strip()
+    description = custom_description or default_description
+
+    return title, description
 
 
 async def get_mcp_server_data(

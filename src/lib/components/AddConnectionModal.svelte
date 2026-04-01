@@ -88,6 +88,16 @@
 	let icon = '';
 	let enable = true;
 	let apiVersion = '';
+	const AZURE_API_VERSION_AUTO = 'auto';
+	const AZURE_API_VERSION_CUSTOM = '__custom__';
+	const AZURE_API_VERSION_PRESETS = [
+		'2025-04-01-preview',
+		'2025-03-01-preview',
+		'2025-02-01-preview',
+		'2025-01-01-preview'
+	];
+	let azureApiVersionMode = AZURE_API_VERSION_AUTO;
+	let azureCustomApiVersion = '';
 
 	let headers = '';
 
@@ -223,6 +233,76 @@
 		return normalized;
 	};
 
+	const normalizeAzureUrl = (inputUrl: string): string => {
+		if (!inputUrl) return '';
+
+		let normalized = inputUrl.trim();
+		if (normalized.endsWith('#')) {
+			return normalized.slice(0, -1).replace(/\/+$/, '');
+		}
+
+		normalized = normalized.replace(/\/+$/, '');
+
+		try {
+			const parsed = new URL(normalized);
+			let path = parsed.pathname.replace(/\/+$/, '');
+
+			path = path.replace(/\/responses$/, '');
+			path = path.replace(/\/models$/, '');
+			path = path.replace(/\/chat\/completions$/, '');
+			path = path.replace(/\/completions$/, '');
+			path = path.replace(/\/+$/, '');
+
+			if (path.includes('/openai/deployments/')) {
+				const [prefix, remainder] = path.split('/openai/deployments/', 2);
+				const deployment = remainder.split('/', 1)[0]?.trim();
+				path = deployment ? `${prefix}/openai/deployments/${deployment}` : `${prefix}/openai/v1`;
+			} else if (path.endsWith('/openai/v1')) {
+				// keep as-is
+			} else if (path.endsWith('/openai')) {
+				path = `${path}/v1`;
+			} else if (path.endsWith('/v1')) {
+				path = `${path.slice(0, -'/v1'.length)}/openai/v1`;
+			} else {
+				path = path ? `${path}/openai/v1` : '/openai/v1';
+			}
+
+			return `${parsed.protocol}//${parsed.host}${path}`;
+		} catch {
+			return normalized;
+		}
+	};
+
+	const getAzurePreviewBaseUrl = (inputUrl: string): string => {
+		const normalized = normalizeAzureUrl(inputUrl);
+		if (!normalized) return '';
+
+		if (normalized.includes('/openai/deployments/')) {
+			const [prefix] = normalized.split('/openai/deployments/', 1);
+			return `${prefix}/openai/v1`;
+		}
+
+		return normalized;
+	};
+
+	const applyAzureApiVersionState = (value: string) => {
+		const normalized = (value ?? '').toString().trim();
+		if (!normalized) {
+			azureApiVersionMode = AZURE_API_VERSION_AUTO;
+			azureCustomApiVersion = '';
+			return;
+		}
+
+		if (AZURE_API_VERSION_PRESETS.includes(normalized)) {
+			azureApiVersionMode = normalized;
+			azureCustomApiVersion = '';
+			return;
+		}
+
+		azureApiVersionMode = AZURE_API_VERSION_CUSTOM;
+		azureCustomApiVersion = normalized;
+	};
+
 	const isLegacyForceModeUrl = (inputUrl: string) =>
 		!gemini &&
 		!anthropic &&
@@ -300,7 +380,23 @@
 			? url.trim().endsWith('#')
 				? url.trim().slice(0, -1).replace(/\/+$/, '')
 				: url.replace(/\/+$/, '')
-			: normalizeUrl(url, '/v1');
+			: azure
+				? normalizeAzureUrl(url)
+				: normalizeUrl(url, '/v1');
+	$: if (azure) {
+		if (azureApiVersionMode === AZURE_API_VERSION_AUTO) {
+			if (apiVersion !== '') {
+				apiVersion = '';
+			}
+		} else if (azureApiVersionMode === AZURE_API_VERSION_CUSTOM) {
+			const nextValue = azureCustomApiVersion.trim();
+			if (apiVersion !== nextValue) {
+				apiVersion = nextValue;
+			}
+		} else if (apiVersion !== azureApiVersionMode) {
+			apiVersion = azureApiVersionMode;
+		}
+	}
 
 	const ensureAnthropicBeta = (name: string) => {
 		const trimmed = (name || '').trim();
@@ -350,6 +446,8 @@
 			return `${normalizedUrl}/messages`;
 		} else if (ollama) {
 			return `${normalizedUrl}/api/chat`;
+		} else if (azure) {
+			return `${getAzurePreviewBaseUrl(url)}/chat/completions`;
 		} else {
 			return `${normalizedUrl}/chat/completions`;
 		}
@@ -502,7 +600,7 @@
 					force_mode: isForceMode,
 					auth_type,
 					azure: azure,
-					api_version: apiVersion,
+					...(apiVersion ? { api_version: apiVersion } : {}),
 					...(_headers ? { headers: _headers } : {})
 				}
 			},
@@ -620,12 +718,6 @@
 		}
 
 		if (azure) {
-			if (!apiVersion) {
-				loading = false;
-				toast.error($i18n.t('API Version is required'));
-				return;
-			}
-
 			if (!key && !['azure_ad', 'microsoft_entra_id'].includes(auth_type)) {
 				loading = false;
 				toast.error($i18n.t('Key is required'));
@@ -719,7 +811,7 @@
 									: {})
 							}
 						: {}),
-					...(!ollama && azure ? { azure: true, api_version: apiVersion } : {}),
+					...(!ollama && azure ? { azure: true, ...(apiVersion ? { api_version: apiVersion } : {}) } : {}),
 						...(!ollama && !direct && !anthropic && !azure
 							? {
 									native_web_search_enabled: nativeWebSearchEnabled
@@ -776,6 +868,9 @@
 			preserveEmptyPrefixId = false;
 			remark = '';
 			icon = '';
+			apiVersion = '';
+			azureApiVersionMode = AZURE_API_VERSION_AUTO;
+			azureCustomApiVersion = '';
 			tags = [];
 			modelIds = [];
 			useResponsesApi = false;
@@ -841,6 +936,8 @@
 				if (anthropic) {
 					azure = false;
 					apiVersion = '';
+					azureApiVersionMode = AZURE_API_VERSION_AUTO;
+					azureCustomApiVersion = '';
 					useResponsesApi = false;
 					responsesApiExcludePatterns = [{ name: 'gemini' }];
 					nativeFileInputsEnabled = false;
@@ -870,6 +967,7 @@
 				} else {
 					azure = connection.config?.azure ?? false;
 					apiVersion = connection.config?.api_version ?? '';
+					applyAzureApiVersionState(connection.config?.api_version ?? '');
 					useResponsesApi = connection.config?.use_responses_api ?? false;
 					responsesApiExcludePatterns = (
 						connection.config?.responses_api_exclude_patterns ?? ['gemini']
@@ -902,6 +1000,11 @@
 					}
 				}
 			}
+			if (!connection.config?.azure) {
+				apiVersion = '';
+				azureApiVersionMode = AZURE_API_VERSION_AUTO;
+				azureCustomApiVersion = '';
+			}
 		} else {
 			if (gemini) {
 				auth_type = 'x-goog-api-key';
@@ -918,6 +1021,9 @@
 				filesCitations = false;
 				anthropicExtraBody = '';
 			}
+			apiVersion = '';
+			azureApiVersionMode = AZURE_API_VERSION_AUTO;
+			azureCustomApiVersion = '';
 			preserveEmptyPrefixId = false;
 			nativeFileInputsEnabled = false;
 			nativeFileInputsTouched = false;
@@ -951,6 +1057,8 @@
 	url={normalizedUrl}
 	force_mode={isForceMode}
 	{key}
+	{azure}
+	api_version={apiVersion}
 	{auth_type}
 	headers={parsedHeaders}
 	anthropic_version={anthropicVersion}
@@ -1113,8 +1221,8 @@
 										type="text"
 										bind:value={url}
 										on:blur={() => {
-											// Keep Gemini strictly on v1beta unless user explicitly disables normalization via '#'.
-											if (gemini && !isForceMode && url && url.trim() !== normalizedUrl) {
+											// Keep provider-specific URLs normalized unless user explicitly disables normalization via '#'.
+											if ((gemini || azure) && !isForceMode && url && url.trim() !== normalizedUrl) {
 												url = normalizedUrl;
 											}
 										}}
@@ -1532,18 +1640,46 @@
 
 								{#if azure}
 									<!-- API Version -->
-									<div class="flex flex-col">
+									<div class="flex flex-col gap-2">
 										<label for="api-version" class="text-xs text-gray-500 mb-1">
 											{$i18n.t('API Version')}
 										</label>
-										<input
-											id="api-version"
-											class="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg focus:outline-none"
-											type="text"
-											bind:value={apiVersion}
-											placeholder={$i18n.t('API Version')}
-											required
+										<HaloSelect
+											bind:value={azureApiVersionMode}
+											options={[
+												{
+													value: AZURE_API_VERSION_AUTO,
+													label: `${$i18n.t('Auto')} (${ $i18n.t('Recommended') })`
+												},
+												...AZURE_API_VERSION_PRESETS.map((version, idx) => ({
+													value: version,
+													label:
+														idx === 0
+															? `${version} (${ $i18n.t('Latest') })`
+															: version
+												})),
+												{
+													value: AZURE_API_VERSION_CUSTOM,
+													label: `${$i18n.t('Custom')}...`
+												}
+											]}
+											className="w-full"
 										/>
+										{#if azureApiVersionMode === AZURE_API_VERSION_CUSTOM}
+											<input
+												id="api-version"
+												class="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg focus:outline-none"
+												type="text"
+												bind:value={azureCustomApiVersion}
+												placeholder="2025-01-01-preview"
+												autocomplete="off"
+											/>
+										{/if}
+										<div class="text-xs text-gray-400 mt-1">
+											{$i18n.t(
+												'Usually not required. HaloWebUI only uses api-version when it needs to fall back to legacy Azure deployment paths.'
+											)}
+										</div>
 									</div>
 								{/if}
 

@@ -12,7 +12,10 @@ from open_webui.models.skills import SkillForm, SkillModel, Skills
 from open_webui.models.tools import Tools
 from open_webui.utils.access_control import has_access
 from open_webui.utils.auth import get_verified_user
-from open_webui.utils.mcp import get_mcp_servers_cached_meta
+from open_webui.utils.mcp import (
+    get_mcp_server_display_metadata,
+    get_mcp_servers_cached_meta,
+)
 from open_webui.utils.skill_importer import (
     ImportedSkillPayload,
     SkillImportError,
@@ -291,21 +294,9 @@ async def _build_mcp_server_items(request: Request, user) -> list[SkillCatalogIt
     for idx, (connection, cached) in enumerate(zip(connections, cached_meta)):
         config = connection.get("config") or {}
         transport_type = str(cached.get("transport_type") or "http").lower()
-        identifier = cached.get("command") if transport_type == "stdio" else cached.get("url")
         server_info = cached.get("server_info") or {}
         verified_at = cached.get("verified_at")
         tool_count = int(cached.get("tool_count") or 0)
-        title = (
-            server_info.get("name")
-            or config.get("remark")
-            or connection.get("name")
-            or (
-                identifier
-                if transport_type == "stdio"
-                else _hostname(identifier or "")
-            )
-            or f"MCP Server {idx + 1}"
-        )
 
         status_value = "disabled"
         description = "Manage your MCP server connection."
@@ -319,6 +310,13 @@ async def _build_mcp_server_items(request: Request, user) -> list[SkillCatalogIt
                 )
             else:
                 description = "MCP server needs verification."
+
+        title, description = get_mcp_server_display_metadata(
+            {**cached, "config": config},
+            index=idx,
+            default_description=description,
+            prefer_hostname_for_http=True,
+        )
 
         items.append(
             SkillCatalogItem(

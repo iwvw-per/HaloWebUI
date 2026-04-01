@@ -105,12 +105,108 @@
 		}
 	];
 
+	const VERSION_LIKE_BASE_URL_RE = /\/(?:compatible-mode\/)?v\d+(?:[a-z]+\d*)?$/i;
+
+	const normalizeImageProviderUrlInput = (inputUrl: string, versionPath: string): string => {
+		let normalized = `${inputUrl ?? ''}`.trim();
+		if (!normalized) return '';
+
+		const explicitForceMode = normalized.endsWith('#');
+		if (explicitForceMode) {
+			normalized = normalized.slice(0, -1);
+		}
+
+		normalized = normalized.replace(/\/+$/, '');
+		if (!normalized) return '';
+
+		if (explicitForceMode) {
+			return `${normalized}#`;
+		}
+
+		normalized = normalized.replace(/\/chat\/completions$/i, '');
+		normalized = normalized.replace(/\/models$/i, '');
+		normalized = normalized.replace(/\/completions$/i, '');
+		normalized = normalized.replace(/\/images\/generations$/i, '');
+		normalized = normalized.replace(/\/images\/edits$/i, '');
+		normalized = normalized.replace(/\/+$/, '');
+
+		if (!normalized) return '';
+		if (normalized.toLowerCase().endsWith(versionPath.toLowerCase())) return normalized;
+		if (VERSION_LIKE_BASE_URL_RE.test(normalized)) return normalized;
+
+		return `${normalized}${versionPath}`;
+	};
+
+	const splitImageProviderUrlInput = (inputUrl: string, versionPath: string) => {
+		const normalizedInput = normalizeImageProviderUrlInput(inputUrl, versionPath);
+		const forceMode = normalizedInput.endsWith('#');
+		return {
+			baseUrl: forceMode ? normalizedInput.slice(0, -1) : normalizedInput,
+			forceMode
+		};
+	};
+
+	const decorateImageProviderUrlInput = (
+		baseUrl: string,
+		forceMode: boolean,
+		versionPath: string
+	) => {
+		const normalizedBaseUrl = `${baseUrl ?? ''}`.trim().replace(/\/+$/, '');
+		if (!normalizedBaseUrl) return '';
+		return forceMode
+			? `${normalizedBaseUrl}#`
+			: normalizeImageProviderUrlInput(normalizedBaseUrl, versionPath);
+	};
+
+	const hasConfiguredProviderBaseUrl = (inputUrl: string, versionPath: string) =>
+		Boolean(splitImageProviderUrlInput(inputUrl, versionPath).baseUrl);
+
+	const serializeConfigForSave = (draftConfig) => {
+		const nextConfig = cloneSettingsSnapshot(draftConfig);
+		const openai = splitImageProviderUrlInput(nextConfig?.openai?.OPENAI_API_BASE_URL, '/v1');
+		const gemini = splitImageProviderUrlInput(nextConfig?.gemini?.GEMINI_API_BASE_URL, '/v1beta');
+
+		nextConfig.openai = {
+			...nextConfig.openai,
+			OPENAI_API_BASE_URL: openai.baseUrl,
+			OPENAI_API_FORCE_MODE: openai.forceMode
+		};
+
+		nextConfig.gemini = {
+			...nextConfig.gemini,
+			GEMINI_API_BASE_URL: gemini.baseUrl,
+			GEMINI_API_FORCE_MODE: gemini.forceMode
+		};
+
+		return nextConfig;
+	};
+
 	const normalizeLoadedConfig = (value) => {
 		if (!value) return value;
-		value.enabled = Boolean(value.enabled);
-		value.prompt_generation = Boolean(value.prompt_generation);
-		value.shared_key_enabled = Boolean(value.shared_key_enabled);
-		return value;
+
+		const normalizedValue = cloneSettingsSnapshot(value);
+		normalizedValue.enabled = Boolean(normalizedValue.enabled);
+		normalizedValue.prompt_generation = Boolean(normalizedValue.prompt_generation);
+		normalizedValue.shared_key_enabled = Boolean(normalizedValue.shared_key_enabled);
+		normalizedValue.openai = {
+			...(normalizedValue.openai ?? {}),
+			OPENAI_API_FORCE_MODE: Boolean(normalizedValue.openai?.OPENAI_API_FORCE_MODE),
+			OPENAI_API_BASE_URL: decorateImageProviderUrlInput(
+				normalizedValue.openai?.OPENAI_API_BASE_URL,
+				Boolean(normalizedValue.openai?.OPENAI_API_FORCE_MODE),
+				'/v1'
+			)
+		};
+		normalizedValue.gemini = {
+			...(normalizedValue.gemini ?? {}),
+			GEMINI_API_FORCE_MODE: Boolean(normalizedValue.gemini?.GEMINI_API_FORCE_MODE),
+			GEMINI_API_BASE_URL: decorateImageProviderUrlInput(
+				normalizedValue.gemini?.GEMINI_API_BASE_URL,
+				Boolean(normalizedValue.gemini?.GEMINI_API_FORCE_MODE),
+				'/v1beta'
+			)
+		};
+		return normalizedValue;
 	};
 
 	const buildSnapshot = (currentConfig, currentImageGenerationConfig, currentRequiredWorkflowNodes) => ({
@@ -257,7 +353,7 @@
 	};
 
 	const updateConfigHandler = async ({ refreshModels = true }: { refreshModels?: boolean } = {}) => {
-		const res = await updateConfig(localStorage.token, config).catch((error) => {
+		const res = await updateConfig(localStorage.token, serializeConfigForSave(config)).catch((error) => {
 			toast.error(formatImageSettingsError(error));
 			return null;
 		});
@@ -546,7 +642,10 @@
 			config.comfyui.COMFYUI_WORKFLOW_NODES = nextWorkflowNodes;
 		}
 
-		const updatedConfig = await updateConfig(localStorage.token, config).catch((error) => {
+		const updatedConfig = await updateConfig(
+			localStorage.token,
+			serializeConfigForSave(config)
+		).catch((error) => {
 			toast.error(formatImageSettingsError(error));
 			loading = false;
 			return null;
@@ -740,12 +839,12 @@
 											} else if (
 												config.engine === 'openai' &&
 												config.shared_key_enabled &&
-												(config.openai.OPENAI_API_BASE_URL === '' ||
+												(!hasConfiguredProviderBaseUrl(config.openai.OPENAI_API_BASE_URL, '/v1') ||
 													config.openai.OPENAI_API_KEY === '')
 											) {
 												toast.error(
 													$i18n.t(
-														config.openai.OPENAI_API_BASE_URL === ''
+														!hasConfiguredProviderBaseUrl(config.openai.OPENAI_API_BASE_URL, '/v1')
 															? 'OpenAI API Base URL is required.'
 															: 'OpenAI API Key is required.'
 													)
@@ -754,12 +853,12 @@
 											} else if (
 												config.engine === 'gemini' &&
 												config.shared_key_enabled &&
-												(config.gemini.GEMINI_API_BASE_URL === '' ||
+												(!hasConfiguredProviderBaseUrl(config.gemini.GEMINI_API_BASE_URL, '/v1beta') ||
 													config.gemini.GEMINI_API_KEY === '')
 											) {
 												toast.error(
 													$i18n.t(
-														config.gemini.GEMINI_API_BASE_URL === ''
+														!hasConfiguredProviderBaseUrl(config.gemini.GEMINI_API_BASE_URL, '/v1beta')
 															? 'Gemini API Base URL is required.'
 															: 'Gemini API Key is required.'
 													)
@@ -826,12 +925,12 @@
 											if (enabled) {
 												if (
 													config.engine === 'openai' &&
-													(config.openai.OPENAI_API_BASE_URL === '' ||
+													(!hasConfiguredProviderBaseUrl(config.openai.OPENAI_API_BASE_URL, '/v1') ||
 														config.openai.OPENAI_API_KEY === '')
 												) {
 													toast.error(
 														$i18n.t(
-															config.openai.OPENAI_API_BASE_URL === ''
+															!hasConfiguredProviderBaseUrl(config.openai.OPENAI_API_BASE_URL, '/v1')
 																? 'OpenAI API Base URL is required.'
 																: 'OpenAI API Key is required.'
 														)
@@ -841,12 +940,12 @@
 												}
 												if (
 													config.engine === 'gemini' &&
-													(config.gemini.GEMINI_API_BASE_URL === '' ||
+													(!hasConfiguredProviderBaseUrl(config.gemini.GEMINI_API_BASE_URL, '/v1beta') ||
 														config.gemini.GEMINI_API_KEY === '')
 												) {
 													toast.error(
 														$i18n.t(
-															config.gemini.GEMINI_API_BASE_URL === ''
+															!hasConfiguredProviderBaseUrl(config.gemini.GEMINI_API_BASE_URL, '/v1beta')
 																? 'Gemini API Base URL is required.'
 																: 'Gemini API Key is required.'
 														)
@@ -1216,6 +1315,12 @@
 										class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
 										placeholder={$i18n.t('API Base URL')}
 										bind:value={config.openai.OPENAI_API_BASE_URL}
+										on:blur={() => {
+											config.openai.OPENAI_API_BASE_URL = normalizeImageProviderUrlInput(
+												config.openai.OPENAI_API_BASE_URL,
+												'/v1'
+											);
+										}}
 										required
 									/>
 								</div>
@@ -1247,6 +1352,12 @@
 										class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
 										placeholder={$i18n.t('API Base URL')}
 										bind:value={config.gemini.GEMINI_API_BASE_URL}
+										on:blur={() => {
+											config.gemini.GEMINI_API_BASE_URL = normalizeImageProviderUrlInput(
+												config.gemini.GEMINI_API_BASE_URL,
+												'/v1beta'
+											);
+										}}
 										required
 									/>
 								</div>

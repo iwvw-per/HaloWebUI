@@ -17,6 +17,21 @@
 
 	let showConfigModal = false;
 	let showDeleteConfirmDialog = false;
+	const getAzurePreviewBaseUrl = (inputUrl: string) => {
+		const normalized = (inputUrl || '').trim().replace(/\/+$/, '');
+		if (!normalized) return normalized;
+		if (normalized.includes('/openai/deployments/')) {
+			const [prefix] = normalized.split('/openai/deployments/', 1);
+			return `${prefix}/openai/v1`;
+		}
+		return normalized;
+	};
+
+	$: previewUrl = config?.force_mode
+		? url
+		: config?.azure
+			? `${getAzurePreviewBaseUrl(url)}/chat/completions`
+			: `${url}/chat/completions`;
 </script>
 
 <AddConnectionModal
@@ -50,14 +65,7 @@
 <div class="flex w-full gap-2 items-center">
 	<Tooltip
 		className="w-full relative"
-		content={$i18n.t(
-			config?.force_mode
-				? `WebUI will make requests to "{{url}}"`
-				: `WebUI will make requests to "{{url}}/chat/completions"`,
-			{
-				url
-			}
-		)}
+		content={$i18n.t(`WebUI will make requests to "{{url}}"`, { url: previewUrl })}
 		placement="top-start"
 	>
 		{#if !(config?.enable ?? true)}

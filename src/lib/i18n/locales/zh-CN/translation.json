@@ -132,6 +132,7 @@
 	"API Mode": "API接口模式",
 	"API Version": "API 版本",
 	"API Version is required": "API 版本是必填项。",
+	"Usually not required. HaloWebUI only uses api-version when it needs to fall back to legacy Azure deployment paths.": "通常无需填写。只有当 HaloWebUI 需要回退到旧版 Azure deployment 路径时，才会使用 api-version。",
 	"App Features": "应用功能",
 	"Appearance": "外观",
 	"App Secret": "应用密钥",

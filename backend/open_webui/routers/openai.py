@@ -7,7 +7,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Literal, Optional, overload
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import aiohttp
 from aiocache import cached
@@ -72,6 +72,8 @@ log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["OPENAI"])
 
 OPENAI_CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+AZURE_OPENAI_V1_SEGMENT = "/openai/v1"
+AZURE_OPENAI_DEPLOYMENTS_SEGMENT = "/openai/deployments/"
 
 
 def _is_official_openai_connection(url: str) -> bool:
@@ -80,6 +82,165 @@ def _is_official_openai_connection(url: str) -> bool:
     except Exception:
         host = ""
     return host == "api.openai.com" or host.endswith(".openai.com")
+
+
+def _is_azure_openai_connection(
+    url: str, api_config: Optional[dict] = None
+) -> bool:
+    if bool((api_config or {}).get("azure")):
+        return True
+
+    try:
+        host = (urlparse(url).hostname or "").strip().lower()
+    except Exception:
+        host = ""
+
+    return (
+        host.endswith(".openai.azure.com")
+        or host.endswith(".cognitiveservices.azure.com")
+        or host.endswith(".cognitive.microsoft.com")
+    )
+
+
+def _replace_url_path_and_query(parsed, path: str, query: Optional[str] = None) -> str:
+    normalized_path = path or ""
+    if normalized_path and not normalized_path.startswith("/"):
+        normalized_path = f"/{normalized_path}"
+
+    return urlunparse(
+        parsed._replace(
+            path=normalized_path,
+            query="" if query is None else query,
+            params="",
+            fragment="",
+        )
+    )
+
+
+def _strip_known_openai_suffixes(path: str) -> str:
+    normalized_path = (path or "").rstrip("/")
+
+    for suffix in (
+        "/responses",
+        "/models",
+        OPENAI_CHAT_COMPLETIONS_SUFFIX,
+        "/completions",
+    ):
+        if normalized_path.endswith(suffix):
+            normalized_path = normalized_path[: -len(suffix)].rstrip("/")
+
+    return normalized_path
+
+
+def _normalize_azure_openai_base_url(
+    url: str, api_config: Optional[dict] = None
+) -> str:
+    normalized_url = (url or "").strip().rstrip("/")
+    if not normalized_url:
+        return normalized_url
+
+    if _is_force_mode_connection(normalized_url, api_config):
+        return normalized_url
+
+    parsed = urlparse(normalized_url)
+    path = _strip_known_openai_suffixes(parsed.path or "")
+
+    if AZURE_OPENAI_DEPLOYMENTS_SEGMENT in path:
+        prefix, remainder = path.split(AZURE_OPENAI_DEPLOYMENTS_SEGMENT, 1)
+        deployment = remainder.split("/", 1)[0].strip()
+        deployment_path = (
+            f"{prefix}{AZURE_OPENAI_DEPLOYMENTS_SEGMENT}{deployment}"
+            if deployment
+            else f"{prefix}{AZURE_OPENAI_V1_SEGMENT}"
+        )
+        return _replace_url_path_and_query(parsed, deployment_path, "")
+
+    if path.endswith(AZURE_OPENAI_V1_SEGMENT):
+        azure_path = path
+    elif path.endswith("/openai"):
+        azure_path = f"{path}/v1"
+    elif path.endswith("/v1"):
+        azure_path = f"{path[: -len('/v1')]}/openai/v1"
+    else:
+        azure_path = f"{path}{AZURE_OPENAI_V1_SEGMENT}" if path else AZURE_OPENAI_V1_SEGMENT
+
+    return _replace_url_path_and_query(parsed, azure_path, "")
+
+
+def _get_azure_openai_resource_url(
+    url: str, api_config: Optional[dict] = None
+) -> str:
+    normalized_url = (url or "").strip().rstrip("/")
+    if not normalized_url:
+        return normalized_url
+
+    parsed = urlparse(normalized_url)
+    path = _strip_known_openai_suffixes(parsed.path or "")
+
+    if AZURE_OPENAI_DEPLOYMENTS_SEGMENT in path:
+        path = path.split(AZURE_OPENAI_DEPLOYMENTS_SEGMENT, 1)[0]
+    elif path.endswith(AZURE_OPENAI_V1_SEGMENT):
+        path = path[: -len(AZURE_OPENAI_V1_SEGMENT)]
+    elif path.endswith("/openai"):
+        path = path[: -len("/openai")]
+    elif path.endswith("/v1"):
+        path = path[: -len("/v1")]
+
+    return _replace_url_path_and_query(parsed, path, "")
+
+
+def _append_query_param(url: str, key: str, value: Optional[str]) -> str:
+    if not value:
+        return url
+
+    parsed = urlparse(url)
+    query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != key]
+    query.append((key, value))
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def _get_azure_api_version(api_config: Optional[dict]) -> Optional[str]:
+    value = (api_config or {}).get("api_version")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _get_azure_openai_chat_completions_urls(
+    url: str,
+    api_config: Optional[dict] = None,
+    *,
+    model_id: Optional[str] = None,
+) -> list[str]:
+    normalized_base = _normalize_azure_openai_base_url(url, api_config)
+    if not normalized_base:
+        return []
+
+    urls: list[str] = []
+    resource_url = _get_azure_openai_resource_url(url, api_config)
+    api_version = _get_azure_api_version(api_config)
+    urls.append(f"{resource_url}{AZURE_OPENAI_V1_SEGMENT}{OPENAI_CHAT_COMPLETIONS_SUFFIX}")
+
+    if api_version and model_id:
+        deployment = quote(str(model_id).strip(), safe="")
+        if deployment:
+            urls.append(
+                _append_query_param(
+                    f"{resource_url}{AZURE_OPENAI_DEPLOYMENTS_SEGMENT}{deployment}{OPENAI_CHAT_COMPLETIONS_SUFFIX}",
+                    "api-version",
+                    api_version,
+                )
+            )
+
+    deduped_urls: list[str] = []
+    seen = set()
+    for candidate in urls:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            deduped_urls.append(candidate)
+
+    return deduped_urls
 
 
 def _is_force_mode_connection(url: str, api_config: Optional[dict] = None) -> bool:
@@ -93,6 +254,14 @@ def _get_openai_models_url(url: str, api_config: Optional[dict] = None) -> str:
     normalized_url = (url or "").rstrip("/")
     if not normalized_url:
         return normalized_url
+
+    if _is_azure_openai_connection(normalized_url, api_config):
+        azure_base = _normalize_azure_openai_base_url(normalized_url, api_config)
+        azure_path = urlparse(azure_base).path or ""
+        if AZURE_OPENAI_DEPLOYMENTS_SEGMENT in azure_path:
+            resource_url = _get_azure_openai_resource_url(normalized_url, api_config)
+            return f"{resource_url}{AZURE_OPENAI_V1_SEGMENT}/models"
+        return f"{azure_base}/models"
 
     if _is_force_mode_connection(normalized_url, api_config):
         if normalized_url.endswith(OPENAI_CHAT_COMPLETIONS_SUFFIX):
@@ -108,6 +277,11 @@ def _get_openai_chat_completions_url(
     url: str, api_config: Optional[dict] = None
 ) -> str:
     normalized_url = (url or "").rstrip("/")
+    if _is_azure_openai_connection(normalized_url, api_config):
+        candidates = _get_azure_openai_chat_completions_urls(
+            normalized_url, api_config
+        )
+        return candidates[0] if candidates else normalized_url
     if _is_force_mode_connection(normalized_url, api_config):
         return normalized_url
     return f"{normalized_url}/chat/completions"
@@ -250,6 +424,8 @@ def _should_use_responses_api(
     native_web_search: bool = False,
 ) -> bool:
     cfg = api_config or {}
+    if _is_azure_openai_connection(url, cfg):
+        return False
     use_responses_api = bool(cfg.get("use_responses_api", False) or native_web_search)
     if _is_force_mode_connection(url, cfg):
         return False
@@ -403,9 +579,17 @@ def _build_upstream_headers(
             headers[str(k)] = str(v)
 
     lower = {k.lower(): k for k in headers.keys()}
-
+    auth_type = str((api_config or {}).get("auth_type") or "").strip().lower()
     if key and ("authorization" not in lower) and ("api-key" not in lower):
-        headers["Authorization"] = f"Bearer {key}"
+        if auth_type in {"none", "custom", "custom_headers_only"}:
+            pass
+        elif auth_type in {"api-key", "x-api-key"} or (
+            _is_azure_openai_connection(base_url, api_config)
+            and auth_type not in {"bearer", "authorization", "azure_ad", "microsoft_entra_id"}
+        ):
+            headers["api-key"] = key
+        else:
+            headers["Authorization"] = f"Bearer {key}"
 
     if accept and "accept" not in lower:
         headers["Accept"] = accept
@@ -688,6 +872,57 @@ def _build_manual_model_discovery_response(
     }
 
 
+def _build_models_listing_fallback(
+    *,
+    url: str,
+    api_config: Optional[dict],
+    purpose: str,
+    status: int,
+    body,
+) -> Optional[dict]:
+    if not _looks_like_models_listing_unsupported(status, body):
+        return None
+
+    if _is_dashscope_compatible_connection(url):
+        log.info(
+            "Upstream %s does not expose /models; using DashScope-compatible fallback for %s",
+            url,
+            purpose,
+        )
+        if purpose == "models":
+            return _build_manual_model_discovery_response(provider="dashscope")
+
+        return {
+            "ok": True,
+            "_openwebui": {
+                "verification_succeeded": True,
+                "provider": "dashscope",
+                "models_endpoint_supported": False,
+            },
+        }
+
+    if _is_azure_openai_connection(url, api_config):
+        log.info(
+            "Azure upstream %s does not expose a compatible /models list; falling back to manual deployment entry for %s",
+            url,
+            purpose,
+        )
+        if purpose == "models":
+            return _build_manual_model_discovery_response(provider="azure")
+
+        return {
+            "ok": True,
+            "_openwebui": {
+                "verification_succeeded": True,
+                "provider": "azure",
+                "models_endpoint_supported": False,
+                "manual_model_ids_required": True,
+            },
+        }
+
+    return None
+
+
 def _looks_like_responses_endpoint_unsupported(status: int, body_text: str) -> bool:
     if status in (404, 405):
         return True
@@ -697,6 +932,46 @@ def _looks_like_responses_endpoint_unsupported(status: int, body_text: str) -> b
     if "unsupported" in text and "responses" in text:
         return True
     return False
+
+
+def _looks_like_chat_completions_endpoint_unsupported(status: int, body) -> bool:
+    if status in (404, 405):
+        return True
+
+    text = _stringify_upstream_body(body).lower().strip()
+    if not text:
+        return False
+
+    return (
+        "chat/completions" in text
+        and any(term in text for term in ("not found", "unknown", "unsupported", "no route"))
+    )
+
+
+def _build_chat_completion_request_attempts(
+    *,
+    url: str,
+    api_config: Optional[dict],
+    model_id: Optional[str],
+    payload_dict: Optional[dict],
+) -> list[tuple[str, Optional[dict]]]:
+    if not isinstance(payload_dict, dict):
+        return [(_get_openai_chat_completions_url(url, api_config), payload_dict)]
+
+    if not _is_azure_openai_connection(url, api_config):
+        return [(_get_openai_chat_completions_url(url, api_config), payload_dict)]
+
+    attempts: list[tuple[str, Optional[dict]]] = []
+    for request_url in _get_azure_openai_chat_completions_urls(
+        url, api_config, model_id=model_id
+    ):
+        next_payload = payload_dict
+        if AZURE_OPENAI_DEPLOYMENTS_SEGMENT in (urlparse(request_url).path or ""):
+            next_payload = dict(payload_dict)
+            next_payload.pop("model", None)
+        attempts.append((request_url, next_payload))
+
+    return attempts or [(_get_openai_chat_completions_url(url, api_config), payload_dict)]
 
 
 def _format_responses_upstream_error(
@@ -747,27 +1022,41 @@ async def error_sse_generator(message: str, *, code: str = "upstream_error"):
     yield "data: [DONE]\n\n"
 
 
-async def send_get_request(url, key=None, user: UserModel = None):
+async def send_get_request(
+    url,
+    key=None,
+    user: UserModel = None,
+    api_config: Optional[dict] = None,
+):
     timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(
                 url,
-                headers={
-                    **({"Authorization": f"Bearer {key}"} if key else {}),
-                    **(
-                        {
-                            "X-OpenWebUI-User-Name": user.name,
-                            "X-OpenWebUI-User-Id": user.id,
-                            "X-OpenWebUI-User-Email": user.email,
-                            "X-OpenWebUI-User-Role": user.role,
-                        }
-                        if ENABLE_FORWARD_USER_INFO_HEADERS and user
-                        else {}
-                    ),
-                },
+                headers=_build_upstream_headers(url, key or "", api_config or {}, user=user),
             ) as response:
-                return await response.json()
+                body = await _safe_read_upstream_body(response)
+                if response.status == 200:
+                    normalized = _normalize_openai_models_response(body)
+                    return normalized if normalized is not None else body
+
+                fallback = _build_models_listing_fallback(
+                    url=url,
+                    api_config=api_config,
+                    purpose="models",
+                    status=response.status,
+                    body=body,
+                )
+                if fallback is not None:
+                    return fallback
+
+                log.warning(
+                    "Model fetch failed from %s with status=%s body=%s",
+                    url,
+                    response.status,
+                    _truncate_text(_stringify_upstream_body(body), 800),
+                )
+                return None
     except Exception as e:
         # Handle connection error here
         log.error(f"Connection error: {e}")
@@ -1181,6 +1470,7 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                 _get_openai_models_url(url, api_config),
                 keys[idx] if idx < len(keys) else "",
                 user=user,
+                api_config=api_config,
             )
         )
 
@@ -1344,55 +1634,62 @@ async def get_models(
             try:
                 async with session.get(
                     models_url,
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                        **(
-                            {
-                                "X-OpenWebUI-User-Name": user.name,
-                                "X-OpenWebUI-User-Id": user.id,
-                                "X-OpenWebUI-User-Email": user.email,
-                                "X-OpenWebUI-User-Role": user.role,
-                            }
-                            if ENABLE_FORWARD_USER_INFO_HEADERS
-                            else {}
-                        ),
-                    },
+                    headers=_build_upstream_headers(url, key, api_config, user=user),
                 ) as r:
+                    response_data = await _safe_read_upstream_body(r)
                     if r.status != 200:
-                        # Extract response error details if available
-                        error_detail = f"HTTP Error: {r.status}"
-                        res = await r.json()
-                        if "error" in res:
-                            error_detail = f"External Error: {res['error']}"
-                        raise Exception(error_detail)
-
-                    response_data = await r.json()
-
-                    # Check if we're calling OpenAI API based on the URL
-                    if "api.openai.com" in url:
-                        # Filter models according to the specified conditions
-                        response_data["data"] = [
-                            model
-                            for model in response_data.get("data", [])
-                            if not any(
-                                name in model["id"]
-                                for name in [
-                                    "babbage",
-                                    "dall-e",
-                                    "davinci",
-                                    "embedding",
-                                    "tts",
-                                    "whisper",
-                                ]
+                        fallback = _build_models_listing_fallback(
+                            url=url,
+                            api_config=api_config,
+                            purpose="models",
+                            status=r.status,
+                            body=response_data,
+                        )
+                        if fallback is not None:
+                            models = fallback
+                            response_data = None
+                        else:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=_extract_upstream_error_detail(r.status, response_data),
                             )
-                        ]
 
-                    models = _apply_native_web_search_support_to_models_response(
-                        response_data,
-                        url=url,
-                        api_config=api_config,
-                    )
+                    if response_data is None:
+                        pass
+                    else:
+                        normalized_response = _normalize_openai_models_response(response_data)
+                        if normalized_response is None:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Invalid response from upstream /models endpoint",
+                            )
+                        response_data = normalized_response
+
+                    if response_data is not None:
+                        # Check if we're calling OpenAI API based on the URL
+                        if "api.openai.com" in url:
+                            # Filter models according to the specified conditions
+                            response_data["data"] = [
+                                model
+                                for model in response_data.get("data", [])
+                                if not any(
+                                    name in model["id"]
+                                    for name in [
+                                        "babbage",
+                                        "dall-e",
+                                        "davinci",
+                                        "embedding",
+                                        "tts",
+                                        "whisper",
+                                    ]
+                                )
+                            ]
+
+                        models = _apply_native_web_search_support_to_models_response(
+                            response_data,
+                            url=url,
+                            api_config=api_config,
+                        )
             except aiohttp.ClientError as e:
                 # ClientError covers all aiohttp requests issues
                 log.exception(f"Client error: {str(e)}")
@@ -1458,26 +1755,15 @@ async def verify_connection(
                         detail="Invalid response from upstream /models endpoint",
                     )
 
-                if _looks_like_models_listing_unsupported(r.status, response_body):
-                    if _is_dashscope_compatible_connection(url):
-                        log.info(
-                            "Upstream %s does not expose /models; using DashScope-compatible fallback for %s",
-                            models_url,
-                            purpose,
-                        )
-                        if purpose == "models":
-                            return _build_manual_model_discovery_response(
-                                provider="dashscope"
-                            )
-
-                        return {
-                            "ok": True,
-                            "_openwebui": {
-                                "verification_succeeded": True,
-                                "provider": "dashscope",
-                                "models_endpoint_supported": False,
-                            },
-                        }
+                fallback = _build_models_listing_fallback(
+                    url=url,
+                    api_config=api_config,
+                    purpose=purpose,
+                    status=r.status,
+                    body=response_body,
+                )
+                if fallback is not None:
+                    return fallback
 
                 raise HTTPException(
                     status_code=400,
@@ -1700,6 +1986,18 @@ async def generate_chat_completion(
 
         payload_dict = payload
 
+    request_attempts = (
+        [(request_url, payload_dict)]
+        if use_responses_api
+        else _build_chat_completion_request_attempts(
+            url=url,
+            api_config=api_config,
+            model_id=payload_dict.get("model") if isinstance(payload_dict, dict) else model_id,
+            payload_dict=payload_dict,
+        )
+    )
+    attempt_idx = 0
+    request_url, payload_dict = request_attempts[attempt_idx]
     payload_json = json.dumps(payload_dict, ensure_ascii=False, default=str)
 
     # ── Diagnostic logging: key info at INFO, details at DEBUG ──
@@ -1795,6 +2093,19 @@ async def generate_chat_completion(
         # instead of letting downstream guess from an empty stream.
         if not use_responses_api and r.status >= 400:
             response = await _safe_read_upstream_body(r)
+            if (
+                attempt_idx + 1 < len(request_attempts)
+                and _looks_like_chat_completions_endpoint_unsupported(r.status, response)
+            ):
+                attempt_idx += 1
+                request_url, payload_dict = request_attempts[attempt_idx]
+                payload_json = json.dumps(payload_dict, ensure_ascii=False, default=str)
+                response = None
+                r.close()
+                await _send_current_request(retry_reason="azure_chat_completions_fallback")
+                if r.status >= 400:
+                    response = await _safe_read_upstream_body(r)
+
             error_message = _get_chat_upstream_error_message(
                 status=r.status, body=response
             )

@@ -21,7 +21,10 @@ from open_webui.utils.access_control import has_access, has_permission
 from open_webui.env import SRC_LOG_LEVELS
 
 from open_webui.utils.tools import get_tool_servers_data
-from open_webui.utils.mcp import get_mcp_servers_cached_meta
+from open_webui.utils.mcp import (
+    get_mcp_server_display_metadata,
+    get_mcp_servers_cached_meta,
+)
 from open_webui.utils.user_tools import (
     get_user_mcp_server_connections,
     get_user_tool_server_connections,
@@ -104,24 +107,22 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
         )
 
     for server in mcp_servers_data:
-        server_info = server.get("server_info", {}) or {}
         transport_type = str(server.get("transport_type") or "http").lower()
-        identifier = (
-            server.get("url")
-            if transport_type == "http"
-            else server.get("command")
-        )
-        server_name = (
-            server_info.get("name")
-            or server.get("name")
-            or identifier
-            or "MCP Server"
-        )
+        server_info = server.get("server_info", {}) or {}
         server_version = server_info.get("version")
         verified_at = server.get("verified_at")
         transport_label = "HTTP" if transport_type == "http" else "stdio"
         status_label = (
             f"已验证 {verified_at}" if verified_at else "未验证"
+        )
+        server_name, server_description = get_mcp_server_display_metadata(
+            server,
+            index=server["idx"],
+            default_description=(
+                f"MCP ({transport_label})"
+                f"{' - v' + str(server_version) if server_version else ''}"
+                f" - {status_label}"
+            ),
         )
 
         tools.append(
@@ -131,11 +132,7 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
                     "user_id": f"mcp:{server['idx']}",
                     "name": server_name,
                     "meta": {
-                        "description": (
-                            f"MCP ({transport_label})"
-                            f"{' - v' + str(server_version) if server_version else ''}"
-                            f" - {status_label}"
-                        ),
+                        "description": server_description,
                     },
                     "access_control": None,
                     "updated_at": int(time.time()),

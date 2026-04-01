@@ -33,6 +33,17 @@ def test_should_use_responses_api_respects_exclude_patterns():
     )
 
 
+def test_should_use_responses_api_is_disabled_for_azure_connections():
+    assert (
+        _should_use_responses_api(
+            "https://example-resource.openai.azure.com/openai/v1",
+            {"use_responses_api": True, "azure": True},
+            "gpt-4.1",
+        )
+        is False
+    )
+
+
 def test_connection_supports_native_file_inputs_defaults_to_official_openai_only():
     assert (
         _connection_supports_native_file_inputs(
