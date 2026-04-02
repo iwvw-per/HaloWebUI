@@ -14,6 +14,7 @@ ARG USE_CUDA_VER=cu121
 # IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI! You need to re-embed them.
 ARG USE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG USE_RERANKING_MODEL=""
+ARG HALO_PG_CLIENT_MAJORS="14 15 16 17 18"
 
 # Tiktoken encoding name; models to use can be found at https://huggingface.co/models?library=tiktoken
 ARG USE_TIKTOKEN_ENCODING_NAME="cl100k_base"
@@ -118,6 +119,7 @@ ARG USE_CUDA_VER
 ARG USE_EMBEDDING_MODEL
 ARG USE_RERANKING_MODEL
 ARG USE_TIKTOKEN_ENCODING_NAME
+ARG HALO_PG_CLIENT_MAJORS
 ARG UID
 ARG GID
 
@@ -158,15 +160,27 @@ RUN if [ $UID -ne 0 ]; then \
 
 RUN set -eux; \
     extra_apt_packages=""; \
+    pg_client_packages=""; \
     case "$INSTALL_PROFILE" in \
         local-audio) extra_apt_packages="ffmpeg libsm6 libxext6" ;; \
         docs-full|full) extra_apt_packages="pandoc ffmpeg libsm6 libxext6" ;; \
     esac; \
+    for major in ${HALO_PG_CLIENT_MAJORS}; do \
+        pg_client_packages="${pg_client_packages} postgresql-client-${major}"; \
+    done; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         curl \
-        postgresql-client \
+        ca-certificates \
         ${extra_apt_packages}; \
+    install -d /usr/share/postgresql-common/pgdg; \
+    curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
+    . /etc/os-release; \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ${pg_client_packages}; \
     if [ "$USE_OLLAMA" = "true" ]; then \
         curl -fsSL https://ollama.com/install.sh | sh; \
     fi; \

@@ -1,0 +1,114 @@
+{
+	"version": 1,
+	"providers": {
+		"openai": {
+			"default_status": "unknown",
+			"allow": [
+				{
+					"type": "regex",
+					"value": "^gpt-4o-search-preview(?:[-.:/].*)?$",
+					"reason": "model_rule_allow_openai_search_preview"
+				},
+				{
+					"type": "regex",
+					"value": "^gpt-4o-mini-search-preview(?:[-.:/].*)?$",
+					"reason": "model_rule_allow_openai_search_preview"
+				},
+				{
+					"type": "regex",
+					"value": "^gpt-4\\.1(?!-nano)(?:[-.:/].*)?$",
+					"reason": "model_rule_allow_openai_gpt_4_1_family"
+				},
+				{
+					"type": "regex",
+					"value": "^gpt-4o(?!-image)(?:[-.:/].*)?$",
+					"reason": "model_rule_allow_openai_gpt_4o_family"
+				},
+				{
+					"type": "regex",
+					"value": "^o[34](?:[-.:/].*)?$",
+					"reason": "model_rule_allow_openai_reasoning_family"
+				},
+				{
+					"type": "regex",
+					"value": "^gpt-5(?!.*chat)(?:[-.:/].*)?$",
+					"reason": "model_rule_allow_openai_gpt_5_family"
+				}
+			],
+			"deny": [
+				{
+					"type": "contains",
+					"value": "gpt-4.1-nano",
+					"reason": "model_rule_deny_openai_nano"
+				},
+				{
+					"type": "contains",
+					"value": "gpt-4o-image",
+					"reason": "model_rule_deny_image_model"
+				},
+				{
+					"type": "contains",
+					"value": "gpt-image",
+					"reason": "model_rule_deny_image_model"
+				},
+				{
+					"type": "contains",
+					"value": "embedding",
+					"reason": "model_rule_deny_embedding_model"
+				},
+				{
+					"type": "contains",
+					"value": "moderation",
+					"reason": "model_rule_deny_non_chat_model"
+				},
+				{
+					"type": "contains",
+					"value": "transcribe",
+					"reason": "model_rule_deny_audio_model"
+				},
+				{
+					"type": "contains",
+					"value": "tts",
+					"reason": "model_rule_deny_audio_model"
+				}
+			]
+		},
+		"gemini": {
+			"default_status": "unknown",
+			"allow": [
+				{
+					"type": "regex",
+					"value": "^gemini-(?:2(?!.*-image-preview).*(?:-latest)?|3(?:\\.\\d+)?-(?:flash|pro)(?:-(?:image-)?preview)?|flash-latest|pro-latest|flash-lite-latest)(?:-[\\w-]+)*$",
+					"reason": "model_rule_allow_gemini_search_family"
+				}
+			],
+			"deny": [
+				{
+					"type": "contains",
+					"value": "embedding",
+					"reason": "model_rule_deny_embedding_model"
+				},
+				{
+					"type": "contains",
+					"value": "imagen",
+					"reason": "model_rule_deny_image_model"
+				},
+				{
+					"type": "contains",
+					"value": "veo",
+					"reason": "model_rule_deny_video_model"
+				},
+				{
+					"type": "contains",
+					"value": "aqa",
+					"reason": "model_rule_deny_non_chat_model"
+				},
+				{
+					"type": "contains",
+					"value": "learnlm",
+					"reason": "model_rule_deny_non_chat_model"
+				}
+			]
+		}
+	}
+}

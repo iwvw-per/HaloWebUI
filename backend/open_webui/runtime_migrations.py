@@ -5,6 +5,7 @@ import fcntl
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -110,7 +111,7 @@ def ensure_runtime_migrated() -> Optional[DetectionResult]:
     if os.environ.get("HALO_RUNTIME_MIGRATION_DONE") == "true":
         return None
 
-    with _locked_connection() as (engine, conn, url):
+    with _locked_connection() as (_engine, conn, url):
         detection = _detect_database(conn, url)
         if detection.family in {"fresh", "already_halo"}:
             os.environ["HALO_RUNTIME_MIGRATION_DONE"] = "true"
@@ -127,7 +128,7 @@ def ensure_runtime_migrated() -> Optional[DetectionResult]:
             )
 
         _ensure_no_incomplete_state(conn)
-        backup = _backup_database(engine, url, detection)
+        backup = _backup_database(conn, url, detection)
         manifest = {
             "source_family": detection.family,
             "source_revision": detection.revision,
@@ -202,7 +203,7 @@ def ensure_runtime_migrated() -> Optional[DetectionResult]:
 def migrate_auto(
     *, dry_run: bool = False, backup_only: bool = False, force_family: Optional[str] = None
 ) -> dict[str, Any]:
-    with _locked_connection() as (engine, conn, url):
+    with _locked_connection() as (_engine, conn, url):
         detection = _detect_database(conn, url)
         if force_family:
             detection.family = force_family
@@ -229,7 +230,7 @@ def migrate_auto(
                 _format_unknown_database_error(detection.revision, detection.backend)
             )
 
-        backup = _backup_database(engine, url, detection)
+        backup = _backup_database(conn, url, detection)
         result["backup_path"] = str(backup)
 
         if backup_only:
@@ -465,7 +466,129 @@ def _format_unknown_database_error(
     )
 
 
-def _backup_database(engine: Engine, url: URL, detection: DetectionResult) -> Path:
+def _parse_postgres_major_version(raw_version: Any) -> Optional[int]:
+    text = str(raw_version).strip()
+    digits: list[str] = []
+    for char in text:
+        if char.isdigit():
+            digits.append(char)
+        elif digits:
+            break
+    if not digits:
+        return None
+    return int("".join(digits))
+
+
+def _get_postgres_server_major(conn: Connection) -> Optional[int]:
+    raw_version = conn.execute(text("SHOW server_version")).scalar()
+    if raw_version is None:
+        return None
+    return _parse_postgres_major_version(raw_version)
+
+
+def _discover_versioned_pg_dump_binaries() -> dict[int, str]:
+    versioned_binaries: dict[int, str] = {}
+    pg_root = Path("/usr/lib/postgresql")
+    if not pg_root.exists():
+        return versioned_binaries
+
+    for child in pg_root.iterdir():
+        if not child.is_dir():
+            continue
+        major = _parse_postgres_major_version(child.name)
+        if major is None:
+            continue
+        binary = child / "bin" / "pg_dump"
+        if binary.is_file():
+            versioned_binaries[major] = str(binary)
+    return dict(sorted(versioned_binaries.items()))
+
+
+def _get_pg_dump_major(binary: Optional[str]) -> Optional[int]:
+    if not binary:
+        return None
+
+    try:
+        result = subprocess.run(
+            [binary, "--version"],
+            check=True,
+            env=os.environ.copy(),
+            capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    output = (result.stdout or result.stderr).decode("utf-8", errors="ignore").strip()
+    return _parse_postgres_major_version(output)
+
+
+def _choose_pg_dump_binary_path(
+    *,
+    server_major: Optional[int],
+    versioned_binaries: dict[int, str],
+    fallback_binary: Optional[str],
+    fallback_major: Optional[int],
+) -> tuple[str, Optional[int]]:
+    available_majors = sorted(versioned_binaries)
+
+    if server_major is not None:
+        exact_match = versioned_binaries.get(server_major)
+        if exact_match:
+            return exact_match, server_major
+
+        for major in available_majors:
+            if major > server_major:
+                return versioned_binaries[major], major
+
+        if fallback_binary and fallback_major is not None and fallback_major >= server_major:
+            return fallback_binary, fallback_major
+
+        compatible_majors = sorted(
+            {
+                *available_majors,
+                *([fallback_major] if fallback_major is not None else []),
+            }
+        )
+        if compatible_majors:
+            raise RuntimeMigrationError(
+                f"检测到 PostgreSQL 服务端主版本为 {server_major}，"
+                "但当前镜像中可用的 `pg_dump` 主版本只有 "
+                f"{', '.join(str(major) for major in compatible_majors)}。"
+                " `pg_dump` 必须与服务端同版本或更高版本。"
+                "请改用包含更高版本 PostgreSQL client 的镜像后重试。"
+            )
+
+    if fallback_binary:
+        return fallback_binary, fallback_major
+
+    if available_majors:
+        newest = available_majors[-1]
+        return versioned_binaries[newest], newest
+
+    return "pg_dump", None
+
+
+def _select_pg_dump_binary(
+    conn: Connection,
+) -> tuple[str, Optional[int], Optional[int], list[int]]:
+    override_binary = os.environ.get("HALO_PG_DUMP_BIN", "").strip()
+    server_major = _get_postgres_server_major(conn)
+    if override_binary:
+        return override_binary, server_major, _get_pg_dump_major(override_binary), []
+
+    versioned_binaries = _discover_versioned_pg_dump_binaries()
+    fallback_binary = shutil.which("pg_dump")
+    fallback_major = _get_pg_dump_major(fallback_binary)
+    binary, selected_major = _choose_pg_dump_binary_path(
+        server_major=server_major,
+        versioned_binaries=versioned_binaries,
+        fallback_binary=fallback_binary,
+        fallback_major=fallback_major,
+    )
+    return binary, server_major, selected_major, sorted(versioned_binaries)
+
+
+def _backup_database(conn: Connection, url: URL, detection: DetectionResult) -> Path:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     family_slug = detection.family.replace("_family", "")
     HALO_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -483,8 +606,11 @@ def _backup_database(engine: Engine, url: URL, detection: DetectionResult) -> Pa
         return backup_path
 
     backup_path = HALO_BACKUP_DIR / f"{timestamp}-{family_slug}.dump"
+    pg_dump_binary, server_major, selected_major, available_majors = _select_pg_dump_binary(
+        conn
+    )
     cmd = [
-        "pg_dump",
+        pg_dump_binary,
         "-Fc",
         "-f",
         str(backup_path),
@@ -500,11 +626,21 @@ def _backup_database(engine: Engine, url: URL, detection: DetectionResult) -> Pa
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode("utf-8", errors="ignore").strip()
         detail = f" pg_dump stderr: {stderr}" if stderr else ""
+        version_detail = ""
+        if server_major is not None:
+            version_detail += f" PostgreSQL 服务端主版本: {server_major}."
+        if selected_major is not None:
+            version_detail += f" 选中的 pg_dump 主版本: {selected_major}."
+        if available_majors:
+            version_detail += (
+                " 镜像内发现的 versioned pg_dump 主版本: "
+                f"{', '.join(str(major) for major in available_majors)}."
+            )
         raise RuntimeMigrationError(
             "检测到 PostgreSQL 数据库并准备自动迁移，但执行 `pg_dump` 备份失败，"
             "已阻止启动以避免无备份迁移。常见原因是数据库权限不足，"
             "或容器内 `pg_dump` 版本低于 PostgreSQL 服务端主版本。"
-            f"{detail}"
+            f"{version_detail}{detail}"
         ) from exc
     return backup_path
 

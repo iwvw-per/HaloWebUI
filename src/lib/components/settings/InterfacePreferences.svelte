@@ -2466,6 +2466,7 @@
 															value: option.value,
 															label: option.label,
 															description: option.description,
+															descriptionTone: option.descriptionTone,
 															disabled: option.disabled,
 															badge: option.badge
 														}))}

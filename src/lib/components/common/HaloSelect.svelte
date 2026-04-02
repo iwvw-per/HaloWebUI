@@ -9,6 +9,7 @@
 		label: string;
 		disabled?: boolean;
 		description?: string;
+		descriptionTone?: 'default' | 'info' | 'warning';
 		badge?: string;
 	};
 
@@ -87,6 +88,17 @@
 		: `min-width: min(100%, ${DEFAULT_MIN_TRIGGER_WIDTH}); max-width: min(100%, ${DEFAULT_MAX_TRIGGER_WIDTH});`;
 	$: triggerTextContainerClass = hasExplicitWidthClass ? 'min-w-0 flex-1' : 'min-w-0';
 	$: contentMinWidth = triggerWidth > 0 ? `${triggerWidth}px` : undefined;
+
+	const getDescriptionClasses = (tone?: Option['descriptionTone']) => {
+		switch (tone) {
+			case 'warning':
+				return 'mt-0.5 text-xs leading-4 text-amber-600/90 dark:text-amber-400/80';
+			case 'info':
+				return 'mt-0.5 text-xs leading-4 text-sky-600/80 dark:text-sky-400/80';
+			default:
+				return 'mt-0.5 text-xs leading-4 text-gray-500 dark:text-gray-400';
+		}
+	};
 
 	onMount(async () => {
 		if (typeof ResizeObserver !== 'undefined') {
@@ -251,7 +263,7 @@
 									{/if}
 								</div>
 								{#if option.description}
-									<div class="mt-0.5 text-xs leading-4 text-gray-500 dark:text-gray-400">
+									<div class={getDescriptionClasses(option.descriptionTone)}>
 										{option.description}
 									</div>
 								{/if}

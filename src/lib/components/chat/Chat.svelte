@@ -345,7 +345,6 @@
 			params: {
 				...$settings?.params,
 				...params,
-				function_calling: 'default',
 				...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
 				...(maxThinkingTokens != null && maxThinkingTokens > 0
 					? { thinking: { type: 'enabled', budget_tokens: maxThinkingTokens } }
@@ -391,7 +390,6 @@
 			},
 			session_id: $socket?.id ?? undefined,
 			chat_id: $chatId ?? undefined,
-			preview_tool_compat: true,
 			model_item: getModelById(model.id),
 			...(stream && shouldIncludeUsageStreamOption(model)
 				? {

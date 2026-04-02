@@ -83,7 +83,11 @@ from open_webui.retrieval.document_processing import (
 
 
 from open_webui.utils.chat import generate_chat_completion
-from open_webui.utils.native_web_search import build_native_web_search_support
+from open_webui.utils.native_web_search import (
+    build_native_web_search_support,
+    resolve_effective_native_web_search_support,
+    strip_model_prefix,
+)
 from open_webui.utils.task import (
     get_task_model_id,
     rag_template,
@@ -900,11 +904,19 @@ def _resolve_native_web_search_support(
                 "can_attempt": False,
             }
 
-        support = build_native_web_search_support(
+        connection_support = build_native_web_search_support(
             "openai",
             url=url,
             api_config=api_config,
             connection_name=model.get("connection_name"),
+        )
+        support = resolve_effective_native_web_search_support(
+            connection_support,
+            provider="openai",
+            model_id=model.get("original_id") or strip_model_prefix(
+                model_id, api_config.get("_resolved_prefix_id")
+            ),
+            model_name=model.get("name") or "",
         )
         support["url"] = url
         support["api_config"] = api_config
@@ -935,17 +947,30 @@ def _resolve_native_web_search_support(
                 "can_attempt": False,
             }
 
-        support = build_native_web_search_support(
+        connection_support = build_native_web_search_support(
             "gemini",
             url=url,
             api_config=api_config,
             connection_name=model.get("connection_name"),
         )
+        support = resolve_effective_native_web_search_support(
+            connection_support,
+            provider="gemini",
+            model_id=model.get("original_id") or strip_model_prefix(
+                model_id, api_config.get("_resolved_prefix_id")
+            ),
+            model_name=model.get("name") or "",
+        )
         support["url"] = url
         support["api_config"] = api_config
         return support
 
-    return build_native_web_search_support(provider or "unknown")
+    return resolve_effective_native_web_search_support(
+        build_native_web_search_support(provider or "unknown"),
+        provider=provider or "unknown",
+        model_id=model.get("original_id") or model_id,
+        model_name=model.get("name") or "",
+    )
 
 
 def _resolve_web_search_strategy(

@@ -109,6 +109,17 @@
 		currentWebSearchModeOption?.shortLabel ??
 		currentWebSearchModeOption?.label ??
 		getWebSearchModeLabel(webSearchMode);
+
+	const getOptionDescriptionClasses = (tone?: WebSearchModeOption['descriptionTone']) => {
+		switch (tone) {
+			case 'warning':
+				return 'mt-0.5 text-xs leading-4 text-amber-600/90 dark:text-amber-400/80';
+			case 'info':
+				return 'mt-0.5 text-xs leading-4 text-sky-600/80 dark:text-sky-400/80';
+			default:
+				return 'mt-0.5 text-xs leading-4 text-gray-500 dark:text-gray-400';
+		}
+	};
 </script>
 
 <!-- Hidden file input used to open the camera on mobile -->
@@ -226,7 +237,7 @@
 												{/if}
 											</div>
 											{#if option.description}
-												<div class="mt-0.5 text-xs leading-4 text-gray-500 dark:text-gray-400">
+												<div class={getOptionDescriptionClasses(option.descriptionTone)}>
 													{option.description}
 												</div>
 											{/if}

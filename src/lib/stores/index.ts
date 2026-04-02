@@ -112,6 +112,26 @@ export type NativeWebSearchSupport = {
 	supported?: boolean;
 	can_attempt?: boolean;
 	connection_name?: string;
+	effective_scope?: string;
+	connection_support?: {
+		status?: 'supported' | 'unknown' | 'unsupported';
+		reason?: string;
+		source?: string;
+		provider?: string;
+		official?: boolean;
+		configured?: boolean | null;
+		supported?: boolean;
+		can_attempt?: boolean;
+		connection_name?: string;
+	};
+	model_rule?: {
+		status?: 'supported' | 'unknown' | 'unsupported';
+		reason?: string;
+		source?: string;
+		match_type?: string;
+		match_value?: string;
+		matched_on?: string;
+	};
 };
 
 type BaseModel = {

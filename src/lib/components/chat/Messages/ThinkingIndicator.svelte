@@ -11,6 +11,8 @@
 		description: string;
 		urls?: string[];
 		query?: string;
+		count?: number;
+		failed?: number;
 		hidden?: boolean;
 	}[] = [];
 	export let messageTimestamp: number = 0;
@@ -47,11 +49,16 @@
 		if (!status?.description) return '';
 		const desc = status.description;
 
-		if (desc.includes('{{searchQuery}}')) {
-			return $i18n.t(desc, { searchQuery: status.query || '' });
-		}
-		if (desc.includes('{{count}}')) {
-			return $i18n.t(desc, { count: status.count ?? status.urls?.length ?? 0 });
+		if (
+			desc.includes('{{searchQuery}}') ||
+			desc.includes('{{count}}') ||
+			desc.includes('{{failed}}')
+		) {
+			return $i18n.t(desc, {
+				searchQuery: status.query || '',
+				count: status.count ?? status.urls?.length ?? 0,
+				failed: status.failed ?? 0
+			});
 		}
 		if (desc.includes('{{model}}')) {
 			return $i18n.t('Waiting for model response');

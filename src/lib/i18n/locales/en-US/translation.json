@@ -1172,6 +1172,7 @@
 	"SearchApi API Key": "",
 	"SearchApi Engine": "",
 	"Searched {{count}} sites": "",
+	"Searched {{count}} sites, {{failed}} failed to index": "Searched {{count}} sites, {{failed}} failed to index",
 	"Searching \"{{searchQuery}}\"": "",
 	"Searching Knowledge for \"{{searchQuery}}\"": "",
 	"Searxng Query URL": "",
@@ -1662,5 +1663,12 @@
 	"Try again with a supported file, or contact an administrator.": "Try again with a supported file, or contact an administrator.",
 	"Ignored failed file(s) for this message: {{names}}": "Ignored failed file(s) for this message: {{names}}",
 	"Unknown file": "Unknown file",
-	"All selected files failed to upload or index. Remove them or upload them again before sending.": "All selected files failed to upload or index. Remove them or upload them again before sending."
+	"All selected files failed to upload or index. Remove them or upload them again before sending.": "All selected files failed to upload or index. Remove them or upload them again before sending.",
+	"Official provider endpoint detected. This model can use built-in web search.": "Official provider endpoint detected. This model can use built-in web search.",
+	"Built-in web search is enabled for this connection.": "Built-in web search is enabled for this connection.",
+	"Built-in web search is disabled for this connection.": "Built-in web search is disabled for this connection.",
+	"This compatible endpoint is not verified yet. If the upstream supports built-in search tools, you can still try model-native web search in chat.": "This compatible endpoint is not verified yet. If the upstream supports built-in search tools, you can still try model-native web search in chat.",
+	"Current model does not support built-in web search. Auto will use HaloWebUI instead.": "Current model does not support built-in web search. Auto will use HaloWebUI instead.",
+	"Current model has not been verified for built-in web search yet. You can still try it manually.": "Current model has not been verified for built-in web search yet. You can still try it manually.",
+	"Current model has not been verified for built-in web search yet. Auto will keep using HaloWebUI.": "Current model has not been verified for built-in web search yet. Auto will keep using HaloWebUI."
 }

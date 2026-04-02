@@ -864,7 +864,9 @@
 														<!-- $i18n.t('Searched {{count}} sites') -->
 														{#if status?.description.includes('{{count}}')}
 															{$i18n.t(status?.description, {
-																count: status?.urls.length
+																count: status?.count ?? status?.urls?.length ?? 0,
+																failed: status?.failed ?? 0,
+																searchQuery: status?.query
 															})}
 														{:else if status?.description === 'No search query generated'}
 															{$i18n.t('No search query generated')}
@@ -873,6 +875,7 @@
 														{:else}
 															{$i18n.t(status?.description, {
 																count: status?.count,
+																failed: status?.failed ?? 0,
 																searchQuery: status?.query
 															})}
 														{/if}
@@ -930,6 +933,7 @@
 													{:else}
 														{$i18n.t(status?.description, {
 															count: status?.count,
+															failed: status?.failed ?? 0,
 															searchQuery: status?.query
 														})}
 													{/if}

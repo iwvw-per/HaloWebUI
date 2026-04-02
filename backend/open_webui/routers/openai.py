@@ -62,6 +62,8 @@ from open_webui.utils.openai_responses import (
 )
 from open_webui.utils.native_web_search import (
     build_native_web_search_support,
+    resolve_effective_native_web_search_support,
+    strip_model_prefix,
 )
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
@@ -787,7 +789,7 @@ def _apply_native_web_search_support_to_models_response(
     if not isinstance(body, dict):
         return body
 
-    support = build_native_web_search_support(
+    connection_support = build_native_web_search_support(
         "openai",
         url=url,
         api_config=api_config,
@@ -799,12 +801,21 @@ def _apply_native_web_search_support_to_models_response(
         for model in data:
             if not isinstance(model, dict):
                 continue
-            model["native_web_search_supported"] = support.get("supported") is True
-            model["native_web_search_support"] = dict(support)
+            model_support = resolve_effective_native_web_search_support(
+                connection_support,
+                provider="openai",
+                model_id=model.get("original_id")
+                or strip_model_prefix(
+                    model.get("id") or "", (api_config or {}).get("_resolved_prefix_id")
+                ),
+                model_name=model.get("name") or "",
+            )
+            model["native_web_search_supported"] = model_support.get("supported") is True
+            model["native_web_search_support"] = dict(model_support)
 
     meta = body.get("_openwebui")
     body["_openwebui"] = meta if isinstance(meta, dict) else {}
-    body["_openwebui"]["native_web_search_support"] = dict(support)
+    body["_openwebui"]["native_web_search_support"] = dict(connection_support)
     return body
 
 
@@ -1504,7 +1515,7 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                 connection_name = urlparse(url).hostname or ""
             except Exception:
                 connection_name = ""
-        native_web_search_support = build_native_web_search_support(
+        connection_support = build_native_web_search_support(
             "openai",
             url=url,
             api_config=api_config,
@@ -1532,10 +1543,16 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
             if connection_icon:
                 model["connection_icon"] = connection_icon
             model["name"] = display_name
-            model["native_web_search_supported"] = (
-                native_web_search_support.get("supported") is True
+            model_support = resolve_effective_native_web_search_support(
+                connection_support,
+                provider="openai",
+                model_id=original_id,
+                model_name=display_name,
             )
-            model["native_web_search_support"] = dict(native_web_search_support)
+            model["native_web_search_supported"] = (
+                model_support.get("supported") is True
+            )
+            model["native_web_search_support"] = dict(model_support)
 
             if prefix_id:
                 model["original_id"] = original_id

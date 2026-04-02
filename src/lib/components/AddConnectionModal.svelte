@@ -42,8 +42,6 @@
 		use_responses_api?: boolean;
 		responses_api_exclude_patterns?: string[];
 		native_file_inputs_enabled?: boolean;
-		native_web_search_enabled?: boolean;
-		native_web_search_tool_type?: string;
 		// Anthropic-specific
 		anthropic_version?: string;
 		anthropic_beta?: string[];
@@ -120,9 +118,6 @@
 	let responsesApiExcludePatterns: Array<{ name: string }> = [{ name: 'gemini' }];
 	let nativeFileInputsEnabled = false;
 	let nativeFileInputsTouched = false;
-	let nativeWebSearchEnabled = false;
-	let nativeWebSearchToolType = 'web_search';
-	let nativeWebSearchTouched = false;
 
 	// Anthropic settings
 	let anthropicVersion = '2023-06-01';
@@ -339,27 +334,6 @@
 	const isOfficialOpenAIHostname = (hostname: string) =>
 		hostname === 'api.openai.com' || hostname.endsWith('.openai.com');
 
-	const isOfficialGeminiHostname = (hostname: string) =>
-		hostname === 'generativelanguage.googleapis.com';
-
-	const getDefaultNativeWebSearchEnabled = () => {
-		if (ollama || direct || anthropic) {
-			return false;
-		}
-
-		if (gemini) {
-			const hostname = getHostname(url || 'https://generativelanguage.googleapis.com/v1beta');
-			return isOfficialGeminiHostname(hostname);
-		}
-
-		if (azure) {
-			return false;
-		}
-
-		const hostname = getHostname(url || 'https://api.openai.com/v1');
-		return isOfficialOpenAIHostname(hostname);
-	};
-
 	const getDefaultNativeFileInputsEnabled = () => {
 		if (ollama || direct || anthropic || gemini || azure || isForceMode) {
 			return false;
@@ -453,105 +427,11 @@
 		}
 	})();
 
-	$: showNativeWebSearchToggle = !ollama && !direct && !anthropic;
 	$: isOfficialOpenAIConnection = !gemini && !anthropic && !ollama && !direct && !azure
 		? isOfficialOpenAIHostname(getHostname(url || 'https://api.openai.com/v1'))
 		: false;
-	$: showNativeWebSearchToolType =
-		!ollama && !direct && !gemini && !anthropic && !azure && !isOfficialOpenAIConnection;
 	$: showNativeFileInputsToggle =
 		!ollama && !direct && !gemini && !anthropic && !azure && !isForceMode && useResponsesApi;
-	$: nativeWebSearchPreview = (() => {
-		if (!showNativeWebSearchToggle) {
-			return null;
-		}
-
-		if (azure) {
-			return {
-				tone: 'slate',
-				label: $i18n.t('Unavailable'),
-				description: $i18n.t(
-					'Azure OpenAI endpoints do not expose this model-native web search path in HaloWebUI.'
-				)
-			};
-		}
-
-		if (gemini) {
-			const official = isOfficialGeminiHostname(
-				getHostname(url || 'https://generativelanguage.googleapis.com/v1beta')
-			);
-			if (nativeWebSearchEnabled) {
-				return official
-					? {
-							tone: 'green',
-							label: $i18n.t('Official Default'),
-							description: $i18n.t(
-								'Official Gemini endpoints are detected automatically, so chat mode can use model-native web search right away.'
-							)
-						}
-					: {
-							tone: 'green',
-							label: $i18n.t('Manually Enabled'),
-							description: $i18n.t(
-								'This compatible Gemini endpoint will be treated as native-web-search capable. Native mode can now actively try the upstream built-in search tool.'
-							)
-						};
-			}
-
-			return official
-				? {
-						tone: 'slate',
-						label: $i18n.t('Manually Disabled'),
-						description: $i18n.t(
-							'This official Gemini endpoint was detected, but native web search is currently disabled for this connection.'
-						)
-					}
-				: {
-						tone: 'amber',
-						label: $i18n.t('Unverified'),
-						description: $i18n.t(
-							'This compatible Gemini endpoint is not verified yet. Leave it off for safe fallback behavior, or enable it if the upstream supports built-in search tools.'
-						)
-					};
-		}
-
-		if (nativeWebSearchEnabled) {
-			return isOfficialOpenAIConnection
-				? {
-						tone: 'green',
-						label: $i18n.t('Official Default'),
-						description: $i18n.t(
-							'Official OpenAI endpoints are detected automatically, so chat mode can use model-native web search right away.'
-						)
-					}
-				: {
-						tone: 'green',
-						label: $i18n.t('Manually Enabled'),
-						description: $i18n.t(
-							'This compatible OpenAI endpoint will be treated as native-web-search capable. Native mode can now actively try the upstream built-in search tool.'
-						)
-					};
-		}
-
-		return isOfficialOpenAIConnection
-			? {
-					tone: 'slate',
-					label: $i18n.t('Manually Disabled'),
-					description: $i18n.t(
-						'This official OpenAI endpoint was detected, but native web search is currently disabled for this connection.'
-					)
-				}
-			: {
-					tone: 'amber',
-					label: $i18n.t('Unverified'),
-					description: $i18n.t(
-						'This compatible OpenAI endpoint is not verified yet. Leave it off for safe fallback behavior, or enable it if the upstream supports built-in search tools.'
-					)
-				};
-	})();
-	$: if (show && showNativeWebSearchToggle && !nativeWebSearchTouched) {
-		nativeWebSearchEnabled = getDefaultNativeWebSearchEnabled();
-	}
 	$: if (show && !nativeFileInputsTouched) {
 		nativeFileInputsEnabled = getDefaultNativeFileInputsEnabled();
 	}
@@ -812,18 +692,6 @@
 							}
 						: {}),
 					...(!ollama && azure ? { azure: true, ...(apiVersion ? { api_version: apiVersion } : {}) } : {}),
-						...(!ollama && !direct && !anthropic && !azure
-							? {
-									native_web_search_enabled: nativeWebSearchEnabled
-								}
-							: {}),
-					...(showNativeWebSearchToolType &&
-					nativeWebSearchEnabled &&
-					nativeWebSearchToolType.trim()
-						? {
-								native_web_search_tool_type: nativeWebSearchToolType.trim()
-							}
-						: {}),
 					...(!ollama && !gemini && !anthropic && !direct && !azure && !isForceMode && useResponsesApi
 						? {
 								native_file_inputs_enabled: nativeFileInputsEnabled
@@ -877,9 +745,6 @@
 			responsesApiExcludePatterns = [{ name: 'gemini' }];
 			nativeFileInputsEnabled = false;
 			nativeFileInputsTouched = false;
-			nativeWebSearchEnabled = false;
-			nativeWebSearchToolType = 'web_search';
-			nativeWebSearchTouched = false;
 			anthropicVersion = '2023-06-01';
 			anthropicVersionMode = '2023-06-01';
 			anthropicCustomVersion = '2023-06-01';
@@ -942,9 +807,6 @@
 					responsesApiExcludePatterns = [{ name: 'gemini' }];
 					nativeFileInputsEnabled = false;
 					nativeFileInputsTouched = false;
-					nativeWebSearchEnabled = false;
-					nativeWebSearchToolType = 'web_search';
-					nativeWebSearchTouched = false;
 
 					const v = (connection.config?.anthropic_version ?? '2023-06-01').toString();
 					anthropicVersion = v;
@@ -984,20 +846,6 @@
 						nativeFileInputsEnabled = getDefaultNativeFileInputsEnabled();
 						nativeFileInputsTouched = false;
 					}
-					nativeWebSearchToolType =
-						connection.config?.native_web_search_tool_type?.toString().trim() || 'web_search';
-					if (
-						Object.prototype.hasOwnProperty.call(
-							connection.config ?? {},
-							'native_web_search_enabled'
-						)
-					) {
-						nativeWebSearchEnabled = connection.config?.native_web_search_enabled ?? false;
-						nativeWebSearchTouched = true;
-					} else {
-						nativeWebSearchEnabled = getDefaultNativeWebSearchEnabled();
-						nativeWebSearchTouched = false;
-					}
 				}
 			}
 			if (!connection.config?.azure) {
@@ -1027,9 +875,6 @@
 			preserveEmptyPrefixId = false;
 			nativeFileInputsEnabled = false;
 			nativeFileInputsTouched = false;
-			nativeWebSearchEnabled = getDefaultNativeWebSearchEnabled();
-			nativeWebSearchToolType = 'web_search';
-			nativeWebSearchTouched = false;
 		}
 
 		// Default UX: start with Basic + Model Management visible, Advanced collapsed.
@@ -1680,88 +1525,6 @@
 												'Usually not required. HaloWebUI only uses api-version when it needs to fall back to legacy Azure deployment paths.'
 											)}
 										</div>
-									</div>
-								{/if}
-
-								{#if showNativeWebSearchToggle}
-									<div
-										class="bg-gray-50 dark:bg-gray-850 rounded-xl p-3 space-y-3 border border-gray-200 dark:border-gray-700"
-									>
-										<div
-											class="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide"
-										>
-											{$i18n.t('模型原生联网搜索')}
-										</div>
-											<div class="flex items-center justify-between">
-												<div>
-													<div class="text-sm font-medium">
-														{$i18n.t('启用模型原生联网搜索')}
-													</div>
-												<div class="text-xs text-gray-400 mt-0.5">
-													{#if gemini}
-														{$i18n.t(
-															'官方 Gemini 连接默认开启。其他 Gemini 兼容端点需要你手动开启。'
-														)}
-													{:else}
-														{$i18n.t(
-															'官方 OpenAI 连接默认开启。OpenAI 兼容网关或代理需要你手动开启。'
-														)}
-													{/if}
-												</div>
-											</div>
-												{#if azure}
-													<div class="text-xs font-medium text-gray-400 dark:text-gray-500">
-														{$i18n.t('Unavailable')}
-													</div>
-												{:else}
-													<Switch
-														state={nativeWebSearchEnabled}
-														on:change={(e) => {
-															nativeWebSearchEnabled = e.detail;
-															nativeWebSearchTouched = true;
-														}}
-													/>
-												{/if}
-											</div>
-											{#if nativeWebSearchPreview}
-												<div
-													class="rounded-lg px-3 py-2 text-xs leading-5 {nativeWebSearchPreview.tone === 'green'
-														? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
-														: nativeWebSearchPreview.tone === 'amber'
-															? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
-															: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}"
-												>
-													<div class="font-medium">{nativeWebSearchPreview.label}</div>
-													<div>{nativeWebSearchPreview.description}</div>
-												</div>
-											{/if}
-
-											{#if showNativeWebSearchToolType && nativeWebSearchEnabled}
-												<div class="flex flex-col">
-												<label
-													for="native-web-search-tool-type"
-													class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-												>
-													{$i18n.t('兼容代理工具类型')}
-												</label>
-												<input
-													id="native-web-search-tool-type"
-													class="w-full px-3 py-2 text-sm bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg focus:outline-none"
-													type="text"
-													bind:value={nativeWebSearchToolType}
-													on:input={() => {
-														nativeWebSearchTouched = true;
-													}}
-													placeholder="web_search"
-													autocomplete="off"
-												/>
-												<div class="text-xs text-gray-400 mt-1">
-													{$i18n.t(
-														'只有兼容代理/网关把内置联网工具名改掉时才需要填，标准 OpenAI 一般不用填。位置就在当前连接的高级设置里。'
-													)}
-												</div>
-											</div>
-										{/if}
 									</div>
 								{/if}
 

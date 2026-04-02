@@ -1,5 +1,6 @@
 import type { Model, NativeWebSearchSupport } from '$lib/stores';
 import type { WebSearchMode } from '$lib/utils/web-search-mode';
+import nativeWebSearchRules from '$lib/data/native-web-search-rules.json';
 
 type Translator = (key: string, options?: Record<string, unknown>) => string;
 
@@ -24,6 +25,7 @@ export type WebSearchModeOption = {
 	label: string;
 	shortLabel?: string;
 	description?: string;
+	descriptionTone?: 'default' | 'info' | 'warning';
 	disabled?: boolean;
 	badge?: string;
 };
@@ -50,11 +52,140 @@ const SUPPORTED_STATUSES = new Set<NativeWebSearchSupport['status']>([
 	'unsupported'
 ]);
 
+type NativeWebSearchRule = {
+	type?: string;
+	value?: string;
+	reason?: string;
+};
+
+type NativeWebSearchProviderRules = {
+	default_status?: NativeWebSearchSupport['status'];
+	allow?: NativeWebSearchRule[];
+	deny?: NativeWebSearchRule[];
+};
+
+const RULE_MATCH_REGEX = 'regex';
+const RULE_MATCH_CONTAINS = 'contains';
+const RULE_MATCH_EQUALS = 'equals';
+const RULE_MATCH_PREFIX = 'prefix';
+
+function normalizeRuleProvider(provider?: string | null): string {
+	const normalized = (provider ?? '').toString().trim().toLowerCase();
+	if (normalized === 'google' || normalized === 'gemini') {
+		return 'gemini';
+	}
+	return normalized || 'unknown';
+}
+
+function normalizeModelLookupValue(value?: string | null): string {
+	const normalized = (value ?? '').toString().trim().toLowerCase();
+	if (!normalized) return '';
+	return normalized.startsWith('models/') ? normalized.slice('models/'.length) : normalized;
+}
+
+function getProviderRules(provider?: string | null): NativeWebSearchProviderRules {
+	const providers = (nativeWebSearchRules as { providers?: Record<string, NativeWebSearchProviderRules> })
+		.providers;
+	if (!providers || typeof providers !== 'object') {
+		return {};
+	}
+	return providers[normalizeRuleProvider(provider)] ?? {};
+}
+
+function matchesRule(rule: NativeWebSearchRule, candidate: string): boolean {
+	const matchType = (rule?.type ?? '').toString().trim().toLowerCase();
+	const ruleValue = (rule?.value ?? '').toString().trim();
+
+	if (!candidate || !matchType || !ruleValue) {
+		return false;
+	}
+
+	switch (matchType) {
+		case RULE_MATCH_REGEX:
+			return new RegExp(ruleValue, 'i').test(candidate);
+		case RULE_MATCH_CONTAINS:
+			return candidate.includes(ruleValue.toLowerCase());
+		case RULE_MATCH_EQUALS:
+			return candidate === ruleValue.toLowerCase();
+		case RULE_MATCH_PREFIX:
+			return candidate.startsWith(ruleValue.toLowerCase());
+		default:
+			return false;
+	}
+}
+
+function resolveFallbackModelRule(
+	provider?: string | null,
+	model?: Pick<ModelLike, 'id' | 'name'> | null
+): NativeWebSearchSupport {
+	const normalizedProvider = normalizeRuleProvider(provider);
+	const providerRules = getProviderRules(normalizedProvider);
+	if (!providerRules.default_status && normalizedProvider !== 'openai' && normalizedProvider !== 'gemini') {
+		return {
+			status: 'unsupported',
+			reason: normalizedProvider ? 'provider_not_supported' : 'unknown_model',
+			source: 'inferred',
+			provider: normalizedProvider,
+			supported: false,
+			can_attempt: false
+		};
+	}
+	const candidates = [
+		normalizeModelLookupValue(model?.id ?? ''),
+		normalizeModelLookupValue(model?.name ?? '')
+	].filter(Boolean);
+
+	for (const [group, status] of [
+		['deny', 'unsupported'],
+		['allow', 'supported']
+	] as const) {
+		const rules = Array.isArray(providerRules[group]) ? providerRules[group] : [];
+		for (const rule of rules) {
+			for (const candidate of candidates) {
+				if (matchesRule(rule, candidate)) {
+					return {
+						status,
+						reason: rule.reason ?? 'model_rule_unknown',
+						source: 'model_rules_fallback',
+						provider: normalizedProvider,
+						supported: status === 'supported',
+						can_attempt: status !== 'unsupported',
+						model_rule: {
+							status,
+							reason: rule.reason ?? 'model_rule_unknown',
+							source: 'model_rules_fallback',
+							match_type: rule.type,
+							match_value: rule.value,
+							matched_on: candidate
+						}
+					};
+				}
+			}
+		}
+	}
+
+	return {
+		status: providerRules.default_status ?? 'unknown',
+		reason: 'model_rule_unknown',
+		source: 'model_rules_fallback',
+		provider: normalizedProvider,
+		supported: false,
+		can_attempt: normalizedProvider === 'openai' || normalizedProvider === 'gemini',
+		model_rule: {
+			status: providerRules.default_status ?? 'unknown',
+			reason: 'model_rule_unknown',
+			source: 'model_rules_fallback'
+		}
+	};
+}
+
 export function getNativeWebSearchSupport(model?: ModelLike | null): NativeWebSearchSupport {
 	const support = model?.native_web_search_support;
 	if (support && typeof support === 'object' && SUPPORTED_STATUSES.has(support.status)) {
 		return support;
 	}
+
+	const fallbackRuleSupport = resolveFallbackModelRule(model?.owned_by, model);
 
 	if (model?.native_web_search_supported === true) {
 		return {
@@ -66,24 +197,20 @@ export function getNativeWebSearchSupport(model?: ModelLike | null): NativeWebSe
 
 	if (model?.native_web_search_supported === false) {
 		return {
+			...fallbackRuleSupport,
 			status: 'unsupported',
-			reason: 'legacy_unsupported',
-			source: 'legacy'
+			reason: fallbackRuleSupport.reason === 'model_rule_unknown' ? 'legacy_unsupported' : fallbackRuleSupport.reason,
+			source: fallbackRuleSupport.source === 'model_rules_fallback' ? 'legacy+model_rules_fallback' : 'legacy'
 		};
 	}
 
-	const owner = (model?.owned_by ?? '').toString().toLowerCase();
-	if (owner === 'openai' || owner === 'google' || owner === 'gemini') {
-		return {
-			status: 'unknown',
-			reason: 'compat_connection_unverified',
-			source: 'inferred'
-		};
+	if (fallbackRuleSupport.source === 'model_rules_fallback') {
+		return fallbackRuleSupport;
 	}
 
 	return {
 		status: 'unsupported',
-		reason: owner ? 'provider_not_supported' : 'unknown_model',
+		reason: (model?.owned_by ?? '').toString().trim() ? 'provider_not_supported' : 'unknown_model',
 		source: 'inferred'
 	};
 }
@@ -134,14 +261,14 @@ export function describeNativeWebSearchSupport(
 ): string {
 	switch (support?.reason) {
 		case 'official_connection':
-			return t('Official provider endpoint detected. Native web search is available by default.');
+			return t('Official provider endpoint detected. This model can use built-in web search.');
 		case 'connection_enabled':
-			return t('Native web search has been enabled for this connection.');
+			return t('Built-in web search is enabled for this connection.');
 		case 'connection_disabled':
-			return t('Native web search is disabled for this connection.');
+			return t('Built-in web search is disabled for this connection.');
 		case 'compat_connection_unverified':
 			return t(
-				'This compatible endpoint is not verified yet. Enable native web search in the connection settings if the upstream supports built-in search tools.'
+				'This compatible endpoint is not verified yet. If the upstream supports built-in search tools, you can still try model-native web search in chat.'
 			);
 		case 'provider_not_supported':
 			return t('This provider does not expose model-native web search in HaloWebUI yet.');
@@ -193,11 +320,33 @@ export function getNativeWebSearchAvailabilityNote(
 	});
 }
 
-function buildNativeModeDescription(t: Translator): string {
+function buildNativeModeDescription(t: Translator, summary: NativeWebSearchSummary): string {
+	if (summary.allUnsupported) {
+		return t('Model-native web search is unavailable for this model.');
+	}
+	if (summary.supportedCount === 0 && summary.unknownCount > 0) {
+		return t('Current model has not been verified for built-in web search yet. You can still try it manually.');
+	}
+
 	return t('Use model-native web search directly for all selected models.');
 }
 
-function buildAutoModeDescription(t: Translator, haloEnabled: boolean): string {
+function buildAutoModeDescription(
+	t: Translator,
+	haloEnabled: boolean,
+	summary: NativeWebSearchSummary
+): string {
+	if (summary.allUnsupported) {
+		return haloEnabled
+			? t('Current model does not support built-in web search. Auto will use HaloWebUI instead.')
+			: t('Model-native web search is unavailable for this model.');
+	}
+	if (summary.supportedCount === 0 && summary.unknownCount > 0) {
+		return haloEnabled
+			? t('Current model has not been verified for built-in web search yet. Auto will keep using HaloWebUI.')
+			: t('Native web search availability for this model is currently unknown.');
+	}
+
 	return haloEnabled
 		? t('Prefer model-native web search and keep HaloWebUI as fallback.')
 		: t('Prefer native web search whenever it is supported.');
@@ -238,14 +387,24 @@ export function buildWebSearchModeOptions(
 					{
 						value: 'native' as WebSearchMode,
 						label: t('模型原生联网'),
-						description: buildNativeModeDescription(t),
+						description: buildNativeModeDescription(t, summary),
+						descriptionTone:
+							summary.allUnsupported
+								? 'warning'
+								: summary.supportedCount === 0 && summary.unknownCount > 0
+									? 'info'
+									: 'default',
 						disabled: nativeImpossible
 					},
 					{
 						value: 'auto' as WebSearchMode,
 						label: t('Smart Web Search'),
 						shortLabel: t('Smart'),
-						description: buildAutoModeDescription(t, haloEnabled),
+						description: buildAutoModeDescription(t, haloEnabled, summary),
+						descriptionTone:
+							summary.allUnsupported || (summary.supportedCount === 0 && summary.unknownCount > 0)
+								? 'info'
+								: 'default',
 						disabled: autoImpossible,
 						badge: haloEnabled && !autoImpossible ? t('Recommended') : undefined
 					}

@@ -47,6 +47,7 @@ from open_webui.utils.payload import (
 from open_webui.utils.error_handling import build_error_detail
 from open_webui.utils.native_web_search import (
     build_native_web_search_support,
+    resolve_effective_native_web_search_support,
 )
 
 
@@ -1181,7 +1182,7 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
             except Exception:
                 connection_name = ""
         connection_icon = (api_config.get("icon") or "").strip()
-        native_web_search_support = build_native_web_search_support(
+        connection_support = build_native_web_search_support(
             "gemini",
             url=base_urls[idx],
             api_config=api_config,
@@ -1200,10 +1201,17 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                 model["connection_icon"] = connection_icon
             if tags:
                 model["tags"] = tags
-            model["native_web_search_supported"] = (
-                native_web_search_support.get("supported") is True
+            model_support = resolve_effective_native_web_search_support(
+                connection_support,
+                provider="gemini",
+                model_id=model_name,
+                model_name=model.get("displayName")
+                or model.get("name", "").replace("models/", ""),
             )
-            model["native_web_search_support"] = dict(native_web_search_support)
+            model["native_web_search_supported"] = (
+                model_support.get("supported") is True
+            )
+            model["native_web_search_support"] = dict(model_support)
 
     return responses
 
@@ -1294,7 +1302,7 @@ async def get_models(
         api_config = cfgs.get(str(url_idx), {}) if isinstance(cfgs, dict) else {}
 
         response = await send_get_request(f"{url}/models", key, api_config)
-        native_web_search_support = build_native_web_search_support(
+        connection_support = build_native_web_search_support(
             "gemini",
             url=url,
             api_config=api_config,
@@ -1306,9 +1314,16 @@ async def get_models(
                         "id": m.get("name", "").replace("models/", ""),
                         "name": m.get("displayName", ""),
                         "owned_by": "google",
-                        "native_web_search_supported": native_web_search_support.get("supported")
+                        "native_web_search_supported": (
+                            model_support := resolve_effective_native_web_search_support(
+                                connection_support,
+                                provider="gemini",
+                                model_id=m.get("name", "").replace("models/", ""),
+                                model_name=m.get("displayName", ""),
+                            )
+                        ).get("supported")
                         is True,
-                        "native_web_search_support": dict(native_web_search_support),
+                        "native_web_search_support": dict(model_support),
                     }
                     for m in response["models"]
                     if "generateContent" in m.get("supportedGenerationMethods", [])
@@ -1350,7 +1365,7 @@ async def verify_connection(
                 status_code=response.get("error", {}).get("code", 500),
                 detail=response.get("error", {}).get("message", "Unknown error"),
             )
-        support = build_native_web_search_support(
+        connection_support = build_native_web_search_support(
             "gemini",
             url=url,
             api_config=config,
@@ -1359,8 +1374,14 @@ async def verify_connection(
             for model in response["models"]:
                 if not isinstance(model, dict):
                     continue
-                model["native_web_search_supported"] = support.get("supported") is True
-                model["native_web_search_support"] = dict(support)
+                model_support = resolve_effective_native_web_search_support(
+                    connection_support,
+                    provider="gemini",
+                    model_id=model.get("name", "").replace("models/", ""),
+                    model_name=model.get("displayName", ""),
+                )
+                model["native_web_search_supported"] = model_support.get("supported") is True
+                model["native_web_search_support"] = dict(model_support)
         return response
     except HTTPException:
         raise
