@@ -46,6 +46,22 @@ def test_openai_official_gpt_image_family_prefers_images_endpoint_mode():
     assert classified["supports_background"] is True
 
 
+def test_openai_seedream_description_is_detected_as_image_model():
+    classified = _classify_openai_image_model(
+        {
+            "id": "doubao-seedream-5.0-lite",
+            "name": "Doubao Seedream 5.0 Lite",
+            "description": "Doubao-Seedream-5.0-lite is ByteDance's latest image generation model.",
+        },
+        base_url="https://api.example.com/v1",
+        api_config={},
+        source={"effective_source": "shared"},
+    )
+
+    assert classified is not None
+    assert classified["generation_mode"] == "openai_chat_image"
+
+
 def test_non_image_model_is_filtered_out():
     classified = _classify_openai_image_model(
         {
@@ -82,6 +98,21 @@ def test_gemini_generate_content_image_preview_is_detected():
             "supportedGenerationMethods": ["generateContent"],
         },
         source={"effective_source": "personal"},
+    )
+
+    assert classified is not None
+    assert classified["generation_mode"] == "gemini_generate_content_image"
+
+
+def test_gemini_camelcase_modalities_are_detected_as_image_model():
+    classified = _classify_gemini_image_model(
+        {
+            "name": "google/gemini-2.5-flash-image",
+            "displayName": "Google: Gemini 2.5 Flash Image (Nano Banana)",
+            "inputModalities": ["image", "text"],
+            "outputModalities": ["image", "text"],
+        },
+        source={"effective_source": "settings"},
     )
 
     assert classified is not None

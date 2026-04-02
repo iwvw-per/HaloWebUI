@@ -67,6 +67,11 @@ OPENAI_CHAT_IMAGE_HINTS = (
     "cogview",
     "playground",
     "nano-banana",
+    "qwen-image",
+    "glm-image",
+    "hunyuan-image",
+    "seedream",
+    "agnes-image",
 )
 NEGATIVE_IMAGE_HINTS = (
     "embedding",
@@ -552,8 +557,11 @@ def _collect_modality_tokens(value: Any) -> set[str]:
                 "output",
                 "modalities",
                 "input_modalities",
+                "inputModalities",
                 "output_modalities",
+                "outputModalities",
                 "supportedGenerationMethods",
+                "supported_generation_methods",
             ):
                 if key in node:
                     _walk(node.get(key))
@@ -578,9 +586,15 @@ def _extract_modalities(model: dict) -> tuple[set[str], set[str]]:
             continue
         if "input_modalities" in container:
             input_modalities.update(_collect_modality_tokens(container.get("input_modalities")))
+        if "inputModalities" in container:
+            input_modalities.update(_collect_modality_tokens(container.get("inputModalities")))
         if "output_modalities" in container:
             output_modalities.update(
                 _collect_modality_tokens(container.get("output_modalities"))
+            )
+        if "outputModalities" in container:
+            output_modalities.update(
+                _collect_modality_tokens(container.get("outputModalities"))
             )
 
     modalities = model.get("modalities")
@@ -650,6 +664,22 @@ def _matches_image_positive_hint(text: str) -> bool:
 
     base_name = _model_id_basename(normalized)
     if base_name.startswith(OPENAI_IMAGE_FAMILY_PREFIXES):
+        return True
+
+    if any(
+        phrase in normalized
+        for phrase in (
+            "image generation",
+            "image creator",
+            "image creation",
+            "text-to-image",
+            "image-to-image",
+            "图像生成",
+            "图像创作",
+            "文生图",
+            "图生图",
+        )
+    ):
         return True
 
     return any(hint in normalized for hint in OPENAI_CHAT_IMAGE_HINTS)
@@ -1021,6 +1051,7 @@ def _classify_gemini_image_model(
     _input_modalities, output_modalities = _extract_modalities(model)
     methods = _extract_supported_generation_methods(model)
     output_has_image = _has_image_modality(output_modalities)
+    output_has_text = _has_text_modality(output_modalities)
 
     negative_hint = _matches_image_negative_hint(base_name) or _matches_image_negative_hint(
         text_blob
@@ -1049,6 +1080,20 @@ def _classify_gemini_image_model(
             size_mode="unsupported",
             supports_image_size=False,
             text_output_supported=False,
+            source=source,
+        )
+
+    if output_has_image:
+        return _build_image_model_entry(
+            model_id=model_id,
+            name=str(model.get("displayName") or model.get("display_name") or model_id).strip(),
+            generation_mode="gemini_generate_content_image",
+            detection_method="metadata",
+            supports_background=False,
+            supports_batch=False,
+            size_mode="aspect_ratio",
+            supports_image_size=supports_image_size,
+            text_output_supported=output_has_text,
             source=source,
         )
 

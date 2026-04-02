@@ -1421,8 +1421,15 @@
 											searchEnabled={true}
 											searchPlaceholder={$i18n.t('Search a model')}
 											noResultsText={$i18n.t('No results found')}
+											allowCustomValue={true}
+											customValueLabel={$i18n.t('Use custom model ID')}
 											className="w-full"
 										/>
+										<div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
+											{$i18n.t(
+												'If the model is not listed, search and use its exact model ID directly.'
+											)}
+										</div>
 								</div>
 								<div
 									class="glass-item p-4"

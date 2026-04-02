@@ -22,6 +22,8 @@
 	export let searchEnabled: boolean = false;
 	export let searchPlaceholder: string = 'Search';
 	export let noResultsText: string = 'No results found';
+	export let allowCustomValue: boolean = false;
+	export let customValueLabel: string = 'Use custom value';
 
 	const DEFAULT_MIN_TRIGGER_WIDTH = '8.5rem';
 	const DEFAULT_MAX_TRIGGER_WIDTH = '14rem';
@@ -60,6 +62,13 @@
 				);
 			})
 		: options;
+	$: trimmedSearchValue = searchValue.trim();
+	$: hasExactCustomMatch = options.some(
+		(option) =>
+			String(option.value).toLowerCase() === trimmedSearchValue.toLowerCase() ||
+			option.label.toLowerCase() === trimmedSearchValue.toLowerCase()
+	);
+	$: canUseCustomValue = allowCustomValue && Boolean(trimmedSearchValue) && !hasExactCustomMatch;
 	$: selectedItem = matchedOption
 		? {
 				value: String(matchedOption.value),
@@ -109,6 +118,13 @@
 			value = next.value;
 			dispatch('change', { value: next.value });
 		}
+	}
+
+	function useCustomValue(nextValue: string) {
+		value = nextValue;
+		searchValue = '';
+		open = false;
+		dispatch('change', { value: nextValue });
 	}
 </script>
 
@@ -188,6 +204,20 @@
 			</div>
 		{/if}
 		<div class="max-h-60 overflow-y-auto scrollbar-hidden">
+			{#if canUseCustomValue}
+				<button
+					type="button"
+					class="mx-1 mb-1 flex w-[calc(100%-0.5rem)] items-start rounded-lg border border-dashed border-blue-200 bg-blue-50/70 px-2.5 py-2 text-left text-sm text-blue-700 outline-none transition-colors hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300 dark:hover:bg-blue-900/40"
+					on:click={() => useCustomValue(trimmedSearchValue)}
+				>
+					<div class="min-w-0 flex-1">
+						<div class="truncate font-medium">{customValueLabel}</div>
+						<div class="mt-0.5 truncate text-xs text-blue-600/80 dark:text-blue-300/80">
+							{trimmedSearchValue}
+						</div>
+					</div>
+				</button>
+			{/if}
 			{#if filteredOptions.length > 0}
 					{#each filteredOptions as option (option.value)}
 						<Select.Item

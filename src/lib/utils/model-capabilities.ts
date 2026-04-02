@@ -173,7 +173,13 @@ function inferImageGen(id: string): boolean {
 		'kolors',
 		'playground',
 		'ideogram',
-		'recraft'
+		'recraft',
+		'qwen-image',
+		'glm-image',
+		'hunyuan-image',
+		'seedream',
+		'agnes-image',
+		'nano-banana'
 	];
 	// 匹配包含 image 但排除 vision/理解类
 	if (id.includes('image') && !id.includes('vision')) {
