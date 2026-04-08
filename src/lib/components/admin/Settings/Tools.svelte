@@ -613,21 +613,23 @@
 	}}
 />
 
-	<MCPServerModal
-		bind:show={showMCPModal}
-		isAdmin={$user?.role === 'admin'}
-		runtimeCapabilities={mcpRuntimeCapabilities}
-		runtimeProfile={mcpRuntimeProfile}
-		connection={editingMCPServerIndex !== null ? mcpServers[editingMCPServerIndex] : null}
-		onSubmit={async (connection) => {
-		if (editingMCPServerIndex !== null) {
-			await updateMCPServer(editingMCPServerIndex, connection);
-		} else {
-			await addMCPServer(connection);
-		}
-		editingMCPServerIndex = null;
-	}}
-/>
+	{#if showMCPModal}
+		<MCPServerModal
+			bind:show={showMCPModal}
+			isAdmin={$user?.role === 'admin'}
+			runtimeCapabilities={mcpRuntimeCapabilities}
+			runtimeProfile={mcpRuntimeProfile}
+			connection={editingMCPServerIndex !== null ? mcpServers[editingMCPServerIndex] : null}
+			onSubmit={async (connection) => {
+				if (editingMCPServerIndex !== null) {
+					await updateMCPServer(editingMCPServerIndex, connection);
+				} else {
+					await addMCPServer(connection);
+				}
+				editingMCPServerIndex = null;
+			}}
+		/>
+	{/if}
 
 <!-- OpenAPI Server Modal -->
 <AddServerModal bind:show={showOpenAPIModal} onSubmit={addOpenAPIServer} />

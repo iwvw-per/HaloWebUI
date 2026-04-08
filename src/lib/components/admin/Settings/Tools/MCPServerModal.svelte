@@ -282,9 +282,9 @@
 	$: gitRuntimeCapability = runtimeCapabilities?.commands?.git ?? null;
 	$: missingGitForCurrentStdio =
 		currentStdioUsesGitSource && gitRuntimeCapability?.available === false;
-	$: isFormInvalid =
+	const isFormInvalid = () =>
 		transport_type === 'http'
-			? url.trim() === '' || hasHeaderValidationIssues
+			? url.trim() === '' || prepareMCPHeaderItems(headerItems).issues.length > 0
 			: command.trim() === '';
 
 	const formatVerifiedAt = (value?: string) => {
@@ -460,7 +460,7 @@
 	};
 
 	const verifyHandler = async () => {
-		if (isFormInvalid) {
+		if (isFormInvalid()) {
 			return;
 		}
 
@@ -499,7 +499,7 @@
 	};
 
 	const submitHandler = async () => {
-		if (isFormInvalid) {
+		if (isFormInvalid()) {
 			return;
 		}
 
@@ -678,7 +678,7 @@
 												verifyHandler();
 											}}
 											type="button"
-											disabled={loading || isFormInvalid}
+											disabled={loading || isFormInvalid()}
 										>
 											<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4 {verifyStatus === 'loading' ? 'animate-spin' : ''}">
 												<path
@@ -716,7 +716,7 @@
 												verifyHandler();
 											}}
 											type="button"
-											disabled={loading || isFormInvalid}
+											disabled={loading || isFormInvalid()}
 										>
 											<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4 {verifyStatus === 'loading' ? 'animate-spin' : ''}">
 												<path
@@ -1032,7 +1032,7 @@
 						<button
 							class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 disabled:opacity-50 disabled:cursor-not-allowed text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
 							type="submit"
-							disabled={loading || isFormInvalid}
+							disabled={loading || isFormInvalid()}
 						>
 							{$i18n.t('Save')}
 						</button>
