@@ -116,8 +116,10 @@
 	let OllamaUrl = '';
 	let OllamaKey = '';
 
-	const normalizeRerankingEngine = (engine?: string | null) =>
-		['', 'local', null, undefined].includes(engine as string | null) ? 'local' : engine!;
+	const normalizeRerankingEngine = (engine?: string | null) => {
+		const normalized = (engine ?? '').trim();
+		return normalized === '' || normalized === 'local' ? 'local' : normalized;
+	};
 
 	const getRerankingModelPlaceholder = () => {
 		if (rerankingEngine === 'jina') {
@@ -146,6 +148,10 @@
 		} else if (rerankingEngine === 'local' && !rerankingModel) {
 			rerankingModel = 'BAAI/bge-reranker-v2-m3';
 		}
+	};
+
+	const handleRerankingEngineChange = () => {
+		applyRerankingEnginePreset(rerankingEngine);
 	};
 
 	const defaultDocumentProviderConfigs = {
@@ -1260,9 +1266,7 @@
 												<select
 													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
 													bind:value={rerankingEngine}
-													on:change={(event) => {
-														applyRerankingEnginePreset((event.currentTarget as HTMLSelectElement).value);
-													}}
+													on:change={handleRerankingEngineChange}
 												>
 													<option value="local">{$i18n.t('Local')}</option>
 													<option value="jina">Jina</option>

@@ -193,7 +193,7 @@ def query_doc_with_hybrid_search(
             k=k,
         )
         if fallback is None:
-            raise e
+            raise
         return fallback.model_dump()
 
 
