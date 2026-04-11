@@ -6,7 +6,7 @@ import secrets
 import time
 import uuid
 from pathlib import Path
-from typing import Literal, Optional, overload
+from typing import Any, Literal, Optional, overload
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import aiohttp
