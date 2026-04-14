@@ -160,7 +160,7 @@ def upload_file(
         id = str(uuid.uuid4())
         name = filename
         filename = f"{id}_{filename}"
-        contents, file_path = Storage.upload_file(file.file, filename)
+        file_size, file_path = Storage.upload_file(file.file, filename)
         requested_processing_mode = resolve_file_processing_mode_from_config(
             request.app.state.config, processing_mode
         )
@@ -175,7 +175,7 @@ def upload_file(
                     "meta": {
                         "name": name,
                         "content_type": file.content_type,
-                        "size": len(contents),
+                        "size": file_size,
                         "data": file_metadata,
                         "processing_mode": requested_processing_mode,
                         "resolved_processing_mode": requested_processing_mode,
