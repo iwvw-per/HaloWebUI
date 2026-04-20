@@ -1,13 +1,14 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { DropdownMenu } from 'bits-ui';
-	import { getContext } from 'svelte';
+	import { getContext, tick } from 'svelte';
 
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
-	import { downloadChatAsPDF } from '$lib/apis/utils';
+	import ChatPdfPreview from '$lib/components/chat/ChatPdfPreview.svelte';
 	import { copyToClipboard, createMessagesList } from '$lib/utils';
+	import { exportChatPdfFromElement, type ChatPdfExportMode } from '$lib/utils/chat-pdf-export';
 
 	import {
 		showOverview,
@@ -15,7 +16,6 @@
 		showArtifacts,
 		mobile,
 		temporaryChatEnabled,
-		theme,
 		settings
 	} from '$lib/stores';
 	import { flyAndScale } from '$lib/utils/transitions';
@@ -38,6 +38,11 @@
 
 	export let chat;
 	export let onClose: Function = () => {};
+	let showPdfPreview = false;
+	let pdfPreviewMode: ChatPdfExportMode = 'stylized';
+	let pdfPreviewContainer: HTMLDivElement | null = null;
+	let pdfPreviewChat = null;
+	let pdfPreviewDarkMode = false;
 
 	const getChatAsText = async () => {
 		const history = chat.chat.history;
@@ -59,94 +64,54 @@
 		saveAs(blob, `chat-${chat.chat.title}.txt`);
 	};
 
+	const resolveChatForPdfExport = async () => {
+		if (chat?.chat?.history) {
+			return chat;
+		}
+
+		if (chat?.id && !String(chat.id).startsWith('local') && !$temporaryChatEnabled) {
+			return await getChatById(localStorage.token, chat.id);
+		}
+
+		return chat;
+	};
+
 	const downloadPdf = async () => {
-		if ($settings?.stylizedPdfExport ?? true) {
-			const history = chat?.chat?.history;
-			const messages = history ? createMessagesList(history, history.currentId) : [];
-			const blob = await downloadChatAsPDF(
-				localStorage.token,
-				chat?.chat?.title ?? 'chat',
-				messages
-			);
-			if (blob) {
-				saveAs(blob, `chat-${chat.chat.title}.pdf`);
-			}
+		const targetChat = await resolveChatForPdfExport();
+		if (!targetChat?.chat?.history) {
+			toast.error($i18n.t('Failed to export PDF'));
 			return;
 		}
 
-		const containerElement = document.getElementById('messages-container');
+		pdfPreviewMode = $settings?.stylizedPdfExport ?? true ? 'stylized' : 'compact';
+		pdfPreviewDarkMode =
+			pdfPreviewMode === 'stylized' && document.documentElement.classList.contains('dark');
+		pdfPreviewChat = targetChat;
+		showPdfPreview = true;
 
-		if (containerElement) {
-			try {
-				const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
-					import('jspdf'),
-					import('html2canvas-pro')
-				]);
-				const isDarkMode = document.documentElement.classList.contains('dark');
+		await tick();
 
-				console.log('isDarkMode', isDarkMode);
+		if (!pdfPreviewContainer) {
+			showPdfPreview = false;
+			pdfPreviewChat = null;
+			toast.error($i18n.t('Failed to export PDF'));
+			return;
+		}
 
-				// Define a fixed virtual screen size
-				const virtualWidth = 800; // Fixed width (adjust as needed)
-				// Clone the container to avoid layout shifts
-				const clonedElement = containerElement.cloneNode(true);
-				clonedElement.classList.add('text-black');
-				clonedElement.classList.add('dark:text-white');
-				clonedElement.style.width = `${virtualWidth}px`; // Apply fixed width
-				clonedElement.style.height = 'auto'; // Allow content to expand
-
-				document.body.appendChild(clonedElement); // Temporarily add to DOM
-
-				// Render to canvas with predefined width
-				const canvas = await html2canvas(clonedElement, {
-					backgroundColor: isDarkMode ? '#000' : '#fff',
-					useCORS: true,
-					scale: 2, // Keep at 1x to avoid unexpected enlargements
-					width: virtualWidth, // Set fixed virtual screen width
-					windowWidth: virtualWidth // Ensure consistent rendering
-				});
-
-				document.body.removeChild(clonedElement); // Clean up temp element
-
-				const imgData = canvas.toDataURL('image/png');
-
-				// A4 page settings
-				const pdf = new jsPDF('p', 'mm', 'a4');
-				const imgWidth = 210; // A4 width in mm
-				const pageHeight = 297; // A4 height in mm
-
-				// Maintain aspect ratio
-				const imgHeight = (canvas.height * imgWidth) / canvas.width;
-				let heightLeft = imgHeight;
-				let position = 0;
-
-				// Set page background for dark mode
-				if (isDarkMode) {
-					pdf.setFillColor(0, 0, 0);
-					pdf.rect(0, 0, imgWidth, pageHeight, 'F'); // Apply black bg
-				}
-
-				pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-				heightLeft -= pageHeight;
-
-				// Handle additional pages
-				while (heightLeft > 0) {
-					position -= pageHeight;
-					pdf.addPage();
-
-					if (isDarkMode) {
-						pdf.setFillColor(0, 0, 0);
-						pdf.rect(0, 0, imgWidth, pageHeight, 'F');
-					}
-
-					pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-					heightLeft -= pageHeight;
-				}
-
-				pdf.save(`chat-${chat.chat.title}.pdf`);
-			} catch (error) {
-				console.error('Error generating PDF', error);
-			}
+		try {
+			await exportChatPdfFromElement({
+				sourceElement: pdfPreviewContainer,
+				title: targetChat?.chat?.title,
+				mode: pdfPreviewMode,
+				darkMode: pdfPreviewDarkMode
+			});
+		} catch (error) {
+			console.error('Error generating PDF', error);
+			toast.error($i18n.t('Failed to export PDF'));
+		} finally {
+			showPdfPreview = false;
+			pdfPreviewChat = null;
+			pdfPreviewContainer = null;
 		}
 	};
 
@@ -189,6 +154,14 @@ code{font-size:0.9em;}</style></head><body><h1>${title}</h1>`;
 		saveAs(blob, `${title.replace(/[^a-zA-Z0-9]/g, '_')}-${Date.now()}.html`);
 	};
 </script>
+
+<ChatPdfPreview
+	bind:container={pdfPreviewContainer}
+	chat={pdfPreviewChat}
+	visible={showPdfPreview}
+	mode={pdfPreviewMode}
+	darkMode={pdfPreviewDarkMode}
+/>
 
 <Dropdown
 	on:change={(e) => {

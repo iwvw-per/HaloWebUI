@@ -1,10 +1,7 @@
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from typing import Dict, Any, List
 from html import escape
-
-from markdown import markdown
 
 import site
 from fpdf import FPDF
@@ -28,8 +25,6 @@ class PDFGenerator:
         self.html_body = None
         self.messages_html = None
         self.form_data = form_data
-
-        self.css = Path(STATIC_DIR / "assets" / "pdf-style.css").read_text()
 
     def format_timestamp(self, timestamp: float) -> str:
         """Convert a UNIX timestamp to a formatted date string."""
@@ -99,31 +94,9 @@ class PDFGenerator:
         Generate a PDF from chat messages.
         """
         try:
-            global FONTS_DIR
-
             pdf = FPDF()
             pdf.add_page()
-
-            # When running using `pip install` the static directory is in the site packages.
-            if not FONTS_DIR.exists():
-                FONTS_DIR = Path(site.getsitepackages()[0]) / "static/fonts"
-            # When running using `pip install -e .` the static directory is in the site packages.
-            # This path only works if `open-webui serve` is run from the root of this project.
-            if not FONTS_DIR.exists():
-                FONTS_DIR = Path(".") / "backend" / "static" / "fonts"
-
-            pdf.add_font("NotoSans", "", f"{FONTS_DIR}/NotoSans-Regular.ttf")
-            pdf.add_font("NotoSans", "b", f"{FONTS_DIR}/NotoSans-Bold.ttf")
-            pdf.add_font("NotoSans", "i", f"{FONTS_DIR}/NotoSans-Italic.ttf")
-            pdf.add_font("NotoSansKR", "", f"{FONTS_DIR}/NotoSansKR-Regular.ttf")
-            pdf.add_font("NotoSansJP", "", f"{FONTS_DIR}/NotoSansJP-Regular.ttf")
-            pdf.add_font("NotoSansSC", "", f"{FONTS_DIR}/NotoSansSC-Regular.ttf")
-            pdf.add_font("Twemoji", "", f"{FONTS_DIR}/Twemoji.ttf")
-
-            pdf.set_font("NotoSans", size=12)
-            pdf.set_fallback_fonts(
-                ["NotoSansKR", "NotoSansJP", "NotoSansSC", "Twemoji"]
-            )
+            self._configure_fonts(pdf)
 
             pdf.set_auto_page_break(auto=True, margin=15)
 
@@ -144,3 +117,110 @@ class PDFGenerator:
             return bytes(pdf_bytes)
         except Exception as e:
             raise e
+
+    def _configure_fonts(self, pdf: FPDF) -> None:
+        errors: list[str] = []
+
+        for font_dir in self._iter_font_dirs():
+            legacy_error = self._try_configure_legacy_fonts(pdf, font_dir)
+            if legacy_error is None:
+                return
+            errors.append(legacy_error)
+
+            halo_error = self._try_configure_halo_fonts(pdf, font_dir)
+            if halo_error is None:
+                return
+            errors.append(halo_error)
+
+        if errors:
+            raise RuntimeError(errors[-1])
+
+        raise RuntimeError(
+            "当前服务端缺少可用的 PDF 字体资源，请改用前端页面导出，或在服务端补齐兼容字体文件。"
+        )
+
+    def _iter_font_dirs(self) -> list[Path]:
+        candidates = [
+            Path(FONTS_DIR),
+            STATIC_DIR / "fonts",
+            STATIC_DIR / "assets" / "fonts",
+        ]
+
+        try:
+            candidates.append(Path(site.getsitepackages()[0]) / "static" / "fonts")
+        except Exception:
+            pass
+
+        candidates.append(Path(".") / "backend" / "static" / "fonts")
+
+        unique_candidates: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            candidate_str = str(candidate)
+            if candidate_str in seen or not candidate.exists():
+                continue
+            seen.add(candidate_str)
+            unique_candidates.append(candidate)
+
+        return unique_candidates
+
+    def _try_configure_legacy_fonts(self, pdf: FPDF, font_dir: Path) -> str | None:
+        regular = font_dir / "NotoSans-Regular.ttf"
+        bold = font_dir / "NotoSans-Bold.ttf"
+        italic = font_dir / "NotoSans-Italic.ttf"
+
+        if not regular.exists() or not bold.exists():
+            return (
+                "服务端缺少旧版 PDF 导出字体资源（NotoSans-Regular.ttf / NotoSans-Bold.ttf），"
+                "无法继续使用旧的服务端 PDF 栈。"
+            )
+
+        try:
+            pdf.add_font("NotoSans", "", str(regular))
+            pdf.add_font("NotoSans", "b", str(bold))
+
+            if italic.exists():
+                pdf.add_font("NotoSans", "i", str(italic))
+
+            fallback_fonts: list[str] = []
+            for family, filename in [
+                ("NotoSansKR", "NotoSansKR-Regular.ttf"),
+                ("NotoSansJP", "NotoSansJP-Regular.ttf"),
+                ("NotoSansSC", "NotoSansSC-Regular.ttf"),
+                ("Twemoji", "Twemoji.ttf"),
+            ]:
+                font_path = font_dir / filename
+                if not font_path.exists():
+                    continue
+                pdf.add_font(family, "", str(font_path))
+                fallback_fonts.append(family)
+
+            pdf.set_font("NotoSans", size=12)
+            if fallback_fonts:
+                pdf.set_fallback_fonts(fallback_fonts)
+
+            return None
+        except Exception as exc:
+            return f"服务端旧版 PDF 字体加载失败：{exc}"
+
+    def _try_configure_halo_fonts(self, pdf: FPDF, font_dir: Path) -> str | None:
+        regular = font_dir / "HarmonyOS_SansSC_Regular.woff2"
+        bold = font_dir / "HarmonyOS_SansSC_Bold.woff2"
+
+        if not regular.exists():
+            return (
+                "当前服务端未找到 Halo 自带中文字体，无法使用兼容兜底的服务端 PDF 导出。"
+            )
+
+        try:
+            pdf.add_font("HaloSansSC", "", str(regular))
+            if bold.exists():
+                pdf.add_font("HaloSansSC", "b", str(bold))
+
+            pdf.set_font("HaloSansSC", size=12)
+            return None
+        except Exception as exc:
+            return (
+                "当前运行环境无法可靠加载 Halo 当前字体（WOFF2），"
+                f"服务端 PDF 导出继续中止：{exc}"
+            )

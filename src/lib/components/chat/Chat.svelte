@@ -4017,6 +4017,19 @@
 			}))
 		].filter((message) => message);
 
+		// 自定义上下文条数：只保留最近 N 条非系统消息，系统提示词始终保留
+		const maxHistoryMessages =
+			params?.max_history_messages ??
+			$settings?.params?.max_history_messages ??
+			null;
+		if (typeof maxHistoryMessages === 'number' && maxHistoryMessages > 0) {
+			const hasSystem = messages[0]?.role === 'system';
+			const systemMsg = hasSystem ? messages[0] : null;
+			const historyOnly = hasSystem ? messages.slice(1) : messages;
+			const truncated = historyOnly.slice(-maxHistoryMessages);
+			messages = systemMsg ? [systemMsg, ...truncated] : truncated;
+		}
+
 		const requestSkillIds = collectRequestSkillIds(messages);
 
 		messages = messages

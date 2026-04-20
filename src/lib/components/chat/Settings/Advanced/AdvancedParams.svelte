@@ -45,6 +45,7 @@
 		num_batch: null,
 		num_keep: null,
 		max_tokens: null,
+		max_history_messages: null,
 		use_mmap: null,
 		use_mlock: null,
 		num_thread: null,
@@ -293,6 +294,70 @@
 				</button>
 			</div>
 		</Tooltip>
+	</div>
+
+	<div
+		class="py-1.5 px-1 w-full justify-between rounded-lg hover:bg-gray-50/80 dark:hover:bg-white/[0.02] transition-colors duration-150"
+	>
+		<Tooltip
+			content={tr(
+				'限制每次发送给模型的最近历史消息条数（不含系统提示词）。可节省 Token 消耗并避免旧消息污染当前话题。默认发送全部历史。',
+				'Limit how many recent history messages are sent to the model (system prompt excluded). Saves tokens and prevents older context from polluting the current topic. Default sends all.'
+			)}
+			placement="top-start"
+			className="inline-tooltip"
+		>
+			<div class="flex w-full justify-between">
+				<div class=" self-center text-xs font-medium">
+					{tr('上下文消息数', 'Context Message Count')}
+				</div>
+
+				<button
+					class="text-xs cursor-pointer transition-colors duration-200 shrink-0"
+					type="button"
+					on:click={() => {
+						params.max_history_messages =
+							(params?.max_history_messages ?? null) === null ? 10 : null;
+					}}
+				>
+					{#if (params?.max_history_messages ?? null) === null}
+						<span
+							class="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+							>{$i18n.t('Default')}</span
+						>
+					{:else}
+						<span
+							class="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
+							>{$i18n.t('Custom')}</span
+						>
+					{/if}
+				</button>
+			</div>
+		</Tooltip>
+
+		{#if (params?.max_history_messages ?? null) !== null}
+			<div class="flex mt-0.5 space-x-2">
+				<div class=" flex-1">
+					<input
+						type="range"
+						min="1"
+						max="50"
+						step="1"
+						bind:value={params.max_history_messages}
+						class="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-gray-200 dark:bg-gray-700"
+					/>
+				</div>
+				<div>
+					<input
+						bind:value={params.max_history_messages}
+						type="number"
+						class="bg-gray-50 dark:bg-gray-800/50 text-center w-14 rounded-md border border-gray-200/60 dark:border-gray-700/40 py-0.5 text-xs outline-none transition-colors duration-200"
+						min="1"
+						step="1"
+					/>
+				</div>
+			</div>
+		{/if}
 	</div>
 
 	<div

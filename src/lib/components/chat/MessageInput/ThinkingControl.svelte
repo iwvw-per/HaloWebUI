@@ -17,6 +17,13 @@
 	const i18n = getContext('i18n');
 	const tr = (key: string, defaultValue: string) =>
 		translateWithDefault($i18n, key, defaultValue);
+	const trWithDefaultOption = (key: string, options: Record<string, any> = {}) =>
+		tr(
+			key,
+			typeof options?.defaultValue === 'string' && options.defaultValue.trim()
+				? options.defaultValue
+				: key
+		);
 
 	export let reasoningEffort: string | null = null;
 	export let maxThinkingTokens: number | null = null;
@@ -25,18 +32,18 @@
 	let dropdownOpen = false;
 
 	$: defaultEffortSteps = [
-		{ value: 'none', label: $i18n.t('关闭', { defaultValue: 'Off' }) },
-		{ value: null, label: $i18n.t('默认', { defaultValue: 'Default' }) },
+		{ value: 'none', label: tr('关闭', 'Off') },
+		{ value: null, label: tr('默认', 'Default') },
 		{ value: 'low', label: 'Low' },
-		{ value: 'medium', label: 'Med' },
+		{ value: 'medium', label: 'Medium' },
 		{ value: 'high', label: 'High' },
-		{ value: 'xhigh', label: 'XH' },
+		{ value: 'xhigh', label: 'XHigh' },
 		{ value: 'max', label: 'Max' }
 	];
 
 	$: defaultTokenSteps = [
-		{ value: 0, label: $i18n.t('关闭', { defaultValue: 'Off' }) },
-		{ value: null, label: $i18n.t('默认', { defaultValue: 'Default' }) },
+		{ value: 0, label: tr('关闭', 'Off') },
+		{ value: null, label: tr('默认', 'Default') },
 		{ value: 2048, label: '2K' },
 		{ value: 8192, label: '8K' },
 		{ value: 16384, label: '16K' },
@@ -45,8 +52,8 @@
 	];
 
 	$: anthropicProfile = getAnthropicThinkingProfile(model);
-	$: effortSteps = getAnthropicEffortSteps(model, $i18n.t.bind($i18n)) ?? defaultEffortSteps;
-	$: tokenSteps = getAnthropicBudgetSteps(model, $i18n.t.bind($i18n)) ?? defaultTokenSteps;
+	$: effortSteps = getAnthropicEffortSteps(model, trWithDefaultOption) ?? defaultEffortSteps;
+	$: tokenSteps = getAnthropicBudgetSteps(model, trWithDefaultOption) ?? defaultTokenSteps;
 
 	let activeMode: 'effort' | 'budget' = 'effort';
 	let customMode = false;
@@ -222,7 +229,7 @@
 							: 'text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100'}"
 					on:click={() => switchMode('effort')}
 				>
-					{tr('强度', 'Effort')}
+					{tr('强度模式', 'Effort Mode')}
 				</button>
 				<button
 					type="button"
@@ -232,7 +239,7 @@
 							: 'text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100'}"
 					on:click={() => switchMode('budget')}
 				>
-					{tr('预算', 'Budget')}
+					{tr('预算模式', 'Budget Mode')}
 				</button>
 			</div>
 

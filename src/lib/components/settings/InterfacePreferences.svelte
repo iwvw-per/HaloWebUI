@@ -2194,12 +2194,18 @@
 										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
 											<div class="text-sm font-medium">
-												{$i18n.t('Stylized PDF Export')}
+												{tr('按当前页面样式导出 PDF', 'Export PDF using current page style')}
 											</div>
 											<Switch
 												bind:state={stylizedPdfExport}
 											/>
 										</div>
+									</div>
+									<div class="text-xs text-gray-500 dark:text-gray-400 mt-1.5 pl-1">
+										{tr(
+											'开启：导出效果更接近当前聊天页面。关闭：使用简化兼容导出，速度更稳。',
+											'On: export stays closer to the current chat page. Off: use simplified export for better stability.'
+										)}
 									</div>
 
 									<!-- Sub-group C: Interaction -->
