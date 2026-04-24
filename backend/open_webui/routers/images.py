@@ -1307,11 +1307,24 @@ def _classify_openai_image_model(
     images_endpoint_hint = (
         "images/generations" in endpoint_blob or "images.generate" in endpoint_blob
     )
+    prefers_volcengine_images_endpoint = _is_volcengine_ark_connection(base_url) and any(
+        hint in base_name or hint in text_blob for hint in VOLCENGINE_IMAGES_ENDPOINT_HINTS
+    )
 
-    if negative_hint and not (output_has_image or images_endpoint_hint or positive_hint):
+    if negative_hint and not (
+        output_has_image
+        or images_endpoint_hint
+        or positive_hint
+        or prefers_volcengine_images_endpoint
+    ):
         return None
 
-    if not (output_has_image or images_endpoint_hint or positive_hint):
+    if not (
+        output_has_image
+        or images_endpoint_hint
+        or positive_hint
+        or prefers_volcengine_images_endpoint
+    ):
         return None
 
     is_force_mode = openai_router._is_force_mode_connection(base_url, api_config or {})
@@ -1319,10 +1332,6 @@ def _classify_openai_image_model(
         (api_config or {}).get("azure")
     )
     uses_images_endpoint_family = base_name.startswith(OPENAI_IMAGE_FAMILY_PREFIXES)
-    prefers_volcengine_images_endpoint = _is_volcengine_ark_connection(base_url) and any(
-        hint in base_name or hint in text_blob for hint in VOLCENGINE_IMAGES_ENDPOINT_HINTS
-    )
-
     if images_endpoint_hint or prefers_volcengine_images_endpoint:
         generation_mode = "openai_images"
         detection_method = "metadata" if images_endpoint_hint else "heuristic"
