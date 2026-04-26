@@ -98,6 +98,7 @@ from open_webui.utils.native_web_search import (
     resolve_effective_native_web_search_support,
     strip_model_prefix,
 )
+from open_webui.utils.model_identity import get_model_ref_from_model, resolve_model_from_lookup
 from open_webui.utils.payload import merge_additive_payload_fields
 from open_webui.utils.skill_runtime import (
     build_skill_system_prompt,
@@ -1088,7 +1089,12 @@ def _resolve_native_web_search_support(
             }
 
         _idx, url, _key, api_config = _resolve_openai_connection_by_model_id(
-            model_id, base_urls, keys, cfgs
+            model_id,
+            base_urls,
+            keys,
+            cfgs,
+            model_ref=get_model_ref_from_model(model),
+            request_models=getattr(getattr(request, "state", None), "MODELS", None),
         )
         if not url:
             return {
@@ -1131,7 +1137,12 @@ def _resolve_native_web_search_support(
             }
 
         _idx, url, _key, api_config = _resolve_gemini_connection_by_model_id(
-            model_id, base_urls, keys, cfgs
+            model_id,
+            base_urls,
+            keys,
+            cfgs,
+            model_ref=get_model_ref_from_model(model),
+            request_models=getattr(getattr(request, "state", None), "MODELS", None),
         )
         if not url:
             return {
@@ -1873,7 +1884,12 @@ async def _prepare_openai_native_file_inputs(
 
     model_id = form_data.get("model") or (model or {}).get("id") or ""
     url_idx, url, key, api_config = _resolve_openai_connection_by_model_id(
-        model_id, base_urls, keys, cfgs
+        model_id,
+        base_urls,
+        keys,
+        cfgs,
+        model_ref=get_model_ref_from_model(model),
+        request_models=getattr(getattr(request, "state", None), "MODELS", None),
     )
     if not url:
         return
@@ -2944,6 +2960,7 @@ async def chat_image_generation_handler(
                         if source_image_url
                         else {}
                     ),
+                    "chat_generation": True,
                 }
             ),
             user=user,
@@ -3269,23 +3286,36 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 image_generation_options = {}
 
             selected_image_model = str(
-                model.get("original_id")
+                model.get("model_id")
+                or model.get("original_id")
                 or model.get("id")
                 or form_data.get("model")
                 or ""
             ).strip()
             model_ref = {}
             if isinstance(model, dict):
-                connection_index = model.get("connection_index")
+                existing_model_ref = model.get("model_ref") if isinstance(model.get("model_ref"), dict) else {}
+                connection_index = existing_model_ref.get("connection_index", model.get("connection_index"))
                 api_config = model.get("api_config") if isinstance(model.get("api_config"), dict) else {}
                 connection_id = str(
-                    model.get("connection_id")
+                    existing_model_ref.get("connection_id")
+                    or model.get("connection_id")
                     or model.get("prefix_id")
                     or (api_config or {}).get("prefix_id")
                     or ""
                 ).strip()
-                provider = str(model.get("provider") or model.get("owned_by") or "").strip()
-                source = str(model.get("source") or model.get("effective_source") or "personal").strip()
+                provider = str(
+                    existing_model_ref.get("provider")
+                    or model.get("provider")
+                    or model.get("owned_by")
+                    or ""
+                ).strip()
+                source = str(
+                    existing_model_ref.get("source")
+                    or model.get("source")
+                    or model.get("effective_source")
+                    or "personal"
+                ).strip()
 
                 if provider:
                     model_ref["provider"] = provider
@@ -3515,6 +3545,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 )
 
         await ensure_selected_shared_tool_runtime_loaded(request, user, tool_ids)
+        task_model = resolve_model_from_lookup(
+            models,
+            getattr(request.state, "MODELS_AMBIGUOUS", set()) or set(),
+            task_model_id,
+        )
+        if not task_model:
+            raise Exception("Model not found")
 
         tools_dict = get_tools(
             request,
@@ -3522,7 +3559,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             user,
             {
                 **extra_params,
-                "__model__": models[task_model_id],
+                "__model__": task_model,
                 "__messages__": form_data["messages"],
                 "__files__": metadata.get("files", []),
             },

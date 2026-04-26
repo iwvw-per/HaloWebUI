@@ -52,6 +52,13 @@ from open_webui.utils.native_web_search import (
     build_native_web_search_support,
     resolve_effective_native_web_search_support,
 )
+from open_webui.utils.model_identity import (
+    decorate_provider_model_identity,
+    get_base_model_ref_from_model_info,
+    get_model_ref_from_model,
+    resolve_model_from_lookup,
+    resolve_provider_connection_by_model_id,
+)
 
 
 log = logging.getLogger(__name__)
@@ -129,29 +136,23 @@ def _get_gemini_user_config(connection_user: Optional[UserModel]) -> tuple[list[
 
 
 def _resolve_gemini_connection_by_model_id(
-    model_id: str, base_urls: list[str], keys: list[str], cfgs: dict
+    model_id: str,
+    base_urls: list[str],
+    keys: list[str],
+    cfgs: dict,
+    *,
+    model_ref: Optional[dict] = None,
+    request_models=None,
 ) -> tuple[int, str, str, dict]:
-    chosen_idx = 0
-    chosen_cfg = (cfgs.get("0") or {}) if isinstance(cfgs, dict) else {}
-    chosen_prefix = (chosen_cfg.get("prefix_id") or "").strip() or None
-
-    if isinstance(model_id, str) and "." in model_id and len(base_urls) > 1 and isinstance(cfgs, dict):
-        maybe_prefix, _rest = model_id.split(".", 1)
-        for idx, _url in enumerate(base_urls):
-            c = cfgs.get(str(idx), {}) or {}
-            p = (c.get("prefix_id") or "").strip() or None
-            if p and p == maybe_prefix:
-                chosen_idx = idx
-                chosen_cfg = c
-                chosen_prefix = p
-                break
-
-    url = (base_urls[chosen_idx] if chosen_idx < len(base_urls) else "").rstrip("/")
-    key = keys[chosen_idx] if chosen_idx < len(keys) else ""
-    api_config = chosen_cfg or {}
-    api_config = {**api_config, "_resolved_prefix_id": chosen_prefix or ""}
-
-    return chosen_idx, url, key, api_config
+    return resolve_provider_connection_by_model_id(
+        provider="gemini",
+        model_id=model_id,
+        base_urls=base_urls,
+        keys=keys,
+        cfgs=cfgs,
+        model_ref=model_ref,
+        request_models=request_models,
+    )
 
 
 async def _is_user_visible_model(
@@ -159,7 +160,10 @@ async def _is_user_visible_model(
 ) -> bool:
     state = getattr(request, "state", None)
     models_map = getattr(state, "MODELS", None) if state is not None else None
-    if isinstance(models_map, dict) and model_id in models_map:
+    ambiguous_aliases = getattr(state, "MODELS_AMBIGUOUS", set()) if state is not None else set()
+    if isinstance(models_map, dict) and resolve_model_from_lookup(
+        models_map, ambiguous_aliases or set(), model_id
+    ):
         return True
 
     try:
@@ -178,7 +182,10 @@ async def _is_user_visible_model(
 
     state = getattr(request, "state", None)
     models_map = getattr(state, "MODELS", None) if state is not None else None
-    return isinstance(models_map, dict) and model_id in models_map
+    ambiguous_aliases = getattr(state, "MODELS_AMBIGUOUS", set()) if state is not None else set()
+    return isinstance(models_map, dict) and bool(
+        resolve_model_from_lookup(models_map, ambiguous_aliases or set(), model_id)
+    )
 
 ##########################################
 #
@@ -1249,6 +1256,15 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                 model_support.get("supported") is True
             )
             model["native_web_search_support"] = dict(model_support)
+            decorate_provider_model_identity(
+                model,
+                provider="gemini",
+                model_id=model_name,
+                source="personal",
+                connection_index=idx,
+                connection_id=prefix_id,
+                legacy_ids=[model.get("id"), model_name],
+            )
 
     return responses
 
@@ -1280,15 +1296,22 @@ async def get_all_models(request: Request, user: UserModel) -> dict:
     for idx, response in enumerate(responses):
         if response and "models" in response:
             for model in response["models"]:
-                model_id = model.get("id", model.get("name", "").replace("models/", ""))
+                model_id = (
+                    model.get("model_id")
+                    or model.get("original_id")
+                    or model.get("id")
+                    or model.get("name", "").replace("models/", "")
+                )
 
                 supported_methods = model.get("supportedGenerationMethods", [])
                 if "generateContent" not in supported_methods:
                     continue
 
-                if model_id and model_id not in models:
-                    models[model_id] = {
-                        "id": model_id,
+                selection_id = model.get("selection_id") or model.get("id")
+                if model_id and selection_id and selection_id not in models:
+                    models[selection_id] = {
+                        **model,
+                        "id": model.get("id") or model_id,
                         "name": model.get("displayName", model_id),
                         "owned_by": "google",
                         "gemini": model,
@@ -1571,14 +1594,26 @@ async def generate_chat_completion(
     custom_params = payload.pop("custom_params", None)
     metadata = payload.pop("metadata", None)
 
-    model_id = payload.get("model", "")
+    request_models = getattr(request.state, "MODELS", None) or getattr(
+        request.app.state, "MODELS", {}
+    )
+    requested_model_id = payload.get("model", "")
+    request_model_entry = (
+        request_models.get(requested_model_id)
+        if isinstance(request_models, dict)
+        else None
+    )
+
+    model_id = requested_model_id
     model_info_db = Models.get_model_by_id(model_id)
+    model_ref = get_model_ref_from_model(request_model_entry)
 
     # Apply model overrides/params/system prompt (OpenAI-format) before converting to Gemini.
     if model_info_db:
         if model_info_db.base_model_id:
             payload["model"] = model_info_db.base_model_id
             model_id = model_info_db.base_model_id
+            model_ref = get_base_model_ref_from_model_info(model_info_db) or model_ref
 
         params = model_info_db.params.model_dump()
         payload = apply_model_params_to_body_openai(params, payload)
@@ -1609,9 +1644,23 @@ async def generate_chat_completion(
     if not base_urls:
         raise HTTPException(status_code=404, detail="No connections configured")
 
-    idx, url, key, api_config = _resolve_gemini_connection_by_model_id(model_id, base_urls, keys, cfgs)
+    if not model_ref and isinstance(request_models, dict):
+        model_ref = get_model_ref_from_model(request_models.get(model_id))
+
+    idx, url, key, api_config = _resolve_gemini_connection_by_model_id(
+        model_id,
+        base_urls,
+        keys,
+        cfgs,
+        model_ref=model_ref,
+        request_models=request_models,
+    )
     if not url:
         raise HTTPException(status_code=404, detail="Connection not found")
+
+    if api_config.get("_resolved_model_id"):
+        form_data["model"] = api_config["_resolved_model_id"]
+        model_id = form_data["model"]
 
     # Convert OpenAI format to Gemini format
     messages = form_data.get("messages", [])

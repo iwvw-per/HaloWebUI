@@ -12,6 +12,7 @@
 	import ResponseMessage from './ResponseMessage.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Merge from '$lib/components/icons/Merge.svelte';
+	import { findModelByIdentity } from '$lib/utils/model-identity';
 
 	import Markdown from './Markdown.svelte';
 	import Name from './Name.svelte';
@@ -281,9 +282,7 @@
 								{#if groupedMessageIdsIdx[modelIdx] !== undefined && groupedMessageIds[modelIdx].messageIds.length > 0}
 									{@const _messageId =
 										groupedMessageIds[modelIdx].messageIds[groupedMessageIdsIdx[modelIdx]]}
-									{@const tabModel = $models.find(
-										(m) => m.id === history.messages[_messageId]?.model
-									)}
+									{@const tabModel = findModelByIdentity($models, history.messages[_messageId]?.model)}
 									<button
 										role="tab"
 										aria-selected={selectedModelIdx == modelIdx}

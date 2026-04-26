@@ -16,6 +16,7 @@
 	import Flow from './Overview/Flow.svelte';
 	import XMark from '../icons/XMark.svelte';
 	import ArrowLeft from '../icons/ArrowLeft.svelte';
+	import { findModelByIdentity } from '$lib/utils/model-identity';
 
 	const { fitView, flowToScreenPosition, getNodesBounds, getViewport, setViewport } = useSvelteFlow();
 	const nodesInitialized = useNodesInitialized();
@@ -87,7 +88,7 @@
 				data: {
 					user: $user,
 					message: history.messages[id],
-					model: $models.find((model) => model.id === history.messages[id].model),
+					model: findModelByIdentity($models, history.messages[id].model),
 					isCurrent: highlightedMessageId === pos.id,
 					isOnCurrentPath:
 						highlightedMessageId === id || recurseCheckChild(id, highlightedMessageId)

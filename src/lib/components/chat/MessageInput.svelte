@@ -42,6 +42,10 @@
 		getLocalizedFileUploadDiagnostic,
 		localizeFileUploadError
 	} from '$lib/utils/file-upload-errors';
+	import {
+		findModelByIdentity,
+		getModelSelectionId
+	} from '$lib/utils/model-identity';
 	import { transcribeAudio } from '$lib/apis/audio';
 	import { uploadFile } from '$lib/apis/files';
 	import { generateAutoCompletion } from '$lib/apis';
@@ -106,7 +110,8 @@
 	export let onDeactivateAssistant: (() => void) | null = null;
 
 	let selectedModelIds = [];
-	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
+	$: selectedModelIds =
+		atSelectedModel !== undefined ? [getModelSelectionId(atSelectedModel)] : selectedModels;
 
 	const shouldSkipTextEnhancements = () =>
 		imageGenerationEnabled ||
@@ -296,7 +301,9 @@
 	$: selectedModelLookupIds = selectedModelIds.filter((id) => typeof id === 'string' && id.trim() !== '');
 	$: selectedModelObjects = selectedModelIds
 		.map((id) =>
-			atSelectedModel && atSelectedModel.id === id ? atSelectedModel : $models.find((model) => model.id === id)
+			atSelectedModel && getModelSelectionId(atSelectedModel) === id
+				? atSelectedModel
+				: findModelByIdentity($models, id)
 		)
 		.filter(Boolean);
 	$: hasResolvedSelectedModels =
@@ -304,6 +311,9 @@
 	$: primarySelectedModel =
 		atSelectedModel ??
 		(selectedModelObjects.length === 1 ? selectedModelObjects[0] : null);
+	$: atSelectedModelListItem = atSelectedModel
+		? (findModelByIdentity($models, getModelSelectionId(atSelectedModel)) ?? atSelectedModel)
+		: null;
 	$: webSearchModeOptions = buildWebSearchModeOptions(
 		(key, options) => $i18n.t(key, options),
 		$config,
@@ -397,9 +407,11 @@
 	export let placeholder = '';
 
 	let visionCapableModels = [];
-	$: visionCapableModels = [...(atSelectedModel ? [atSelectedModel] : selectedModels)].filter(
-		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.vision ?? true
-	);
+	$: visionCapableModels = (
+		atSelectedModel
+			? [atSelectedModel]
+			: selectedModels.map((modelId) => findModelByIdentity($models, modelId)).filter(Boolean)
+	).filter((model) => model?.info?.meta?.capabilities?.vision ?? true);
 
 	const scrollToBottom = () => {
 		const element = document.getElementById('messages-container');
@@ -987,10 +999,8 @@
 										<ModelIcon
 											alt="model profile"
 											className="size-3.5 max-w-[28px] rounded-lg"
-											src={$models.find((model) => model.id === atSelectedModel.id)?.info?.meta
-												?.profile_image_url ??
-												$models.find((model) => model.id === atSelectedModel.id)?.meta
-													?.profile_image_url ??
+											src={atSelectedModelListItem?.info?.meta?.profile_image_url ??
+												atSelectedModelListItem?.meta?.profile_image_url ??
 												`${WEBUI_BASE_URL}/static/favicon.png`}
 										/>
 										<div class="translate-y-[0.5px]">

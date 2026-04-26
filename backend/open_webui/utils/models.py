@@ -17,6 +17,13 @@ from open_webui.models.models import Models
 
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.access_control import has_access
+from open_webui.utils.model_identity import (
+    build_model_lookup,
+    decorate_provider_model_identity,
+    get_model_aliases,
+    get_model_ref_from_model,
+    get_model_selection_id,
+)
 
 
 
@@ -157,8 +164,17 @@ async def _fetch_all_base_models(request: Request, user: UserModel = None):
 
     # Process ollama
     if isinstance(ollama_resp, dict) and "models" in ollama_resp:
-        ollama_models = [
-            {
+        ollama_models = []
+        for model in ollama_resp.get("models", []) or []:
+            if not isinstance(model, dict) or not model.get("model") or not model.get("name"):
+                continue
+            original_model_id = model.get("original_model") or model.get("model")
+            connection_index = (
+                model.get("urls", [None])[0]
+                if isinstance(model.get("urls"), list) and model.get("urls")
+                else None
+            )
+            entry = {
                 "id": model["model"],
                 "name": model["name"],
                 "object": "model",
@@ -177,9 +193,15 @@ async def _fetch_all_base_models(request: Request, user: UserModel = None):
                 ),
                 "tags": model.get("tags", []),
             }
-            for model in ollama_resp.get("models", []) or []
-            if isinstance(model, dict) and model.get("model") and model.get("name")
-        ]
+            decorate_provider_model_identity(
+                entry,
+                provider="ollama",
+                model_id=original_model_id,
+                source="personal",
+                connection_index=connection_index,
+                legacy_ids=[model.get("model"), original_model_id],
+            )
+            ollama_models.append(entry)
     else:
         ollama_models = []
 
@@ -253,8 +275,14 @@ async def get_all_models(request, user: UserModel = None):
     ]
 
     # Build quick indexes for matching.
-    model_by_id: dict[str, dict] = {m.get("id"): m for m in models if isinstance(m, dict) and m.get("id")}
-    model_ids = set(model_by_id.keys())
+    model_by_id, _ambiguous_model_aliases = build_model_lookup(
+        [m for m in models if isinstance(m, dict)]
+    )
+    model_ids = {
+        m.get("id")
+        for m in models
+        if isinstance(m, dict) and m.get("id")
+    }
 
     def _can_read_workspace_model(model_row) -> bool:
         if not user:
@@ -283,11 +311,19 @@ async def get_all_models(request, user: UserModel = None):
     def _find_model_like(models_list: list[dict], model_id: str) -> Optional[dict]:
         if not model_id:
             return None
+        local_lookup, local_ambiguous = build_model_lookup(
+            [m for m in (models_list or []) if isinstance(m, dict)]
+        )
+        if model_id in local_ambiguous:
+            return None
+        direct = local_lookup.get(model_id)
+        if direct:
+            return direct
         for m in models_list or []:
             if not isinstance(m, dict):
                 continue
             mid = m.get("id")
-            if mid == model_id:
+            if mid == model_id or model_id in get_model_aliases(m):
                 return m
             # Ollama ids can vary ('llama3' vs 'llama3:7b'); match on base name.
             if m.get("owned_by") == "ollama" and isinstance(mid, str) and isinstance(model_id, str):
@@ -346,6 +382,14 @@ async def get_all_models(request, user: UserModel = None):
         injected["name"] = custom_model.name
         injected["info"] = custom_model.model_dump()
         injected["preset"] = True
+        injected["legacy_ids"] = list(
+            {
+                *(injected.get("legacy_ids") or []),
+                custom_model.id,
+                get_model_selection_id(owner_base_model),
+            }
+        )
+        injected["selection_id"] = custom_model.id
         models.append(injected)
         model_by_id[injected["id"]] = injected
         model_ids.add(injected["id"])
@@ -387,15 +431,27 @@ async def get_all_models(request, user: UserModel = None):
             if "actionIds" in meta:
                 action_ids.extend(meta["actionIds"])
 
+        info_dump = custom_model.model_dump()
+        base_model_ref = get_model_ref_from_model(base_like)
+        if base_model_ref:
+            info_dump.setdefault("meta", {})
+            if isinstance(info_dump["meta"], dict):
+                info_dump["meta"].setdefault("base_model_ref", base_model_ref)
+                info_dump["meta"].setdefault(
+                    "base_selection_id", get_model_selection_id(base_like)
+                )
+
         models.append(
             {
                 "id": f"{custom_model.id}",
+                "selection_id": f"{custom_model.id}",
                 "name": custom_model.name,
                 "object": "model",
                 "created": custom_model.created_at,
                 "owned_by": owned_by,
-                "info": custom_model.model_dump(),
+                "info": info_dump,
                 "preset": True,
+                **({"model_ref": base_model_ref} if base_model_ref else {}),
                 **({"pipe": pipe} if pipe is not None else {}),
                 "action_ids": action_ids,
             }
@@ -468,8 +524,11 @@ async def get_all_models(request, user: UserModel = None):
                 continue
     log.debug(f"get_all_models() returned {len(models)} models")
 
-    # Per-request model map (avoid leaking across users).
-    request.state.MODELS = {model["id"]: model for model in models if isinstance(model, dict) and model.get("id")}
+    # Per-request model map (avoid leaking across users). Ambiguous legacy aliases are
+    # intentionally omitted so a naked duplicate model name can never route by accident.
+    request.state.MODELS, request.state.MODELS_AMBIGUOUS = build_model_lookup(
+        [model for model in models if isinstance(model, dict)]
+    )
     return models
 
 

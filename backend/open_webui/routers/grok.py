@@ -13,6 +13,7 @@ from open_webui.env import AIOHTTP_CLIENT_SESSION_SSL, SRC_LOG_LEVELS
 from open_webui.routers import openai as openai_router
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.error_handling import build_error_detail
+from open_webui.utils.model_identity import decorate_provider_model_identity
 from open_webui.utils.user_connections import get_user_connections
 
 log = logging.getLogger(__name__)
@@ -342,7 +343,6 @@ async def get_models(
     base_urls, keys, cfgs = _get_grok_user_config(user)
 
     if url_idx is None:
-        seen: set[str] = set()
         for idx, url in enumerate(base_urls):
             api_key = keys[idx] if idx < len(keys) else ""
             api_config = cfgs.get(str(idx), {}) if isinstance(cfgs, dict) else {}
@@ -358,21 +358,28 @@ async def get_models(
 
             for model in payload:
                 model_id = str(model.get("id") or "").strip()
-                if not model_id or model_id in seen:
+                if not model_id:
                     continue
-                seen.add(model_id)
-                models["data"].append(
-                    {
-                        "id": model_id,
-                        "original_id": model_id,
-                        "name": str(model.get("name") or model_id).strip(),
-                        "owned_by": "openai",
-                        "source": "personal",
-                        "connection_index": idx,
-                        **({"connection_id": prefix_id} if prefix_id else {}),
-                        **({"connection_name": connection_name} if connection_name else {}),
-                    }
+                entry = {
+                    "id": model_id,
+                    "original_id": model_id,
+                    "name": str(model.get("name") or model_id).strip(),
+                    "owned_by": "openai",
+                    "source": "personal",
+                    "connection_index": idx,
+                    **({"connection_id": prefix_id} if prefix_id else {}),
+                    **({"connection_name": connection_name} if connection_name else {}),
+                }
+                decorate_provider_model_identity(
+                    entry,
+                    provider="grok",
+                    model_id=model_id,
+                    source="personal",
+                    connection_index=idx,
+                    connection_id=prefix_id,
+                    legacy_ids=[model_id],
                 )
+                models["data"].append(entry)
     else:
         if url_idx < 0 or url_idx >= len(base_urls):
             raise HTTPException(status_code=404, detail="Connection not found")
@@ -383,22 +390,32 @@ async def get_models(
         prefix_id = str(api_config.get("prefix_id") or "").strip()
         connection_name = str(api_config.get("remark") or api_config.get("name") or "").strip()
         payload = await _fetch_grok_models(url, api_key, api_config, user=user)
-        models = {
-            "data": [
-                {
-                    "id": str(model.get("id") or "").strip(),
-                    "original_id": str(model.get("id") or "").strip(),
-                    "name": str(model.get("name") or model.get("id") or "").strip(),
-                    "owned_by": "openai",
-                    "source": "personal",
-                    "connection_index": url_idx,
-                    **({"connection_id": prefix_id} if prefix_id else {}),
-                    **({"connection_name": connection_name} if connection_name else {}),
-                }
-                for model in payload
-                if str(model.get("id") or "").strip()
-            ]
-        }
+        entries = []
+        for model in payload:
+            model_id = str(model.get("id") or "").strip()
+            if not model_id:
+                continue
+            entry = {
+                "id": model_id,
+                "original_id": model_id,
+                "name": str(model.get("name") or model.get("id") or "").strip(),
+                "owned_by": "openai",
+                "source": "personal",
+                "connection_index": url_idx,
+                **({"connection_id": prefix_id} if prefix_id else {}),
+                **({"connection_name": connection_name} if connection_name else {}),
+            }
+            decorate_provider_model_identity(
+                entry,
+                provider="grok",
+                model_id=model_id,
+                source="personal",
+                connection_index=url_idx,
+                connection_id=prefix_id,
+                legacy_ids=[model_id],
+            )
+            entries.append(entry)
+        models = {"data": entries}
 
     return models
 

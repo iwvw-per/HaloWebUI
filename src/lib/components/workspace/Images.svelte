@@ -269,7 +269,7 @@
 	const formatError = (error: unknown) =>
 		localizeCommonError(error, (key, options) => $i18n.t(key, options));
 	const getModelOptionValue = (model: ImageGenerationModel | null | undefined) =>
-		`${model?.selection_key ?? model?.legacy_id ?? model?.id ?? ''}`.trim();
+		`${model?.selection_id ?? model?.selection_key ?? model?.legacy_id ?? model?.id ?? ''}`.trim();
 	const getModelSourceBadge = (model: ImageGenerationModel | null | undefined) => {
 		const source = `${model?.source ?? ''}`.trim().toLowerCase();
 		if (source === 'shared') {
@@ -546,7 +546,7 @@
 			config: {
 				prompt: prompt.trim() || undefined,
 				negativePrompt: negativePrompt.trim() || undefined,
-				model: selectedModelRawId || undefined,
+				model: selectedModel || selectedModelRawId || undefined,
 				size: activeSize || undefined,
 				aspectRatio: selectedAspectRatioOption || undefined,
 				resolution: selectedResolution || undefined,
@@ -746,6 +746,12 @@
 		const nextModel =
 			(preferredModelId
 				? normalizedModels.find(
+						(model) => model.selection_id === preferredModelId
+					) ??
+					normalizedModels.find(
+						(model) => model.selection_key === preferredModelId
+					) ??
+					normalizedModels.find(
 						(model) => model.legacy_id === preferredModelId
 					) ??
 					normalizedModels.find(
@@ -912,7 +918,7 @@
 		try {
 			const response = await imageGenerations(localStorage.token, {
 				prompt: trimmedPrompt,
-				model: selectedModelMeta?.id || selectedModelRawId || undefined,
+				model: selectedModel || selectedModelMeta?.id || selectedModelRawId || undefined,
 				model_ref: selectedModelMeta?.model_ref ?? undefined,
 				size: usesNativeAspectRatioControls ? undefined : activeSize || undefined,
 				aspect_ratio: usesNativeAspectRatioControls ? selectedAspectRatioOption : undefined,

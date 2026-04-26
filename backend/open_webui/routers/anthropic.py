@@ -63,6 +63,12 @@ from open_webui.utils.payload import (
 )
 from open_webui.utils.chat_image_refs import resolve_chat_image_url_to_bytes
 from open_webui.utils.error_handling import build_error_detail
+from open_webui.utils.model_identity import (
+    decorate_provider_model_identity,
+    get_base_model_ref_from_model_info,
+    get_model_ref_from_model,
+    resolve_provider_connection_by_model_id,
+)
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["OPENAI"])
@@ -1445,10 +1451,17 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
             original_id = model.get("id") or model.get("name") or ""
             display_name = model.get("name") or original_id
 
+            model["source"] = "personal"
+            model["connection_index"] = idx
+            if prefix_id:
+                model["connection_id"] = prefix_id
+
             if prefix_id:
                 model["original_id"] = original_id
                 model["id"] = f"{prefix_id}.{original_id}"
                 model["name"] = display_name
+            else:
+                model["original_id"] = original_id
 
             if connection_name:
                 model["connection_name"] = connection_name
@@ -1456,6 +1469,15 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                 model["connection_icon"] = connection_icon
             if tags:
                 model["tags"] = tags
+            decorate_provider_model_identity(
+                model,
+                provider="anthropic",
+                model_id=original_id,
+                source="personal",
+                connection_index=idx,
+                connection_id=prefix_id,
+                legacy_ids=[model.get("id"), original_id],
+            )
 
         normalized_responses.append(model_list)
 
@@ -1485,7 +1507,7 @@ async def get_all_models(request: Request, user: UserModel) -> dict:
     merged: dict[str, dict] = {}
     for response in responses:
         for model in (response.get("data", []) if isinstance(response, dict) else []):
-            mid = model.get("id")
+            mid = model.get("selection_id") or model.get("id")
             if mid and mid not in merged:
                 merged[mid] = model
 
@@ -1534,16 +1556,30 @@ async def get_models(
                     "owned_by": "anthropic",
                     "anthropic": m,
                     "urlIdx": url_idx,
+                    "source": "personal",
+                    "connection_index": url_idx,
                 }
                 if prefix_id:
                     model["original_id"] = original_id
                     model["id"] = f"{prefix_id}.{original_id}"
+                    model["connection_id"] = prefix_id
+                else:
+                    model["original_id"] = original_id
                 if connection_name:
                     model["connection_name"] = connection_name
                 if connection_icon:
                     model["connection_icon"] = connection_icon
                 if tags:
                     model["tags"] = tags
+                decorate_provider_model_identity(
+                    model,
+                    provider="anthropic",
+                    model_id=original_id,
+                    source="personal",
+                    connection_index=url_idx,
+                    connection_id=prefix_id,
+                    legacy_ids=[model.get("id"), original_id],
+                )
                 out.append(model)
 
             models = {"data": out}
@@ -1561,33 +1597,23 @@ def _strip_connection_prefix(model_id: str, prefix_id: Optional[str]) -> str:
     return model_id
 
 
-def _resolve_connection_by_model_id(connection_user: Optional[UserModel], model_id: str) -> tuple[int, str, str, dict]:
+def _resolve_connection_by_model_id(
+    connection_user: Optional[UserModel],
+    model_id: str,
+    *,
+    model_ref: Optional[dict] = None,
+    request_models=None,
+) -> tuple[int, str, str, dict]:
     base_urls, keys, cfgs = _get_anthropic_user_config(connection_user)
-
-    chosen_idx = 0
-    chosen_cfg = cfgs.get("0", {}) or {}
-    chosen_prefix = (chosen_cfg.get("prefix_id") or "").strip() or None
-
-    # Try to match "prefix_id.xxx" across configured connections.
-    if isinstance(model_id, str) and "." in model_id and len(base_urls) > 1:
-        maybe_prefix, _rest = model_id.split(".", 1)
-        for idx, _url in enumerate(base_urls):
-            c = cfgs.get(str(idx), cfgs.get(_url, {})) or {}
-            p = (c.get("prefix_id") or "").strip() or None
-            if p and p == maybe_prefix:
-                chosen_idx = idx
-                chosen_cfg = c
-                chosen_prefix = p
-                break
-
-    url = (base_urls[chosen_idx] if chosen_idx < len(base_urls) else "").rstrip("/")
-    key = keys[chosen_idx] if chosen_idx < len(keys) else ""
-    api_config = chosen_cfg or {}
-
-    # Store the resolved prefix on config for later use (e.g. file cache key)
-    api_config = {**api_config, "_resolved_prefix_id": chosen_prefix or ""}
-
-    return chosen_idx, url, key, api_config
+    return resolve_provider_connection_by_model_id(
+        provider="anthropic",
+        model_id=model_id,
+        base_urls=base_urls,
+        keys=keys,
+        cfgs=cfgs,
+        model_ref=model_ref,
+        request_models=request_models,
+    )
 
 
 async def _fetch_url_as_base64(url: str) -> tuple[str, str]:
@@ -2040,14 +2066,26 @@ async def generate_chat_completion(
     custom_params = payload.pop("custom_params", None)
     metadata = payload.pop("metadata", None) or {}
 
-    model_id = payload.get("model", "")
+    request_models = getattr(request.state, "MODELS", None) or getattr(
+        request.app.state, "MODELS", {}
+    )
+    requested_model_id = payload.get("model", "")
+    request_model_entry = (
+        request_models.get(requested_model_id)
+        if isinstance(request_models, dict)
+        else None
+    )
+
+    model_id = requested_model_id
     model_info_db = Models.get_model_by_id(model_id)
+    model_ref = get_model_ref_from_model(request_model_entry)
 
     # Apply model overrides/params/system prompt (OpenAI-format) before converting to Anthropic.
     if model_info_db:
         if model_info_db.base_model_id:
             payload["model"] = model_info_db.base_model_id
             model_id = model_info_db.base_model_id
+            model_ref = get_base_model_ref_from_model_info(model_info_db) or model_ref
 
         params = model_info_db.params.model_dump()
         payload = apply_model_params_to_body_openai(params, payload)
@@ -2064,19 +2102,24 @@ async def generate_chat_completion(
 
     # Resolve Anthropic connection and strip internal prefix for the upstream model id.
     connection_user = getattr(request.state, "connection_user", None) or user
+    if not model_ref and isinstance(request_models, dict):
+        model_ref = get_model_ref_from_model(request_models.get(payload.get("model", "")))
     url_idx, base_url, key, api_config = _resolve_connection_by_model_id(
-        connection_user, payload.get("model", "")
+        connection_user,
+        payload.get("model", ""),
+        model_ref=model_ref,
+        request_models=request_models,
     )
-    request_models = getattr(request.state, "MODELS", None) or request.app.state.MODELS
     request_model_entry = (
         request_models.get(payload.get("model", ""))
         if isinstance(request_models, dict)
         else None
     )
-    upstream_model_id = _strip_connection_prefix(
+    upstream_model_id = api_config.get("_resolved_model_id") or _strip_connection_prefix(
         payload.get("model", ""),
         (api_config.get("_resolved_prefix_id") or "").strip() or None,
     )
+    payload["model"] = upstream_model_id
     # Preserve proxy model ids as-is unless a proxy has an explicit compatibility override.
     upstream_model_id = _resolve_proxy_model_alias(upstream_model_id, base_url)
     model_profile = _build_anthropic_model_profile(

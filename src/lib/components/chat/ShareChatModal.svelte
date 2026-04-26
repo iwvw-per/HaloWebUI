@@ -5,6 +5,7 @@
 	import { toast } from 'svelte-sonner';
 	import { deleteSharedChatById, getChatById, shareChatById } from '$lib/apis/chats';
 	import { copyToClipboard } from '$lib/utils';
+	import { findModelByIdentity } from '$lib/utils/model-identity';
 
 	import Modal from '../common/Modal.svelte';
 	import Link from '../icons/Link.svelte';
@@ -43,7 +44,9 @@
 					tab.postMessage(
 						JSON.stringify({
 							chat: _chat,
-							models: $models.filter((m) => _chat.models.includes(m.id))
+							models: _chat.models
+								.map((id) => findModelByIdentity($models, id))
+								.filter(Boolean)
 						}),
 						'*'
 					);

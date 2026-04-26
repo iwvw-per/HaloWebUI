@@ -481,6 +481,7 @@ from open_webui.utils.models import (
     get_all_base_models,
     check_model_access,
 )
+from open_webui.utils.model_identity import resolve_model_from_lookup
 from open_webui.utils.chat import (
     generate_chat_completion as chat_completion_handler,
     chat_completed as chat_completed_handler,
@@ -1480,13 +1481,19 @@ async def chat_completion(
             # Build a user-scoped model map for this request.
             await get_all_models(request, user=user)
             models_map = getattr(request.state, "MODELS", {}) or {}
+            ambiguous_model_aliases = getattr(request.state, "MODELS_AMBIGUOUS", set()) or set()
 
             model_id = form_data.get("model", None)
-            if model_id not in models_map:
+            model = resolve_model_from_lookup(
+                models_map,
+                ambiguous_model_aliases,
+                model_id,
+            )
+            if not model:
                 raise Exception("Model not found")
 
-            model = models_map[model_id]
             model_info = Models.get_model_by_id(model_id)
+            request.state.model = model
 
             # Shared model: route provider requests through the owning user's connections
             # (admin shares models by marking them public/private in the Models table).

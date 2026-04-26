@@ -822,21 +822,34 @@ def get_builtin_tools(
                     "Authorization": f"Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}"
                 }
 
+                model = (
+                    request.app.state.config.IMAGE_GENERATION_MODEL
+                    if request.app.state.config.IMAGE_GENERATION_MODEL != ""
+                    else "dall-e-2"
+                )
+                base_model = str(model or "").split("/")[-1].lower()
                 data = {
-                    "model": (
-                        request.app.state.config.IMAGE_GENERATION_MODEL
-                        if request.app.state.config.IMAGE_GENERATION_MODEL != ""
-                        else "dall-e-2"
-                    ),
+                    "model": model,
                     "prompt": str(prompt),
                     "n": requested_n,
                     "size": f"{width}x{height}",
-                    "response_format": "b64_json",
                 }
+                default_response_format_prefixes = (
+                    "chatgpt-image-",
+                    "gpt-image-1-mini",
+                    "gpt-image-1.5",
+                    "gpt-image-1",
+                    "gpt-image-2",
+                )
+                if not any(
+                    base_model.startswith(prefix)
+                    for prefix in default_response_format_prefixes
+                ):
+                    data["response_format"] = "b64_json"
 
-                files = {"image": ("image", image_bytes, image_mime or "image/png")}
+                files = [("image", ("image", image_bytes, image_mime or "image/png"))]
                 if mask_bytes is not None:
-                    files["mask"] = ("mask", mask_bytes, "image/png")
+                    files.append(("mask", ("mask", mask_bytes, "image/png")))
 
                 r = await asyncio.to_thread(
                     requests.post,

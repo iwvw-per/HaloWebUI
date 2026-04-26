@@ -23,6 +23,12 @@
 	import InlineDirtyActions from '$lib/components/admin/Settings/InlineDirtyActions.svelte';
 	import { DEFAULT_MODEL_ICON, resolveModelIcon } from '$lib/utils/model-icons';
 	import { getModelBaseName, getModelChatDisplayName } from '$lib/utils/model-display';
+	import {
+		findModelByIdentity,
+		getModelRef,
+		getModelSelectionId,
+		resolveModelSelectionId
+	} from '$lib/utils/model-identity';
 	import { cloneSettingsSnapshot, isSettingsSnapshotEqual } from '$lib/utils/settings-dirty';
 	import { getTools } from '$lib/apis/tools';
 	import { getFunctions } from '$lib/apis/functions';
@@ -171,9 +177,7 @@
 	};
 
 	const getMatchedProfileImage = (baseModelId: string | null) => {
-		const baseModel = baseModelId
-			? $models.find((candidate) => candidate.id === baseModelId)
-			: null;
+		const baseModel = baseModelId ? findModelByIdentity($models, baseModelId) : null;
 
 		const resolved = baseModel
 			? resolveModelIcon(baseModel as any)
@@ -400,7 +404,7 @@
 		(candidate?.info?.base_model_id ?? candidate?.base_model_id ?? null) == null;
 
 	const addUsage = (base_model_id) => {
-		const baseModel = $models.find((m) => m.id === base_model_id);
+		const baseModel = findModelByIdentity($models, base_model_id);
 
 		if (baseModel) {
 			if (baseModel.owned_by === 'openai') {
@@ -438,6 +442,20 @@
 			loading = false;
 			saving = false;
 			return;
+		}
+		if (preset && modelInfo.base_model_id) {
+			const baseModel = findModelByIdentity($models, modelInfo.base_model_id);
+			const baseModelRef = getModelRef(baseModel);
+			modelInfo.base_model_id = baseModel
+				? getModelSelectionId(baseModel)
+				: modelInfo.base_model_id;
+			if (baseModelRef) {
+				modelInfo.meta.base_model_ref = baseModelRef;
+				modelInfo.meta.base_selection_id = getModelSelectionId(baseModel);
+			} else {
+				delete modelInfo.meta.base_model_ref;
+				delete modelInfo.meta.base_selection_id;
+			}
 		}
 
 		if (Object.keys(builtinToolConfig).length > 0) {
@@ -546,12 +564,24 @@
 					// from the owner's connections, so we must detect true base models by
 					// the absence of an upstream base_model_id instead of `preset`.
 					.filter((m) => isBaseModelOption(m))
-					.find((m) => [model.base_model_id, `${model.base_model_id}:latest`].includes(m.id));
+					.find(
+						(m) =>
+							[
+								model.base_model_id,
+								`${model.base_model_id}:latest`,
+								resolveModelSelectionId($models, model.base_model_id)
+							].includes(getModelSelectionId(m)) ||
+							[
+								model.base_model_id,
+								`${model.base_model_id}:latest`,
+								resolveModelSelectionId($models, model.base_model_id)
+							].includes(m.id)
+					);
 
 				console.log('base_model', base_model);
 
 				if (base_model) {
-					model.base_model_id = base_model.id;
+					model.base_model_id = getModelSelectionId(base_model);
 				} else {
 					model.base_model_id = null;
 				}
@@ -854,7 +884,7 @@
 											...$models
 												.filter((m) => (model ? m.id !== model.id : true) && isBaseModelOption(m))
 												.map((m) => ({
-													value: m.id,
+													value: getModelSelectionId(m),
 													label: getModelChatDisplayName(m)
 												}))
 										]}

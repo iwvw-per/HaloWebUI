@@ -5,6 +5,7 @@
 	import Tooltip from '../common/Tooltip.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
+	import { getModelSelectionId, resolveModelSelectionId } from '$lib/utils/model-identity';
 	import { getTemporaryChatAccess } from '$lib/utils/temporary-chat';
 	const i18n = getContext('i18n');
 
@@ -15,15 +16,16 @@
 
 	// Stable items array: only recomputed when $models reference changes
 	$: selectorItems = $models.map((model) => ({
-		value: model.id,
+		value: getModelSelectionId(model),
 		label: getModelChatDisplayName(model),
 		model: model
 	}));
 
 	$: if (selectedModels.length > 0 && $models.length > 0) {
-		selectedModels = selectedModels.map((model) =>
-			$models.map((m) => m.id).includes(model) ? model : ''
-		);
+		const normalizedModels = selectedModels.map((model) => resolveModelSelectionId($models, model));
+		if (JSON.stringify(normalizedModels) !== JSON.stringify(selectedModels)) {
+			selectedModels = normalizedModels;
+		}
 	}
 
 	let temporaryChatAccess = { allowed: true, enforced: false };

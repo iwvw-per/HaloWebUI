@@ -151,6 +151,11 @@ export type NativeWebSearchSupport = {
 
 type BaseModel = {
 	id: string;
+	selection_id?: string;
+	model_id?: string;
+	original_id?: string;
+	model_ref?: Record<string, unknown>;
+	legacy_ids?: string[];
 	name: string;
 	info?: ModelConfig;
 	owned_by: 'ollama' | 'openai' | 'google' | 'gemini' | 'anthropic' | 'claude';

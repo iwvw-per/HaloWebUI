@@ -42,6 +42,7 @@ export type ImageGenerationConfig = {
 export type ImageGenerationModel = {
 	id: string;
 	name?: string;
+	selection_id?: string;
 	selection_key?: string;
 	legacy_id?: string | null;
 	model_ref?: Record<string, unknown> | null;

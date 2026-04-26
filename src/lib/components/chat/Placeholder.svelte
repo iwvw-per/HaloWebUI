@@ -35,6 +35,7 @@
 	import ModelIcon from '$lib/components/common/ModelIcon.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
+	import { findModelByIdentity } from '$lib/utils/model-identity';
 	import type { WebSearchMode, WebSearchModeSource } from '$lib/utils/web-search-mode';
 	import EyeSlash from '$lib/components/icons/EyeSlash.svelte';
 	import MessageInput from './MessageInput.svelte';
@@ -149,7 +150,7 @@
 		selectedModelIdx = models.length - 1;
 	}
 
-	$: models = selectedModels.map((id) => $_models.find((m) => m.id === id));
+	$: models = selectedModels.map((id) => findModelByIdentity($_models, id));
 
 	const persistFeaturedIds = (nextIds: string[]) => {
 		featuredIds = nextIds;

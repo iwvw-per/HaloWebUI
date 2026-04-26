@@ -24,6 +24,7 @@
 	import { capitalizeFirstLetter, sanitizeResponseContent, splitStream } from '$lib/utils';
 	import { localizeCommonError } from '$lib/utils/common-errors';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
+	import { resolveModelSelectionId } from '$lib/utils/model-identity';
 	import {
 		getTemporaryChatAccess,
 		getTemporaryChatNavigationPath,
@@ -106,15 +107,17 @@
 		const availableIds = new Set(
 			items.filter((item) => !(item.model?.info?.meta?.hidden ?? false)).map((item) => item.value)
 		);
-		pinnedModels = (($settings?.pinnedModels ?? []) as string[]).filter((id) =>
-			availableIds.has(id)
-		);
+		pinnedModels = (($settings?.pinnedModels ?? []) as string[])
+			.map((id) => resolveModelSelectionId($models, id))
+			.filter((id) => availableIds.has(id));
 		pinnedModelSet = new Set(pinnedModels);
 	}
 
 	const togglePinModel = async (modelId: string) => {
 		const previousSettings = $settings ?? {};
-		const current = $settings?.pinnedModels ?? [];
+		const current = (($settings?.pinnedModels ?? []) as string[])
+			.map((id) => resolveModelSelectionId($models, id))
+			.filter(Boolean);
 		const updated = current.includes(modelId)
 			? current.filter((id: string) => id !== modelId)
 			: [...current, modelId];
@@ -130,7 +133,10 @@
 	};
 
 	$: userDefaultModelId =
-		($settings?.models ?? []).find((id) => typeof id === 'string' && id.trim() !== '') ?? '';
+		resolveModelSelectionId(
+			$models,
+			($settings?.models ?? []).find((id) => typeof id === 'string' && id.trim() !== '') ?? ''
+		);
 
 	$: defaultModelId = userDefaultModelId;
 

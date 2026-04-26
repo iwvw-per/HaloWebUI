@@ -6,6 +6,7 @@
 	import { flyAndScale } from '$lib/utils/transitions';
 	import { mobile } from '$lib/stores';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
+	import { getModelSelectionId, resolveModelSelectionId } from '$lib/utils/model-identity';
 
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
@@ -56,13 +57,14 @@
 	$: items = [
 		...(includeEmpty ? [{ value: emptyValue, label: emptyLabel, model: null }] : []),
 		...(models ?? []).map((m) => ({
-			value: m.id,
+			value: getModelSelectionId(m),
 			label: getModelChatDisplayName(m) || m?.name || m?.id,
 			model: m
 		}))
 	] as Item[];
 
-	$: selectedItem = items.find((item) => item.value === value) ?? null;
+	$: selectedItem =
+		items.find((item) => item.value === (resolveModelSelectionId(models, value) || value)) ?? null;
 
 	$: filteredItems = searchValue
 		? items.filter((item) => {

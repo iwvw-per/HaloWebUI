@@ -20,9 +20,29 @@
 	const getErrorText = (error) => {
 		if (typeof error === 'string') return error;
 		if (error instanceof Error) return error.message;
+		if (Array.isArray(error)) return error.map(getErrorText).filter(Boolean).join(', ');
 		if (error && typeof error === 'object') {
-			if ('detail' in error && typeof error.detail === 'string') return error.detail;
-			if ('message' in error && typeof error.message === 'string') return error.message;
+			const value = error as Record<string, unknown>;
+			const message =
+				typeof value.msg === 'string'
+					? value.msg
+					: typeof value.message === 'string'
+						? value.message
+						: '';
+			const loc = Array.isArray(value.loc)
+				? value.loc
+						.filter((part) => part !== 'body')
+						.map((part) => `${part}`)
+						.join('.')
+				: '';
+			if (message) return loc ? `${loc}: ${message}` : message;
+			if ('detail' in value) return getErrorText(value.detail);
+
+			try {
+				return JSON.stringify(value);
+			} catch {
+				return '';
+			}
 		}
 		return `${error ?? ''}`;
 	};
@@ -64,9 +84,12 @@
 	};
 
 	const serializeConfigForSave = (draftConfig) => ({
-		...normalizeImageSettingsSnapshot(draftConfig, imageGenerationConfig),
-		engine: '',
-		prompt_generation: false
+		enabled: draftConfig?.enabled === true,
+		shared_key_enabled: draftConfig?.shared_key_enabled === true
+	});
+
+	const serializeImageGenerationConfigForSave = (draftImageConfig) => ({
+		IMAGE_MODEL_FILTER_REGEX: `${draftImageConfig?.IMAGE_MODEL_FILTER_REGEX ?? ''}`
 	});
 
 	const loadImageSettings = async () => {
@@ -100,10 +123,7 @@
 
 		const updatedImageGenerationConfig = await updateImageGenerationConfig(
 			localStorage.token,
-			{
-				...imageGenerationConfig,
-				IMAGE_MODEL_FILTER_REGEX: `${imageGenerationConfig?.IMAGE_MODEL_FILTER_REGEX ?? ''}`
-			}
+			serializeImageGenerationConfigForSave(imageGenerationConfig)
 		).catch((error) => {
 			toast.error(formatImageSettingsError(error));
 			return null;

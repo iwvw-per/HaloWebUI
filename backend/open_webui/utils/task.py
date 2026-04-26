@@ -62,7 +62,7 @@ def _get_model_identity(model: Optional[dict[str, Any]]) -> str:
         if base_model_id:
             return base_model_id
 
-    for key in ("original_id", "id", "name"):
+    for key in ("model_id", "original_id", "id", "name"):
         value = str(model.get(key) or "").strip()
         if value:
             return value
@@ -86,7 +86,7 @@ def is_dedicated_image_generation_model(model: Optional[dict[str, Any]]) -> bool
     if isinstance(info, dict):
         candidate_names.append(str(info.get("base_model_id") or "").strip())
 
-    for key in ("original_id", "id", "name"):
+    for key in ("model_id", "original_id", "id", "name"):
         candidate_names.append(str(model.get(key) or "").strip())
 
     for identity in candidate_names:

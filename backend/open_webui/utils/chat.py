@@ -44,6 +44,7 @@ from open_webui.models.models import Models
 
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.models import get_all_models, check_model_access
+from open_webui.utils.model_identity import resolve_model_from_lookup
 from open_webui.utils.payload import convert_payload_openai_to_ollama
 from open_webui.utils.chat_image_refs import materialize_openai_image_message_refs
 from open_webui.utils.response import (
@@ -206,10 +207,10 @@ async def generate_chat_completion(
         models = getattr(request.state, "MODELS", None) or request.app.state.MODELS
 
     model_id = form_data["model"]
-    if model_id not in models:
+    ambiguous_model_aliases = getattr(request.state, "MODELS_AMBIGUOUS", set()) or set()
+    model = resolve_model_from_lookup(models, ambiguous_model_aliases, model_id)
+    if not model:
         raise Exception("Model not found")
-
-    model = models[model_id]
 
     # Shared model: route through the owning user's connections.
     # This matters for task endpoints that call generate_chat_completion directly.
@@ -305,10 +306,10 @@ async def chat_completed(request: Request, form_data: dict, user: Any):
 
     data = form_data
     model_id = data["model"]
-    if model_id not in models:
+    ambiguous_model_aliases = getattr(request.state, "MODELS_AMBIGUOUS", set()) or set()
+    model = resolve_model_from_lookup(models, ambiguous_model_aliases, model_id)
+    if not model:
         raise Exception("Model not found")
-
-    model = models[model_id]
 
     metadata = {
         "chat_id": data["chat_id"],
@@ -370,9 +371,10 @@ async def chat_action(request: Request, action_id: str, form_data: dict, user: A
     data = form_data
     model_id = data["model"]
 
-    if model_id not in models:
+    ambiguous_model_aliases = getattr(request.state, "MODELS_AMBIGUOUS", set()) or set()
+    model = resolve_model_from_lookup(models, ambiguous_model_aliases, model_id)
+    if not model:
         raise Exception("Model not found")
-    model = models[model_id]
 
     __event_emitter__ = get_event_emitter(
         {

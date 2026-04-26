@@ -84,6 +84,7 @@
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
+	import { findModelByIdentity } from '$lib/utils/model-identity';
 	import {
 		getRenderableMessageError,
 		hasVisibleMessageFiles as messageHasVisibleFiles
@@ -314,7 +315,7 @@
 	// };
 
 	let model = null;
-	$: model = $models.find((m) => m.id === message.model);
+	$: model = findModelByIdentity($models, message.model);
 	$: stats = getStatsDisplay(message);
 
 	const doRegenerate = () => {

@@ -10,6 +10,7 @@
 	import { uploadFile } from '$lib/apis/files';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { isDedicatedImageGenerationModel } from '$lib/utils/model-capabilities';
+	import { findModelByIdentity } from '$lib/utils/model-identity';
 
 	import { toast } from 'svelte-sonner';
 
@@ -666,7 +667,7 @@
 			});
 		}
 
-		model = $models.find((m) => m.id === modelId);
+		model = findModelByIdentity($models, modelId);
 
 		startRecording();
 

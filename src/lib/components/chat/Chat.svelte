@@ -64,6 +64,13 @@
 	} from '$lib/utils/selection-threads';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 	import {
+		buildModelIdentityLookup,
+		getModelCleanId,
+		getModelRef,
+		getModelSelectionId,
+		resolveModelSelectionId
+	} from '$lib/utils/model-identity';
+	import {
 		type ChatAssistantSnapshot,
 		PENDING_ASSISTANT_STORAGE_KEY,
 		toChatAssistantSnapshot
@@ -374,7 +381,8 @@
 	let selectedModels = [''];
 	let atSelectedModel: Model | undefined;
 	let selectedModelIds = [];
-	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
+	$: selectedModelIds =
+		atSelectedModel !== undefined ? [getModelSelectionId(atSelectedModel)] : selectedModels;
 	let activeAssistant: ChatAssistantSnapshot | null = null;
 
 	let selectedToolIds = [];
@@ -413,14 +421,15 @@
 
 	// J-3-01: O(1) model lookup map — rebuilt reactively when $models changes
 	let modelsMap: Map<string, Model> = new Map();
+	let ambiguousModelIds: Set<string> = new Set();
 	$: {
-		const m = new Map<string, Model>();
-		for (const model of $models) {
-			m.set(model.id, model);
-		}
-		modelsMap = m;
+		const lookup = buildModelIdentityLookup($models);
+		modelsMap = lookup.byId;
+		ambiguousModelIds = lookup.ambiguous;
 	}
 	const getModelById = (id: string): Model | undefined => modelsMap.get(id);
+	const getCanonicalModelId = (id: string): string => resolveModelSelectionId($models, id);
+	const getModelRequestId = (model: Model): string => getModelSelectionId(model) || model.id;
 	const getVisibleSkillIds = () =>
 		($skillsStore ?? []).map((skill) => String(skill?.id ?? '')).filter((id) => id);
 	const filterVisibleSkillIds = (ids: string[] = []) => {
@@ -503,7 +512,7 @@
 			return null;
 		}
 
-		return isDedicatedImageGenerationModel(model.id) ? model : null;
+		return isDedicatedImageGenerationModel(getModelCleanId(model) || model.id) ? model : null;
 	};
 
 	const canUseChatImageGeneration = () =>
@@ -854,7 +863,7 @@
 
 		return {
 			stream,
-			model: model.id,
+			model: getModelRequestId(model),
 			messages: requestMessages,
 			params: {
 				...$settings?.params,
@@ -899,7 +908,7 @@
 			},
 			session_id: $socket?.id ?? undefined,
 			chat_id: $chatId ?? undefined,
-			model_item: getModelById(model.id),
+			model_item: model,
 			...(stream && shouldIncludeUsageStreamOption(model)
 				? {
 						stream_options: {
@@ -1015,7 +1024,11 @@
 		);
 		const dedicatedImageModel = getSingleSelectedDedicatedImageModel();
 		if (dedicatedImageModel?.id) {
-			payload.model = dedicatedImageModel.id;
+			payload.model = getModelRequestId(dedicatedImageModel);
+			const modelRef = getModelRef(dedicatedImageModel);
+			if (modelRef) {
+				payload.model_ref = modelRef;
+			}
 		}
 		return Object.keys(payload).length > 0 ? payload : undefined;
 	};
@@ -1800,7 +1813,9 @@
 		if (value) {
 			try {
 				const stored = JSON.parse(value);
-				const valid = stored.filter((id: string) => modelsMap.has(id));
+				const valid = stored
+					.map((id: string) => getCanonicalModelId(id))
+					.filter((id: string) => id);
 				if (valid.length > 0) {
 					selectedModels = valid;
 					if (usedLegacy) {
@@ -2545,10 +2560,10 @@
 						}
 					}
 				} else {
-					selectedModels = urlModels;
+					selectedModels = urlModels.map((id) => getCanonicalModelId(id)).filter(Boolean);
 				}
 			} else {
-				selectedModels = urlModels;
+				selectedModels = urlModels.map((id) => getCanonicalModelId(id)).filter(Boolean);
 			}
 		} else if (!fresh && $selectedAssistantScene?.id) {
 			selectedModels = [$selectedAssistantScene.id];
@@ -2581,14 +2596,16 @@
 		// filtering against an empty modelsMap would discard the valid sessionStorage value.
 		// The recovery block (line 573) and ModelSelector validation handle deferred validation.
 		if (modelsMap.size > 0) {
-			selectedModels = selectedModels.filter((modelId) => modelsMap.has(modelId));
+			selectedModels = selectedModels
+				.map((modelId) => getCanonicalModelId(modelId))
+				.filter((modelId) => modelId);
 			if (
 				selectedModels.length === 0 ||
 				(selectedModels.length === 1 && selectedModels[0] === '')
 			) {
 				if (!fresh && $models.length > 0) {
 					// Non-fresh: auto-select first available model as fallback
-					selectedModels = [$models[0].id];
+					selectedModels = [getModelSelectionId($models[0])];
 				} else {
 					// Fresh with no default: keep empty so user must choose
 					selectedModels = [''];
@@ -2742,7 +2759,7 @@
 
 		// Only validate model IDs when models are actually loaded
 		if (modelsMap.size > 0) {
-			selectedModels = selectedModels.map((modelId) => (modelsMap.has(modelId) ? modelId : ''));
+			selectedModels = selectedModels.map((modelId) => getCanonicalModelId(modelId));
 		}
 
 		const userSettings = await getUserSettings(localStorage.token);
@@ -3521,7 +3538,7 @@
 				done: true,
 
 				model: modelId,
-				modelName: getModelChatDisplayName(model) || model.id,
+				modelName: getModelChatDisplayName(model) || model?.id || modelId,
 				modelIdx: 0,
 				timestamp: Math.floor(Date.now() / 1000)
 			};
@@ -3580,8 +3597,8 @@
 					parentId: currentParentId,
 					childrenIds: [],
 					done: true,
-					model: model.id,
-					modelName: getModelChatDisplayName(model) || model.id,
+					model: model ? getModelRequestId(model) : modelId,
+					modelName: getModelChatDisplayName(model) || model?.id || modelId,
 					modelIdx: 0,
 					timestamp: Math.floor(Date.now() / 1000),
 					...message
@@ -3801,9 +3818,10 @@
 
 	const submitPrompt = async (userPrompt, { _raw = false } = {}) => {
 		const messages = createMessagesList(history, history.currentId);
-		const _selectedModels = selectedModels.map((modelId) =>
-			modelsMap.has(modelId) ? modelId : ''
+		const hasAmbiguousModelSelection = selectedModels.some((modelId) =>
+			ambiguousModelIds.has(modelId)
 		);
+		const _selectedModels = selectedModels.map((modelId) => getCanonicalModelId(modelId));
 		if (JSON.stringify(selectedModels) !== JSON.stringify(_selectedModels)) {
 			selectedModels = _selectedModels;
 		}
@@ -3821,6 +3839,10 @@
 				return;
 			}
 			toast.error($i18n.t('Please enter a prompt'));
+			return;
+		}
+		if (hasAmbiguousModelSelection) {
+			toast.error($i18n.t('Model connection is ambiguous. Please select the model again.'));
 			return;
 		}
 		if (selectedModels.includes('')) {
@@ -3946,9 +3968,9 @@
 		const responseMessageIds: Record<PropertyKey, string> = {};
 		// If modelId is provided, use it, else use selected model
 		let selectedModelIds = modelId
-			? [modelId]
+			? [getCanonicalModelId(modelId) || modelId]
 			: atSelectedModel !== undefined
-				? [atSelectedModel.id]
+				? [getModelSelectionId(atSelectedModel)]
 				: selectedModels;
 
 		// Create response messages for each selected model
@@ -3963,7 +3985,7 @@
 					childrenIds: [],
 					role: 'assistant',
 					content: '',
-					model: model.id,
+					model: getModelRequestId(model),
 					modelName: getModelChatDisplayName(model) || model.id,
 					modelIdx: modelIdx ? modelIdx : _modelIdx,
 					userContext: null,
@@ -4051,7 +4073,7 @@
 					}
 					responseMessage.userContext = userContext;
 
-					const chatEventEmitter = await getChatEventEmitter(model.id, _chatId);
+					const chatEventEmitter = await getChatEventEmitter(getModelRequestId(model), _chatId);
 
 					resetAutoScrollLock();
 					scrollToBottom();
@@ -4231,7 +4253,7 @@
 			localStorage.token,
 			{
 				stream: stream,
-				model: model.id,
+				model: getModelRequestId(model),
 				messages: messages,
 				params: {
 					...$settings?.params,
@@ -4282,7 +4304,7 @@
 							: undefined
 					)
 				},
-				model_item: getModelById(model.id),
+				model_item: model,
 
 				session_id: $socket?.id,
 				chat_id: $chatId,
@@ -4294,7 +4316,7 @@
 					(messages.length == 2 &&
 						messages.at(0)?.role === 'system' &&
 						messages.at(1)?.role === 'user')) &&
-				(selectedModels[0] === model.id || atSelectedModel !== undefined)
+				(selectedModels[0] === getModelRequestId(model) || atSelectedModel !== undefined)
 					? {
 							background_tasks: {
 								title_generation: $settings?.title?.auto ?? true,

@@ -233,8 +233,9 @@ def test_generate_via_openai_images_endpoint_uses_native_request(monkeypatch):
 
     assert captured["request_kind"] == "json"
     assert captured["json_body"]["model"] == "gpt-image-2"
-    assert captured["json_body"]["stream"] is True
-    assert captured["json_body"]["partial_images"] == 1
+    assert "stream" not in captured["json_body"]
+    assert "partial_images" not in captured["json_body"]
+    assert "response_format" not in captured["json_body"]
     assert "size" not in captured["json_body"]
     assert result == [{"url": "/images/generated.png"}]
 
@@ -286,6 +287,53 @@ def test_generate_via_openai_images_endpoint_uses_configured_size(monkeypatch):
     assert captured["json_body"]["size"] == "1024x1024"
 
 
+def test_generate_via_openai_images_endpoint_uses_b64_response_format_for_dalle(monkeypatch):
+    captured = {}
+
+    async def fake_send(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": 200,
+            "headers": {"content-type": "application/json"},
+            "response_body": json.dumps(
+                {
+                    "data": [
+                        {
+                            "b64_json": base64.b64encode(b"generated" * 32).decode("utf-8")
+                        }
+                    ]
+                }
+            ),
+        }
+
+    monkeypatch.setattr(images_router, "_send_openai_image_request", fake_send)
+    monkeypatch.setattr(
+        images_router,
+        "upload_image",
+        lambda request, payload, image_data, content_type, user: "/images/generated.png",
+    )
+
+    asyncio.run(
+        images_router._generate_via_openai_images_endpoint(
+            request=SimpleNamespace(),
+            user=_make_user(),
+            model_id="dall-e-3",
+            prompt="生成一张图",
+            n=1,
+            size=None,
+            background=None,
+            source={
+                "base_url": "https://api.openai.com/v1",
+                "key": "sk-test",
+                "api_config": {},
+            },
+        )
+    )
+
+    assert captured["json_body"]["model"] == "dall-e-3"
+    assert captured["json_body"]["response_format"] == "b64_json"
+
+
 def test_generate_via_openai_images_endpoint_strips_connection_prefix(monkeypatch):
     captured = {}
 
@@ -332,6 +380,7 @@ def test_generate_via_openai_images_endpoint_strips_connection_prefix(monkeypatc
     assert captured["json_body"]["model"] == "gpt-image-2"
     assert "stream" not in captured["json_body"]
     assert "partial_images" not in captured["json_body"]
+    assert "response_format" not in captured["json_body"]
 
 
 def test_generate_via_openai_images_endpoint_strips_internal_prefix_without_config_prefix(monkeypatch):
