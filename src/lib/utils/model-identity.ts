@@ -2,9 +2,13 @@ type AnyModel = {
 	id?: string;
 	selection_id?: string;
 	selectionId?: string;
+	selection_key?: string;
+	selectionKey?: string;
 	model_id?: string;
 	original_id?: string;
 	originalId?: string;
+	legacy_id?: string | null;
+	legacyId?: string | null;
 	legacy_ids?: string[];
 	legacyIds?: string[];
 	model_ref?: Record<string, unknown>;
@@ -14,7 +18,13 @@ type AnyModel = {
 const normalize = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 
 export const getModelSelectionId = (model?: AnyModel | null): string =>
-	normalize(model?.selection_id ?? model?.selectionId ?? model?.id);
+	normalize(
+		model?.selection_id ??
+			model?.selectionId ??
+			model?.selection_key ??
+			model?.selectionKey ??
+			model?.id
+	);
 
 export const getModelCleanId = (model?: AnyModel | null): string =>
 	normalize(model?.model_id ?? model?.original_id ?? model?.originalId ?? model?.id);
@@ -27,9 +37,13 @@ export const getModelRef = (model?: AnyModel | null): Record<string, unknown> | 
 export const getModelLegacyIds = (model?: AnyModel | null): string[] => {
 	const values = [
 		model?.id,
+		model?.selection_key,
+		model?.selectionKey,
 		model?.model_id,
 		model?.original_id,
 		model?.originalId,
+		model?.legacy_id,
+		model?.legacyId,
 		...(Array.isArray(model?.legacy_ids) ? model?.legacy_ids : []),
 		...(Array.isArray(model?.legacyIds) ? model?.legacyIds : [])
 	];
@@ -81,8 +95,13 @@ export const findModelByIdentity = <T extends AnyModel>(
 
 export const resolveModelSelectionId = <T extends AnyModel>(
 	models: T[] = [],
-	value?: string | null
+	value?: string | null,
+	options: { preserveAmbiguous?: boolean } = {}
 ): string => {
-	const model = findModelByIdentity(models, value);
+	const id = normalize(value);
+	if (!id) return '';
+	const { byId, ambiguous } = buildModelIdentityLookup(models);
+	const model = byId.get(id);
+	if (options.preserveAmbiguous && ambiguous.has(id)) return id;
 	return model ? getModelSelectionId(model) : '';
 };

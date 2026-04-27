@@ -2077,7 +2077,14 @@ async def generate_chat_completion(
     )
 
     model_id = requested_model_id
-    model_info_db = Models.get_model_by_id(model_id)
+    model_record_id = (
+        request_model_entry.get("id")
+        if isinstance(request_model_entry, dict)
+        else model_id
+    )
+    model_info_db = Models.get_model_by_id(model_id) or Models.get_model_by_id(
+        model_record_id
+    )
     model_ref = get_model_ref_from_model(request_model_entry)
 
     # Apply model overrides/params/system prompt (OpenAI-format) before converting to Anthropic.

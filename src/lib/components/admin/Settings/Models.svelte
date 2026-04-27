@@ -45,6 +45,11 @@
 	import { toast } from 'svelte-sonner';
 
 	import { getModelChatDisplayName, getModelConnectionName } from '$lib/utils/model-display';
+	import {
+		buildModelIdentityLookup,
+		findModelByIdentity,
+		getModelSelectionId
+	} from '$lib/utils/model-identity';
 	import { applyModelIcons } from '$lib/utils/model-icons';
 
 	type EnabledFilter = 'all' | 'enabled' | 'disabled';
@@ -201,14 +206,16 @@
 	let suppressRouteSelection = false;
 
 	const getRequestedModelId = () => $page.url.searchParams.get('id');
+	const getModelKey = (model: any) => getModelSelectionId(model) || model?.id || '';
 
 	const syncSelectedModelFromRoute = () => {
 		const requestedId = getRequestedModelId();
 		if (suppressRouteSelection || !requestedId || !Array.isArray(models)) return;
 
-		const match = models.find((model) => model.id === requestedId);
-		if (match && selectedModelId !== requestedId) {
-			selectedModelId = requestedId;
+		const match = findModelByIdentity(models, requestedId);
+		const nextId = match ? getModelKey(match) : '';
+		if (nextId && selectedModelId !== nextId) {
+			selectedModelId = nextId;
 		}
 	};
 
@@ -277,9 +284,16 @@
 			}
 
 			const wsMap = new Map((workspaceModels ?? []).map((wm: any) => [wm.id, wm]));
+			const baseModelLookup = buildModelIdentityLookup(baseModels ?? []);
 			let nextModels =
 				(baseModels ?? []).map((m: any) => {
-					const workspaceModel = wsMap.get(m.id);
+					const modelKey = getModelKey(m);
+					const legacyMatchedModel = baseModelLookup.byId.get(`${m?.id ?? ''}`.trim());
+					const legacyWorkspaceModel =
+						legacyMatchedModel && getModelKey(legacyMatchedModel) === modelKey
+							? wsMap.get(m.id)
+							: null;
+					const workspaceModel = wsMap.get(modelKey) ?? legacyWorkspaceModel;
 					// Preserve the upstream/provider default display name so the editor can "restore default"
 					// even if the admin has overridden `name` in the workspace model DB.
 					const default_name = m?.name ?? m?.id;
@@ -398,7 +412,10 @@
 
 	$: modelById = (() => {
 		const map = new Map<string, any>();
-		for (const m of models ?? []) map.set(m.id, m);
+		for (const m of models ?? []) {
+			const modelKey = getModelKey(m);
+			if (modelKey) map.set(modelKey, m);
+		}
 		return map;
 	})();
 
@@ -470,7 +487,9 @@
 	}
 
 	// Selection range should follow the list order the user sees — only compute when needed.
-	$: visibleModelIds = selectMode ? rows.filter((r) => r.type === 'model').map((r: any) => r.model.id) : [];
+	$: visibleModelIds = selectMode
+		? rows.filter((r) => r.type === 'model').map((r: any) => getModelKey(r.model)).filter(Boolean)
+		: [];
 
 	const isSelected = (id: string) => selectedIds.has(id);
 
@@ -498,7 +517,10 @@
 
 	const selectAllFiltered = () => {
 		const next = new Set(selectedIds);
-		for (const m of filteredModels) next.add(m.id);
+		for (const m of filteredModels) {
+			const modelKey = getModelKey(m);
+			if (modelKey) next.add(modelKey);
+		}
 		setSelectedIds(next);
 	};
 
@@ -517,7 +539,7 @@
 		'p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100';
 
 	const getGroupModelIds = (groupKey: string): string[] => {
-		return (grouped.get(groupKey)?.models ?? []).map((m) => m.id);
+		return (grouped.get(groupKey)?.models ?? []).map(getModelKey).filter(Boolean);
 	};
 
 	const getSelectedCountInGroup = (groupKey: string) => {
@@ -566,24 +588,27 @@
 		saveAs(blob, `${m.id}-${Date.now()}.json`);
 	};
 
-	const upsertModelHandler = async (m: any) => {
+	const upsertModelHandler = async (m: any, selectedId: string | null = null) => {
+		const modelKey = selectedId || getModelKey(m);
+		if (!modelKey) return;
 		m.base_model_id = null;
 		if (typeof m.access_control === 'undefined') {
 			m.access_control = null;
 		}
 
-		if ((workspaceModels ?? []).find((wm: any) => wm.id === m.id)) {
-			const res = await updateModelById(localStorage.token, m.id, m).catch(() => null);
+		const payload = { ...m, id: modelKey };
+		if ((workspaceModels ?? []).find((wm: any) => wm.id === modelKey)) {
+			const res = await updateModelById(localStorage.token, modelKey, payload).catch(() => null);
 			if (res) toast.success($i18n.t('Model updated successfully'));
 		} else {
 			const res = await createNewModel(localStorage.token, {
 				meta: {},
-				id: m.id,
+				id: modelKey,
 				name: m.name,
 				base_model_id: null,
 				params: {},
 				access_control: null,
-				...m
+				...payload
 			}).catch(() => null);
 			if (res) toast.success($i18n.t('Model updated successfully'));
 		}
@@ -623,11 +648,13 @@
 
 	const setModelActive = async (m: any, nextActive: boolean) => {
 		if (bulkBusy) return;
+		const modelKey = getModelKey(m);
+		if (!modelKey) return;
 		const prev = m?.is_active ?? true;
 		m.is_active = nextActive;
 
 		try {
-			await bulkUpsertBaseModels(localStorage.token, [{ id: m.id, name: m?.name ?? m.id }], {
+			await bulkUpsertBaseModels(localStorage.token, [{ id: modelKey, name: m?.name ?? modelKey }], {
 				is_active: nextActive
 			});
 			await refreshGlobalModels();
@@ -639,11 +666,13 @@
 
 	const setModelHidden = async (m: any, nextHidden: boolean) => {
 		if (bulkBusy) return;
+		const modelKey = getModelKey(m);
+		if (!modelKey) return;
 		const prev = m?.meta?.hidden ?? false;
 		m.meta = { ...(m.meta ?? {}), hidden: nextHidden };
 
 		try {
-			await bulkUpsertBaseModels(localStorage.token, [{ id: m.id, name: m?.name ?? m.id }], {
+			await bulkUpsertBaseModels(localStorage.token, [{ id: modelKey, name: m?.name ?? modelKey }], {
 				meta: { hidden: nextHidden }
 			});
 			await refreshGlobalModels();
@@ -655,12 +684,14 @@
 
 	const setModelVisibility = async (m: any, next: 'public' | 'private') => {
 		if (bulkBusy) return;
+		const modelKey = getModelKey(m);
+		if (!modelKey) return;
 		const prev = m?.access_control;
 		const access_control = next === 'public' ? null : {};
 		m.access_control = access_control;
 
 		try {
-			await bulkUpsertBaseModels(localStorage.token, [{ id: m.id, name: m?.name ?? m.id }], {
+			await bulkUpsertBaseModels(localStorage.token, [{ id: modelKey, name: m?.name ?? modelKey }], {
 				access_control
 			});
 			await refreshGlobalModels();
@@ -715,7 +746,7 @@
 	}
 
 	const handleEditorSubmit = (m: any) => {
-		upsertModelHandler(m);
+		upsertModelHandler(m, selectedModelId);
 		selectedModelId = null;
 		clearSelection();
 	};
@@ -1313,7 +1344,8 @@
 											</div>
 
 											{#if expandedGroups[key]}
-												{#each ms as m (m.id)}
+												{#each ms as m (getModelKey(m))}
+													{@const modelKey = getModelKey(m)}
 													{@const visibility = getVisibilityState(m)}
 													<div
 														class="flex items-center justify-between gap-3 px-3 py-2 mx-2 pl-10 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition {m
@@ -1326,8 +1358,8 @@
 															<input
 																type="checkbox"
 																class="accent-emerald-600"
-																checked={selectedIds.has(m.id)}
-																on:click={(e) => toggleSelect(m.id, e)}
+																checked={selectedIds.has(modelKey)}
+																on:click={(e) => toggleSelect(modelKey, e)}
 															/>
 															{/if}
 
@@ -1341,7 +1373,7 @@
 																class="min-w-0 text-left flex-1"
 																type="button"
 																on:click={() => {
-																	selectedModelId = m.id;
+																	selectedModelId = modelKey;
 																}}
 															>
 																<Tooltip
@@ -1421,7 +1453,7 @@
 	{:else}
 			<ModelEditor
 				edit
-				model={models.find((m) => m.id === selectedModelId)}
+				model={modelById.get(selectedModelId)}
 				preset={false}
 				onSubmit={handleEditorSubmit}
 				onBack={async () => {

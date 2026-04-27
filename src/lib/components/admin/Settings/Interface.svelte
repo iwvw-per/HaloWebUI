@@ -17,6 +17,7 @@
 	import HaloSelect from '$lib/components/common/HaloSelect.svelte';
 	import InlineDirtyActions from './InlineDirtyActions.svelte';
 	import { cloneSettingsSnapshot, isSettingsSnapshotEqual } from '$lib/utils/settings-dirty';
+	import { getModelSelectionId, resolveModelSelectionId } from '$lib/utils/model-identity';
 
 	import type { Writable } from 'svelte/store';
 	const i18n: Writable<any> = getContext('i18n');
@@ -82,6 +83,12 @@
 		initialSnapshot &&
 		!isSettingsSnapshotEqual(snapshot, initialSnapshot)
 	);
+	$: if ($models.length > 0 && taskConfig?.TASK_MODEL_EXTERNAL) {
+		const resolvedTaskModel = resolveModelSelectionId($models, taskConfig.TASK_MODEL_EXTERNAL);
+		if (resolvedTaskModel && resolvedTaskModel !== taskConfig.TASK_MODEL_EXTERNAL) {
+			taskConfig = { ...taskConfig, TASK_MODEL_EXTERNAL: resolvedTaskModel };
+		}
+	}
 
 	// Unified dirty / save / reset API for parent page shell
 	let lastDirtyState: boolean | null = null;
@@ -228,7 +235,7 @@
 								options={[
 									{ value: '', label: $i18n.t('Current Model') },
 									...$models.map((model) => ({
-										value: model.id,
+										value: getModelSelectionId(model),
 										label: getModelChatDisplayName(model)
 									}))
 								]}

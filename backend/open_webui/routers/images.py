@@ -4368,6 +4368,7 @@ async def image_generations(
     model_ref_provider = str(model_ref.get("provider") or "").strip().lower()
     if model_ref_provider in {"openai", "gemini", "grok"}:
         selected_engine = model_ref_provider
+    connection_user = getattr(getattr(request, "state", None), "connection_user", None) or user
 
     r = None
     try:
@@ -4378,7 +4379,7 @@ async def image_generations(
             if credential_source == "auto" and form_data.connection_index is None:
                 source = _select_runtime_image_provider_source_from_ref(
                     request,
-                    user,
+                    connection_user,
                     "openai",
                     model_ref,
                     prefer_shared=not bool(form_data.model) and bool(selected_model),
@@ -4388,7 +4389,7 @@ async def image_generations(
                 if source is None:
                     source, discovered_models = await _select_runtime_image_provider_source(
                         request,
-                        user,
+                        connection_user,
                         "openai",
                         selected_model=selected_model_value,
                         prefer_shared=not bool(form_data.model) and bool(selected_model),
@@ -4397,7 +4398,7 @@ async def image_generations(
             if source is None:
                 source = _resolve_image_provider_source(
                     request,
-                    user,
+                    connection_user,
                     "openai",
                     context="runtime",
                     credential_source=credential_source,
@@ -4409,7 +4410,7 @@ async def image_generations(
             if discovered_models is None:
                 try:
                     discovered_models = await _discover_image_models_for_source(
-                        request, user, "openai", source
+                        request, connection_user, "openai", source
                     )
                 except HTTPException:
                     if selected_model:
@@ -4520,7 +4521,7 @@ async def image_generations(
             if credential_source == "auto" and form_data.connection_index is None:
                 source = _select_runtime_image_provider_source_from_ref(
                     request,
-                    user,
+                    connection_user,
                     "gemini",
                     model_ref,
                     prefer_shared=not bool(form_data.model) and bool(selected_model),
@@ -4530,7 +4531,7 @@ async def image_generations(
                 if source is None:
                     source, discovered_models = await _select_runtime_image_provider_source(
                         request,
-                        user,
+                        connection_user,
                         "gemini",
                         selected_model=selected_model_value,
                         prefer_shared=not bool(form_data.model) and bool(selected_model),
@@ -4538,7 +4539,7 @@ async def image_generations(
             if source is None:
                 source = _resolve_image_provider_source(
                     request,
-                    user,
+                    connection_user,
                     "gemini",
                     context="runtime",
                     credential_source=credential_source,
@@ -4550,7 +4551,7 @@ async def image_generations(
             if discovered_models is None:
                 try:
                     discovered_models = await _discover_image_models_for_source(
-                        request, user, "gemini", source
+                        request, connection_user, "gemini", source
                     )
                 except HTTPException:
                     if selected_model:
@@ -4639,7 +4640,7 @@ async def image_generations(
             if credential_source == "auto" and form_data.connection_index is None:
                 source = _select_runtime_image_provider_source_from_ref(
                     request,
-                    user,
+                    connection_user,
                     "grok",
                     model_ref,
                     prefer_shared=not bool(form_data.model) and bool(selected_model),
@@ -4649,7 +4650,7 @@ async def image_generations(
                 if source is None:
                     source, discovered_models = await _select_runtime_image_provider_source(
                         request,
-                        user,
+                        connection_user,
                         "grok",
                         selected_model=selected_model_value,
                         prefer_shared=not bool(form_data.model) and bool(selected_model),
@@ -4657,7 +4658,7 @@ async def image_generations(
             if source is None:
                 source = _resolve_image_provider_source(
                     request,
-                    user,
+                    connection_user,
                     "grok",
                     context="runtime",
                     credential_source=credential_source,
@@ -4669,7 +4670,7 @@ async def image_generations(
             if discovered_models is None:
                 try:
                     discovered_models = await _discover_image_models_for_source(
-                        request, user, "grok", source
+                        request, connection_user, "grok", source
                     )
                 except HTTPException:
                     if selected_model:

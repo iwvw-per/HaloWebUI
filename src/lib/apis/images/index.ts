@@ -45,6 +45,7 @@ export type ImageGenerationModel = {
 	selection_id?: string;
 	selection_key?: string;
 	legacy_id?: string | null;
+	legacy_ids?: string[];
 	model_ref?: Record<string, unknown> | null;
 	provider?: 'openai' | 'gemini' | 'grok' | string | null;
 	generation_mode?: string;

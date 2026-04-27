@@ -27,6 +27,7 @@
 		mapLegacySizeToGeminiParams,
 		modelSupportsNativeImageOptions
 	} from '$lib/utils/image-generation';
+	import { findModelByIdentity } from '$lib/utils/model-identity';
 
 	const dispatch = createEventDispatcher();
 	const i18n = getContext('i18n');
@@ -127,14 +128,16 @@
 				context: 'runtime'
 			}).catch(() => []);
 			const preferredId = `${usageConfig?.defaults?.model ?? ''}`.trim();
+			const preferredModel = preferredId
+				? findModelByIdentity(runtimeModels ?? [], preferredId)
+				: null;
 			builtinModelMeta =
-				(runtimeModels ?? []).find(
-					(model) => model.id === preferredId && `${model.source ?? ''}`.trim() === 'shared'
-				) ??
-				(runtimeModels ?? []).find((model) => model.id === preferredId) ??
-				(runtimeModels ?? []).find((model) => modelSupportsNativeImageOptions(model)) ??
-				(runtimeModels ?? [])[0] ??
-				null;
+				preferredModel ??
+				(preferredId
+					? null
+					: ((runtimeModels ?? []).find((model) => modelSupportsNativeImageOptions(model)) ??
+						(runtimeModels ?? [])[0] ??
+						null));
 			builtinReady = true;
 
 			const mappedDefaults = mapLegacySizeToGeminiParams(usageConfig?.defaults?.size ?? '');

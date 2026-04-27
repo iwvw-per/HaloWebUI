@@ -1432,9 +1432,23 @@ async def get_models(request: Request, user=Depends(get_verified_user)):
     model_order_list = request.app.state.config.MODEL_ORDER_LIST
     if model_order_list:
         model_order_dict = {model_id: i for i, model_id in enumerate(model_order_list)}
+
+        def get_model_order_index(model):
+            aliases = [
+                model.get("selection_id"),
+                model.get("id"),
+                model.get("model_id"),
+                model.get("original_id"),
+                *(model.get("legacy_ids") or []),
+            ]
+            return min(
+                (model_order_dict[alias] for alias in aliases if alias in model_order_dict),
+                default=float("inf"),
+            )
+
         # Sort models by order list priority, with fallback for those not in the list
         models.sort(
-            key=lambda x: (model_order_dict.get(x["id"], float("inf")), x["name"])
+            key=lambda x: (get_model_order_index(x), x["name"])
         )
 
     # Filter out workspace/shared models that the user does not have access to.
@@ -1456,6 +1470,22 @@ async def get_models(request: Request, user=Depends(get_verified_user)):
         f"/api/models returned filtered models accessible to the user: {json.dumps([model['id'] for model in models])}"
     )
     return {"data": models}
+
+
+def _apply_connection_owner_for_model(request: Request, user, model: dict | None):
+    if not isinstance(model, dict):
+        return
+
+    try:
+        model_info = Models.get_model_by_id(model.get("id"))
+        if model_info and model_info.user_id and model_info.user_id != user.id:
+            from open_webui.models.users import Users  # local import to avoid heavy coupling
+
+            owner = Users.get_user_by_id(model_info.user_id)
+            if owner:
+                request.state.connection_user = owner
+    except Exception:
+        pass
 
 
 @app.get("/api/models/base")
@@ -1492,21 +1522,12 @@ async def chat_completion(
             if not model:
                 raise Exception("Model not found")
 
-            model_info = Models.get_model_by_id(model_id)
+            model_info = Models.get_model_by_id(model.get("id"))
             request.state.model = model
 
             # Shared model: route provider requests through the owning user's connections
             # (admin shares models by marking them public/private in the Models table).
-            if model_info and model_info.user_id and model_info.user_id != user.id:
-                try:
-                    from open_webui.models.users import Users  # local import to avoid heavy coupling
-
-                    owner = Users.get_user_by_id(model_info.user_id)
-                    if owner:
-                        request.state.connection_user = owner
-                except Exception:
-                    # Best effort; provider routers will fall back to the request user.
-                    pass
+            _apply_connection_owner_for_model(request, user, model)
 
             # Check if user has access to the model
             if not BYPASS_MODEL_ACCESS_CONTROL and user.role == "user":
@@ -1793,17 +1814,13 @@ async def chat_completed(
             request.state.model = model_item
         else:
             await get_all_models(request, user=user)
-            try:
-                model_id = form_data.get("model")
-                model_info = Models.get_model_by_id(model_id) if model_id else None
-                if model_info and model_info.user_id and model_info.user_id != user.id:
-                    from open_webui.models.users import Users
-
-                    owner = Users.get_user_by_id(model_info.user_id)
-                    if owner:
-                        request.state.connection_user = owner
-            except Exception:
-                pass
+            model_id = form_data.get("model")
+            model = resolve_model_from_lookup(
+                getattr(request.state, "MODELS", {}) or {},
+                getattr(request.state, "MODELS_AMBIGUOUS", set()) or set(),
+                model_id,
+            )
+            _apply_connection_owner_for_model(request, user, model)
 
         return await chat_completed_handler(request, form_data, user)
     except Exception as e:
@@ -1825,17 +1842,13 @@ async def chat_action(
             request.state.model = model_item
         else:
             await get_all_models(request, user=user)
-            try:
-                model_id = form_data.get("model")
-                model_info = Models.get_model_by_id(model_id) if model_id else None
-                if model_info and model_info.user_id and model_info.user_id != user.id:
-                    from open_webui.models.users import Users
-
-                    owner = Users.get_user_by_id(model_info.user_id)
-                    if owner:
-                        request.state.connection_user = owner
-            except Exception:
-                pass
+            model_id = form_data.get("model")
+            model = resolve_model_from_lookup(
+                getattr(request.state, "MODELS", {}) or {},
+                getattr(request.state, "MODELS_AMBIGUOUS", set()) or set(),
+                model_id,
+            )
+            _apply_connection_owner_for_model(request, user, model)
 
         return await chat_action_handler(request, action_id, form_data, user)
     except Exception as e:

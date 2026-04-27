@@ -428,7 +428,8 @@
 		ambiguousModelIds = lookup.ambiguous;
 	}
 	const getModelById = (id: string): Model | undefined => modelsMap.get(id);
-	const getCanonicalModelId = (id: string): string => resolveModelSelectionId($models, id);
+	const getCanonicalModelId = (id: string): string =>
+		resolveModelSelectionId($models, id, { preserveAmbiguous: true });
 	const getModelRequestId = (model: Model): string => getModelSelectionId(model) || model.id;
 	const getVisibleSkillIds = () =>
 		($skillsStore ?? []).map((skill) => String(skill?.id ?? '')).filter((id) => id);
@@ -2547,6 +2548,7 @@
 			if (urlModels.length === 1) {
 				const m = getModelById(urlModels[0]);
 				if (!m) {
+					selectedModels = [getCanonicalModelId(urlModels[0]) || ''];
 					const modelSelectorButton = document.getElementById('model-selector-0-button');
 					if (modelSelectorButton) {
 						modelSelectorButton.click();
@@ -2596,6 +2598,9 @@
 		// filtering against an empty modelsMap would discard the valid sessionStorage value.
 		// The recovery block (line 573) and ModelSelector validation handle deferred validation.
 		if (modelsMap.size > 0) {
+			const hadExplicitSelectedModels = selectedModels.some(
+				(modelId) => `${modelId ?? ''}`.trim() !== ''
+			);
 			selectedModels = selectedModels
 				.map((modelId) => getCanonicalModelId(modelId))
 				.filter((modelId) => modelId);
@@ -2603,7 +2608,9 @@
 				selectedModels.length === 0 ||
 				(selectedModels.length === 1 && selectedModels[0] === '')
 			) {
-				if (!fresh && $models.length > 0) {
+				if (hadExplicitSelectedModels) {
+					selectedModels = [''];
+				} else if (!fresh && $models.length > 0) {
 					// Non-fresh: auto-select first available model as fallback
 					selectedModels = [getModelSelectionId($models[0])];
 				} else {
@@ -3819,7 +3826,7 @@
 	const submitPrompt = async (userPrompt, { _raw = false } = {}) => {
 		const messages = createMessagesList(history, history.currentId);
 		const hasAmbiguousModelSelection = selectedModels.some((modelId) =>
-			ambiguousModelIds.has(modelId)
+			ambiguousModelIds.has(`${modelId ?? ''}`.trim())
 		);
 		const _selectedModels = selectedModels.map((modelId) => getCanonicalModelId(modelId));
 		if (JSON.stringify(selectedModels) !== JSON.stringify(_selectedModels)) {

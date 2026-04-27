@@ -263,13 +263,46 @@
 	let previewOpen = false;
 	let previewSrc = '';
 	let previewAlt = '';
-	let hadPersistedSelectionKey = false;
+	let selectedModelNeedsReselection = false;
+	let imageModelReselectionPrompted = false;
 
 	const isAdmin = () => $user?.role === 'admin';
 	const formatError = (error: unknown) =>
 		localizeCommonError(error, (key, options) => $i18n.t(key, options));
 	const getModelOptionValue = (model: ImageGenerationModel | null | undefined) =>
 		`${model?.selection_id ?? model?.selection_key ?? model?.legacy_id ?? model?.id ?? ''}`.trim();
+	const getModelLegacyValues = (model: ImageGenerationModel | null | undefined) =>
+		[model?.legacy_id, ...(model?.legacy_ids ?? [])]
+			.map((value) => `${value ?? ''}`.trim())
+			.filter(Boolean);
+	const findUniqueImageModelByIdentity = (models: ImageGenerationModel[], value: string) => {
+		const id = `${value ?? ''}`.trim();
+		if (!id) return { model: null as ImageGenerationModel | null, ambiguous: false };
+
+		const exact =
+			models.find((model) => model.selection_id === id) ??
+			models.find((model) => model.selection_key === id) ??
+			null;
+		if (exact) return { model: exact, ambiguous: false };
+
+		const compatibleMatches = models.filter(
+			(model) => getModelLegacyValues(model).includes(id) || model.id === id
+		);
+
+		return {
+			model: compatibleMatches.length === 1 ? compatibleMatches[0] : null,
+			ambiguous: compatibleMatches.length > 1
+		};
+	};
+	const requireImageModelReselection = (message: string) => {
+		selectedModel = '';
+		selectedModelRawId = '';
+		selectedModelNeedsReselection = true;
+		if (!imageModelReselectionPrompted) {
+			toast.error($i18n.t(message));
+			imageModelReselectionPrompted = true;
+		}
+	};
 	const getModelSourceBadge = (model: ImageGenerationModel | null | undefined) => {
 		const source = `${model?.source ?? ''}`.trim().toLowerCase();
 		if (source === 'shared') {
@@ -292,7 +325,6 @@
 			const prefs = JSON.parse(raw) as WorkspaceImagePrefs;
 			selectedModel = `${prefs?.selectionKey ?? prefs?.model ?? ''}`.trim();
 			selectedModelRawId = `${prefs?.model ?? ''}`.trim();
-			hadPersistedSelectionKey = Boolean(`${prefs?.selectionKey ?? ''}`.trim());
 			selectedPresetSize = curatedSizeOptions.some(
 				(option) => option.value === `${prefs?.presetSize ?? ''}`.trim()
 			)
@@ -351,6 +383,9 @@
 		modelOptions.find((option) => option.value === selectedModel)?.label ?? selectedModel;
 	$: selectedModelMeta =
 		imageModels.find((model) => getModelOptionValue(model) === selectedModel) ?? null;
+	$: if (selectedModel && selectedModelMeta) {
+		selectedModelNeedsReselection = false;
+	}
 	$: usesNativeAspectRatioControls = Boolean(
 		selectedModelMeta &&
 			(selectedModelMeta?.size_mode === 'aspect_ratio' || selectedModelMeta?.supports_resolution)
@@ -425,12 +460,16 @@
 					: loadError || $i18n.t('Failed to load image generation settings.')
 			: workspaceNoModels
 				? $i18n.t('Image models are unavailable right now. Check your image settings.')
+				: selectedModelNeedsReselection || !selectedModel
+					? $i18n.t('Model not selected')
 				: sizeValidation?.description ?? null;
 
 	$: canSubmit =
 		!loading &&
 		viewState === 'ready' &&
 		imageModels.length > 0 &&
+		Boolean(selectedModel) &&
+		!selectedModelNeedsReselection &&
 		Boolean(prompt.trim()) &&
 		!sizeValidation?.blocking;
 
@@ -739,47 +778,61 @@
 		);
 
 		if (selectedModel && availableValues.has(selectedModel)) {
+			selectedModelNeedsReselection = false;
 			return;
 		}
 
+		const preferredSelectionValue = `${selectedModel ?? ''}`.trim();
 		const preferredModelId = `${selectedModelRawId ?? ''}`.trim();
-		const nextModel =
-			(preferredModelId
-				? normalizedModels.find(
-						(model) => model.selection_id === preferredModelId
-					) ??
-					normalizedModels.find(
-						(model) => model.selection_key === preferredModelId
-					) ??
-					normalizedModels.find(
-						(model) => model.legacy_id === preferredModelId
-					) ??
-					normalizedModels.find(
-						(model) => model.id === preferredModelId && `${model.source ?? ''}`.trim() === 'shared'
-					) ??
-					normalizedModels.find((model) => model.id === preferredModelId)
-				: null) ?? normalizedModels[0] ?? null;
+		let nextModel: ImageGenerationModel | null = null;
+
+		if (preferredSelectionValue) {
+			const resolvedSelection = findUniqueImageModelByIdentity(
+				normalizedModels,
+				preferredSelectionValue
+			);
+			if (resolvedSelection.ambiguous) {
+				requireImageModelReselection('The saved image model is ambiguous. Please select it again.');
+				return;
+			}
+			nextModel = resolvedSelection.model;
+		}
+
+		if (!nextModel && preferredSelectionValue && preferredSelectionValue !== preferredModelId) {
+			requireImageModelReselection('The saved image model is unavailable. Please select it again.');
+			return;
+		}
+
+		if (!nextModel && preferredModelId) {
+			const resolvedModel = findUniqueImageModelByIdentity(normalizedModels, preferredModelId);
+			if (resolvedModel.ambiguous) {
+				requireImageModelReselection('The saved image model is ambiguous. Please select it again.');
+				return;
+			}
+			nextModel = resolvedModel.model;
+
+			if (!nextModel) {
+				requireImageModelReselection('The saved image model is unavailable. Please select it again.');
+				return;
+			}
+		}
+
+		if (!nextModel && !preferredSelectionValue && !preferredModelId) {
+			nextModel = normalizedModels[0] ?? null;
+		}
 
 		if (!nextModel) {
 			selectedModel = '';
+			selectedModelRawId = '';
+			selectedModelNeedsReselection = false;
 			return;
 		}
 
 		const nextValue = getModelOptionValue(nextModel);
-		const sourceChanged =
-			hadPersistedSelectionKey &&
-			Boolean(selectedModel) &&
-			selectedModel !== nextValue &&
-			Boolean(preferredModelId) &&
-			nextModel.id === preferredModelId;
 
 		selectedModel = nextValue;
 		selectedModelRawId = nextModel.id;
-
-		if (sourceChanged) {
-			toast.info($i18n.t('Your previous image model source is unavailable. Switched to another available source for the same model.'));
-			hadPersistedSelectionKey = false;
-		}
+		selectedModelNeedsReselection = false;
 	};
 
 	const loadWorkspaceModels = async () => {

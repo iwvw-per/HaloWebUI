@@ -22,7 +22,9 @@
 	}));
 
 	$: if (selectedModels.length > 0 && $models.length > 0) {
-		const normalizedModels = selectedModels.map((model) => resolveModelSelectionId($models, model));
+		const normalizedModels = selectedModels.map((model) =>
+			resolveModelSelectionId($models, model, { preserveAmbiguous: true })
+		);
 		if (JSON.stringify(normalizedModels) !== JSON.stringify(selectedModels)) {
 			selectedModels = normalizedModels;
 		}

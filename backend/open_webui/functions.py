@@ -217,7 +217,13 @@ async def generate_function_chat_completion(
         return params
 
     model_id = form_data.get("model")
-    model_info = Models.get_model_by_id(model_id)
+    model_entry = models.get(model_id) if isinstance(models, dict) else None
+    model_record_id = (
+        model_entry.get("id") if isinstance(model_entry, dict) else model_id
+    )
+    model_info = Models.get_model_by_id(model_id) or Models.get_model_by_id(
+        model_record_id
+    )
 
     metadata = form_data.pop("metadata", {})
 
@@ -311,7 +317,7 @@ async def generate_function_chat_completion(
         user,
         {
             **extra_params,
-            "__model__": models.get(form_data["model"], None),
+            "__model__": model_entry,
             "__messages__": form_data["messages"],
             "__files__": files,
         },
