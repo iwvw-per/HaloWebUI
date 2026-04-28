@@ -872,6 +872,13 @@ def _matches_image_positive_hint(text: str) -> bool:
     return any(hint in normalized for hint in OPENAI_CHAT_IMAGE_HINTS)
 
 
+def _looks_like_gemini_image_model(model_id: str) -> bool:
+    base_name = _model_id_basename(model_id).lower()
+    return base_name.startswith("gemini-") and bool(
+        re.search(r"(?:^|-)image(?:$|-)", base_name)
+    )
+
+
 def _matches_image_negative_hint(text: str) -> bool:
     normalized = str(text or "").lower()
     if not normalized:
@@ -1543,9 +1550,12 @@ def _classify_openai_image_model(
     negative_hint = _matches_image_negative_hint(base_name) or _matches_image_negative_hint(
         text_blob
     )
+    gemini_image_name_hint = _looks_like_gemini_image_model(
+        base_name
+    ) and not _matches_image_negative_hint(base_name)
     positive_hint = _matches_image_positive_hint(base_name) or _matches_image_positive_hint(
         text_blob
-    )
+    ) or gemini_image_name_hint
     images_endpoint_hint = (
         "images/generations" in endpoint_blob or "images.generate" in endpoint_blob
     )
@@ -1620,9 +1630,12 @@ def _classify_gemini_image_model(
     negative_hint = _matches_image_negative_hint(base_name) or _matches_image_negative_hint(
         text_blob
     )
+    gemini_image_name_hint = _looks_like_gemini_image_model(
+        base_name
+    ) and not _matches_image_negative_hint(base_name)
     positive_hint = _matches_image_positive_hint(base_name) or _matches_image_positive_hint(
         text_blob
-    )
+    ) or gemini_image_name_hint
     has_predict = any("predict" == method or method.endswith(":predict") for method in methods)
     has_generate_content = any("generatecontent" in method for method in methods)
     looks_like_imagen = "imagen" in base_name
@@ -1711,6 +1724,198 @@ def _classify_grok_image_model(
         text_output_supported=False,
         source=source,
     )
+
+
+def _get_raw_model_id_for_image_search(engine: str, model: dict) -> str:
+    if engine == "gemini":
+        return str(model.get("id") or model.get("name") or "").replace("models/", "").strip()
+    return str(
+        model.get("id")
+        or model.get("name")
+        or model.get("model")
+        or model.get("slug")
+        or ""
+    ).strip()
+
+
+def _get_raw_model_name_for_image_search(engine: str, model: dict, model_id: str) -> str:
+    if engine == "gemini":
+        return str(model.get("displayName") or model.get("display_name") or model_id).strip()
+    return str(
+        model.get("name")
+        or model.get("displayName")
+        or model.get("display_name")
+        or model_id
+    ).strip()
+
+
+def _raw_model_matches_image_search(model: dict, search_query: str) -> bool:
+    query = str(search_query or "").strip().lower()
+    if not query:
+        return False
+
+    searchable_parts = [
+        model.get("id"),
+        model.get("name"),
+        model.get("model"),
+        model.get("slug"),
+        model.get("displayName"),
+        model.get("display_name"),
+    ]
+    return query in " ".join(str(part or "").lower() for part in searchable_parts)
+
+
+def _classify_raw_image_model_for_engine(
+    engine: str,
+    model: dict,
+    source: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    if engine == "openai":
+        return _classify_openai_image_model(
+            model,
+            base_url=source.get("base_url") or "",
+            api_config=source.get("api_config") or {},
+            source=source,
+        )
+    if engine == "gemini":
+        return _classify_gemini_image_model(model, source=source)
+    if engine == "grok":
+        return _classify_grok_image_model(model, source=source)
+    return None
+
+
+def _build_image_model_search_candidate(
+    engine: str,
+    model: dict,
+    source: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    model_id = _get_raw_model_id_for_image_search(engine, model)
+    if not model_id:
+        return None
+
+    name = _get_raw_model_name_for_image_search(engine, model, model_id)
+    if engine == "gemini":
+        entry = _build_image_model_entry(
+            model_id=model_id,
+            name=name,
+            generation_mode="gemini_generate_content_image",
+            detection_method="search",
+            supports_background=False,
+            supports_batch=False,
+            size_mode="aspect_ratio",
+            supports_image_size=_model_id_basename(model_id).lower().startswith("gemini-3"),
+            text_output_supported=True,
+            source=source,
+        )
+    elif engine == "grok":
+        entry = _build_image_model_entry(
+            model_id=model_id,
+            name=name,
+            generation_mode="xai_images",
+            detection_method="search",
+            supports_background=False,
+            supports_batch=True,
+            size_mode="aspect_ratio",
+            supports_image_size=False,
+            supports_resolution=True,
+            text_output_supported=False,
+            source=source,
+        )
+    else:
+        entry = _build_image_model_entry(
+            model_id=model_id,
+            name=name,
+            generation_mode="openai_images",
+            detection_method="search",
+            supports_background=False,
+            supports_batch=True,
+            size_mode="exact",
+            supports_image_size=False,
+            text_output_supported=False,
+            source=source,
+        )
+
+    entry["search_candidate"] = True
+    if isinstance(entry.get("model_ref"), dict):
+        entry["model_ref"] = {
+            **entry["model_ref"],
+            "image_search_candidate": True,
+            "image_generation_mode": entry.get("generation_mode"),
+            "image_size_mode": entry.get("size_mode"),
+            "supports_background": entry.get("supports_background"),
+            "supports_batch": entry.get("supports_batch"),
+            "supports_image_size": entry.get("supports_image_size"),
+            "supports_resolution": entry.get("supports_resolution"),
+            "text_output_supported": entry.get("text_output_supported"),
+        }
+    return entry
+
+
+def _merge_image_model_lists(*model_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for models in model_lists:
+        for model in models or []:
+            key = str(
+                model.get("selection_id")
+                or model.get("selection_key")
+                or model.get("id")
+                or ""
+            ).strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(model)
+    return merged
+
+
+def _model_ref_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _build_search_candidate_model_meta_from_ref(
+    engine: str,
+    model_ref: Optional[dict[str, Any]],
+    selected_model: str,
+) -> Optional[dict[str, Any]]:
+    if not selected_model or not isinstance(model_ref, dict):
+        return None
+    if not _model_ref_bool(model_ref.get("image_search_candidate")):
+        return None
+
+    generation_mode = str(model_ref.get("image_generation_mode") or "").strip()
+    allowed_modes = {
+        "openai": {"openai_images", "openai_chat_image", "xai_images"},
+        "gemini": {"gemini_generate_content_image", "gemini_predict"},
+        "grok": {"xai_images"},
+    }.get(engine, set())
+    if generation_mode not in allowed_modes:
+        return None
+
+    size_mode = str(model_ref.get("image_size_mode") or "").strip()
+    if size_mode not in {"exact", "aspect_ratio", "unsupported"}:
+        size_mode = "aspect_ratio" if generation_mode != "openai_images" else "exact"
+
+    return {
+        "id": selected_model,
+        "generation_mode": generation_mode,
+        "detection_method": "search",
+        "supports_background": _model_ref_bool(model_ref.get("supports_background")),
+        "supports_batch": _model_ref_bool(model_ref.get("supports_batch"), True),
+        "size_mode": size_mode,
+        "supports_image_size": _model_ref_bool(model_ref.get("supports_image_size")),
+        "supports_resolution": _model_ref_bool(model_ref.get("supports_resolution")),
+        "text_output_supported": _model_ref_bool(model_ref.get("text_output_supported")),
+    }
 
 
 async def _read_aiohttp_body(response: aiohttp.ClientResponse) -> Any:
@@ -1925,6 +2130,130 @@ async def _discover_gemini_image_models(
     return discovered
 
 
+async def _list_raw_image_models_for_source(
+    request: Request,
+    user,
+    engine: str,
+    source: dict[str, Any],
+) -> list[dict[str, Any]]:
+    base_url = source.get("base_url") or ""
+    api_key = source.get("key") or ""
+    api_config = source.get("api_config") or {}
+    model_ids = _normalize_config_model_ids(api_config)
+
+    if model_ids:
+        if engine == "gemini":
+            return [
+                {
+                    "id": model_id,
+                    "name": f"models/{model_id}",
+                    "displayName": model_id,
+                    "supportedGenerationMethods": ["generateContent"],
+                }
+                for model_id in model_ids
+            ]
+        return [{"id": model_id, "name": model_id, "object": "model"} for model_id in model_ids]
+
+    if engine == "openai":
+        if _is_official_xai_connection(base_url):
+            return await grok_router._fetch_grok_models(
+                base_url,
+                api_key,
+                api_config,
+                user=user,
+            )
+
+        models_url = openai_router._get_openai_models_url(base_url, api_config)
+        headers = _build_openai_image_headers(base_url, api_key, api_config, user)
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST),
+            trust_env=True,
+        ) as session:
+            async with session.get(
+                models_url,
+                headers=headers,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as response:
+                body = await _read_aiohttp_body(response)
+                if response.status != 200:
+                    if openai_router._looks_like_models_listing_unsupported(
+                        response.status, body
+                    ):
+                        return []
+                    raise HTTPException(
+                        status_code=400,
+                        detail=build_error_detail(
+                            body,
+                            default=f"Failed to load image models from {models_url}",
+                        ),
+                    )
+
+        normalized = openai_router._normalize_openai_models_response(body)
+        if normalized is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid response from upstream /models endpoint",
+            )
+        return normalized.get("data", []) or []
+
+    if engine == "gemini":
+        response = await gemini_router.send_get_request(f"{base_url}/models", api_key, api_config)
+        if not response:
+            return []
+        if response.get("error"):
+            raise HTTPException(
+                status_code=400,
+                detail=build_error_detail(
+                    response,
+                    default="Failed to load Gemini image models",
+                ),
+            )
+        return response.get("models", []) or []
+
+    if engine == "grok":
+        return await grok_router._fetch_grok_models(
+            base_url,
+            api_key,
+            api_config,
+            user=user,
+        )
+
+    return []
+
+
+async def _discover_image_model_search_candidates_for_source(
+    request: Request,
+    user,
+    engine: str,
+    source: dict[str, Any],
+    search_query: str,
+) -> list[dict[str, Any]]:
+    query = str(search_query or "").strip()
+    if not query:
+        return []
+
+    raw_models = await _list_raw_image_models_for_source(request, user, engine, source)
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            continue
+        if not _raw_model_matches_image_search(raw_model, query):
+            continue
+        if _classify_raw_image_model_for_engine(engine, raw_model, source):
+            continue
+        candidate = _build_image_model_search_candidate(engine, raw_model, source)
+        if not candidate:
+            continue
+        key = str(candidate.get("selection_id") or candidate.get("id") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+
+    return candidates
+
+
 def _discover_comfyui_image_models(request: Request) -> list[dict[str, Any]]:
     headers = None
     if request.app.state.config.COMFYUI_API_KEY:
@@ -2091,6 +2420,46 @@ async def _discover_image_models_from_sources(
     return []
 
 
+async def _discover_image_model_search_candidates_from_sources(
+    request: Request,
+    user,
+    engine: str,
+    sources: list[dict[str, Any]],
+    search_query: str,
+) -> list[dict[str, Any]]:
+    if not sources or not str(search_query or "").strip():
+        return []
+
+    results = await asyncio.gather(
+        *[
+            _discover_image_model_search_candidates_for_source(
+                request, user, engine, source, search_query
+            )
+            for source in sources
+        ],
+        return_exceptions=True,
+    )
+
+    aggregated_models: list[dict[str, Any]] = []
+    for source, result in zip(sources, results):
+        if isinstance(result, Exception):
+            try:
+                log.warning(
+                    "Failed to search image models for provider=%s source=%s connection_index=%s base_url=%s: %s",
+                    engine,
+                    source.get("effective_source"),
+                    source.get("connection_index"),
+                    source.get("base_url"),
+                    result,
+                )
+            except Exception:
+                pass
+            continue
+        aggregated_models.extend(result)
+
+    return _sort_discovered_image_models(aggregated_models)
+
+
 async def _discover_image_models(
     request: Request,
     user,
@@ -2140,6 +2509,67 @@ async def _discover_image_models(
         )
 
     return await _discover_image_models_from_sources(request, user, engine, sources)
+
+
+async def _discover_image_model_search_candidates(
+    request: Request,
+    user,
+    *,
+    context: str = "runtime",
+    credential_source: Optional[str] = None,
+    connection_index: Optional[int] = None,
+    search_query: str = "",
+    strict: bool = False,
+) -> list[dict[str, Any]]:
+    query = str(search_query or "").strip()
+    if not query:
+        return []
+
+    engine = _normalize_engine(getattr(request.app.state.config, "IMAGE_GENERATION_ENGINE", ""))
+    if engine not in {"openai", "gemini", "grok"}:
+        return []
+
+    normalized_context = _normalize_context(context)
+    normalized_credential_source = _normalize_credential_source(credential_source)
+
+    if normalized_context != "runtime":
+        source = _resolve_image_provider_source(
+            request,
+            user,
+            engine,
+            context=normalized_context,
+            credential_source=normalized_credential_source,
+            connection_index=connection_index,
+            strict=strict,
+        )
+        if source is None:
+            return []
+        return await _discover_image_model_search_candidates_for_source(
+            request, user, engine, source, query
+        )
+
+    sources = _list_image_provider_sources(
+        request,
+        user,
+        engine,
+        context=normalized_context,
+        credential_source=normalized_credential_source,
+        connection_index=connection_index,
+        strict=strict,
+    )
+    if not sources:
+        return []
+
+    if len(sources) == 1:
+        return _sort_discovered_image_models(
+            await _discover_image_model_search_candidates_for_source(
+                request, user, engine, sources[0], query
+            )
+        )
+
+    return await _discover_image_model_search_candidates_from_sources(
+        request, user, engine, sources, query
+    )
 
 
 async def _select_runtime_image_provider_source(
@@ -2793,6 +3223,7 @@ async def get_models(
     context: Optional[str] = "runtime",
     credential_source: Optional[str] = None,
     connection_index: Optional[int] = None,
+    search: Optional[str] = None,
     user=Depends(get_verified_user),
 ):
     if not _can_use_image_generation(request, user):
@@ -2810,6 +3241,17 @@ async def get_models(
             connection_index=connection_index,
             strict=False,
         )
+        if str(search or "").strip():
+            search_candidates = await _discover_image_model_search_candidates(
+                request,
+                user,
+                context=context,
+                credential_source=credential_source,
+                connection_index=connection_index,
+                search_query=str(search or "").strip(),
+                strict=False,
+            )
+            models = _merge_image_model_lists(models, search_candidates)
     except HTTPException:
         raise
     except Exception as e:
@@ -4527,6 +4969,10 @@ async def image_generations(
                     api_config=source.get("api_config") or {},
                     source=source,
                 )
+            if not selected_model_meta and selected_model:
+                selected_model_meta = _build_search_candidate_model_meta_from_ref(
+                    "openai", model_ref, selected_model
+                )
 
             generation_mode = (
                 (selected_model_meta or {}).get("generation_mode") or "openai_images"
@@ -4678,6 +5124,10 @@ async def image_generations(
                         "supportedGenerationMethods": ["generateContent"],
                     },
                     source=source,
+                )
+            if not selected_model_meta and selected_model:
+                selected_model_meta = _build_search_candidate_model_meta_from_ref(
+                    "gemini", model_ref, selected_model
                 )
 
             generation_mode = (

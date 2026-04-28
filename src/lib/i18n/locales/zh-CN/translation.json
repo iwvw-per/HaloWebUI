@@ -2645,5 +2645,6 @@
 	"History cleared": "历史已清空",
 	"Failed to clear history": "清空历史失败",
 	"No generation history": "没有生成历史",
-	"Your generation history will appear here.": "您的生成历史将显示在这里。"
+	"Your generation history will appear here.": "您的生成历史将显示在这里。",
+	"Search result. Use it only if this model supports image generation.": "搜索候选；仅在确认该模型支持图片生成时使用。"
 }

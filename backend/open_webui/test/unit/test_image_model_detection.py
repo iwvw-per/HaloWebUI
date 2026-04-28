@@ -188,6 +188,49 @@ def test_gemini_generate_content_image_preview_is_detected():
     assert classified["generation_mode"] == "gemini_generate_content_image"
 
 
+def test_gemini_image_model_without_preview_suffix_is_detected():
+    classified = _classify_gemini_image_model(
+        {
+            "id": "gemini-3.0-pro-image-4k",
+            "displayName": "gemini-3.0-pro-image-4k",
+            "supportedGenerationMethods": ["generateContent"],
+        },
+        source={"effective_source": "personal"},
+    )
+
+    assert classified is not None
+    assert classified["generation_mode"] == "gemini_generate_content_image"
+    assert classified["supports_image_size"] is True
+
+
+def test_gemini_image_understanding_model_is_not_detected_as_generation():
+    classified = _classify_gemini_image_model(
+        {
+            "id": "gemini-image-understanding",
+            "displayName": "gemini-image-understanding",
+            "supportedGenerationMethods": ["generateContent"],
+        },
+        source={"effective_source": "personal"},
+    )
+
+    assert classified is None
+
+
+def test_openai_compatible_gemini_image_model_without_preview_suffix_is_detected():
+    classified = _classify_openai_image_model(
+        {
+            "id": "google/gemini-2.5-flash-image",
+            "name": "google/gemini-2.5-flash-image",
+        },
+        base_url="https://relay.example/v1",
+        api_config={},
+        source={"effective_source": "personal", "provider": "openai"},
+    )
+
+    assert classified is not None
+    assert classified["generation_mode"] == "openai_chat_image"
+
+
 def test_grok_image_model_is_detected():
     classified = _classify_grok_image_model(
         {

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext, onMount, tick } from 'svelte';
+	import { getContext, onDestroy, onMount, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	import {
@@ -219,6 +219,11 @@
 	let viewState: ViewState = 'loading';
 	let loadError: string | null = null;
 	let imageModels: ImageGenerationModel[] = [];
+	let imageModelSearchQuery = '';
+	let imageModelSearchResults: ImageGenerationModel[] = [];
+	let selectedModelSearchResult: ImageGenerationModel | null = null;
+	let imageModelSearchTimer: ReturnType<typeof setTimeout> | null = null;
+	let imageModelSearchRequestId = 0;
 	let prompt = '';
 	let selectedModel = '';
 	let selectedModelRawId = '';
@@ -309,6 +314,19 @@
 	};
 	const getModelOptionValue = (model: ImageGenerationModel | null | undefined) =>
 		`${model?.selection_id ?? model?.selection_key ?? model?.legacy_id ?? model?.id ?? ''}`.trim();
+	const mergeImageModelLists = (...modelLists: ImageGenerationModel[][]) => {
+		const seen = new Set<string>();
+		const merged: ImageGenerationModel[] = [];
+		for (const list of modelLists) {
+			for (const model of list ?? []) {
+				const key = getModelOptionValue(model);
+				if (!key || seen.has(key)) continue;
+				seen.add(key);
+				merged.push(model);
+			}
+		}
+		return merged;
+	};
 	const getModelLegacyValues = (model: ImageGenerationModel | null | undefined) =>
 		[model?.legacy_id, ...(model?.legacy_ids ?? [])]
 			.map((value) => `${value ?? ''}`.trim())
@@ -395,10 +413,18 @@
 		}
 	};
 
-	$: modelOptions = imageModels.map((model) => ({
+	$: selectableImageModels = mergeImageModelLists(
+		imageModels,
+		imageModelSearchQuery.trim() ? imageModelSearchResults : [],
+		selectedModelSearchResult ? [selectedModelSearchResult] : []
+	);
+	$: modelOptions = selectableImageModels.map((model) => ({
 		value: getModelOptionValue(model),
 		label: getModelLabel(model),
-		description: model.id,
+		description:
+			model.detection_method === 'search'
+				? $i18n.t('Search result. Use it only if this model supports image generation.')
+				: model.id,
 		badge: getModelSourceBadge(model)
 	}));
 	$: nativeAspectRatioOptions = GROK_IMAGE_ASPECT_RATIO_OPTIONS.map((option) => ({
@@ -422,7 +448,7 @@
 	$: selectedModelLabel =
 		modelOptions.find((option) => option.value === selectedModel)?.label ?? selectedModel;
 	$: selectedModelMeta =
-		imageModels.find((model) => getModelOptionValue(model) === selectedModel) ?? null;
+		selectableImageModels.find((model) => getModelOptionValue(model) === selectedModel) ?? null;
 	$: if (selectedModel && selectedModelMeta) {
 		selectedModelNeedsReselection = false;
 	}
@@ -898,6 +924,55 @@
 		workspaceNoModels = !loadError && imageModels.length === 0;
 	};
 
+	const loadImageModelSearchResults = async (query: string) => {
+		const normalizedQuery = query.trim();
+		const requestId = ++imageModelSearchRequestId;
+		if (!normalizedQuery) {
+			imageModelSearchResults = [];
+			return;
+		}
+
+		const nextModels = await getImageGenerationModels(localStorage.token, {
+			context: 'workspace',
+			credentialSource: 'auto',
+			search: normalizedQuery
+		}).catch(() => null);
+
+		if (requestId !== imageModelSearchRequestId || imageModelSearchQuery.trim() !== normalizedQuery) {
+			return;
+		}
+
+		imageModelSearchResults = Array.isArray(nextModels) ? nextModels : [];
+	};
+
+	const handleModelSearch = (event: CustomEvent<{ value: string }>) => {
+		const query = `${event.detail?.value ?? ''}`.trim();
+		imageModelSearchQuery = query;
+
+		if (imageModelSearchTimer) {
+			clearTimeout(imageModelSearchTimer);
+			imageModelSearchTimer = null;
+		}
+
+		if (!query) {
+			imageModelSearchRequestId += 1;
+			imageModelSearchResults = [];
+			return;
+		}
+
+		imageModelSearchTimer = setTimeout(() => {
+			void loadImageModelSearchResults(query);
+		}, 250);
+	};
+
+	const handleModelChange = (event: CustomEvent<{ value: string }>) => {
+		const nextValue = `${event.detail?.value ?? ''}`.trim();
+		const nextModel =
+			selectableImageModels.find((model) => getModelOptionValue(model) === nextValue) ?? null;
+		const isBaseModel = imageModels.some((model) => getModelOptionValue(model) === nextValue);
+		selectedModelSearchResult = nextModel && !isBaseModel ? nextModel : null;
+	};
+
 	const copyPromptHandler = async () => {
 		const text = lastPrompt || prompt.trim();
 		if (!text) return;
@@ -1133,6 +1208,12 @@
 
 		viewState = 'ready';
 	});
+
+	onDestroy(() => {
+		if (imageModelSearchTimer) {
+			clearTimeout(imageModelSearchTimer);
+		}
+	});
 </script>
 
 <svelte:head>
@@ -1260,6 +1341,8 @@
 							searchPlaceholder={$i18n.t('Search a model')}
 							noResultsText={$i18n.t('No results found')}
 							className="w-full lg:w-72 text-xs"
+							on:search={handleModelSearch}
+							on:change={handleModelChange}
 						/>
 
 						<div class="workspace-toolbar-actions">
@@ -1381,22 +1464,6 @@
 					</div>
 
 					<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-						<div class="space-y-1.5">
-							<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
-								{$i18n.t('Model')}
-							</div>
-							<HaloSelect
-								bind:value={selectedModel}
-								triggerId={WORKSPACE_IMAGE_MODEL_SELECTOR_ID}
-								options={modelOptions}
-								placeholder={$i18n.t('Select a model')}
-								searchEnabled={true}
-								searchPlaceholder={$i18n.t('Search a model')}
-								noResultsText={$i18n.t('No results found')}
-								className="w-full text-xs"
-							/>
-						</div>
-
 						{#if usesNativeAspectRatioControls}
 							<div class="space-y-1.5">
 								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">

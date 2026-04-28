@@ -247,6 +247,7 @@ export const getImageGenerationModels = async (
 		context?: 'settings' | 'runtime' | string;
 		credentialSource?: 'auto' | 'personal' | 'shared' | string;
 		connectionIndex?: number | null;
+		search?: string;
 	} = {}
 ): Promise<ImageGenerationModel[]> => {
 	let error = null;
@@ -260,6 +261,9 @@ export const getImageGenerationModels = async (
 	}
 	if (Number.isInteger(params.connectionIndex)) {
 		query.set('connection_index', `${params.connectionIndex}`);
+	}
+	if (params.search?.trim()) {
+		query.set('search', params.search.trim());
 	}
 
 	const suffix = query.toString() ? `?${query.toString()}` : '';

@@ -560,6 +560,27 @@
 			message.model_ref = modelRef;
 		}
 	};
+	const getMessageModelIndex = (message: any, fallback = 0) =>
+		typeof message?.modelIdx === 'number'
+			? message.modelIdx
+			: Number.isInteger(Number(message?.modelIdx))
+				? Number(message.modelIdx)
+				: fallback;
+	const resolveMessageModelForAction = (message: any, index = 0) => {
+		const messageResolution = resolveMessageModel(message);
+		if (messageResolution.status === 'resolved') return messageResolution;
+
+		const fallbackModelId = selectedModels[Math.max(0, index)];
+		if (!fallbackModelId) return messageResolution;
+
+		const fallbackResolution = resolveSelectedModel(fallbackModelId, index);
+		if (fallbackResolution.status === 'resolved') {
+			applyResolvedMessageModel(message, fallbackResolution);
+			return fallbackResolution;
+		}
+
+		return messageResolution;
+	};
 	const getChatModelSelectionHints = (chatContent: any) =>
 		Array.isArray(chatContent?.model_selection_hints)
 			? chatContent.model_selection_hints
@@ -3564,8 +3585,9 @@
 		});
 	};
 	const chatCompletedHandler = async (chatId, modelId, responseMessageId, messages) => {
-		const responseModelIndex = history.messages[responseMessageId]?.modelIdx ?? 0;
-		const responseModelResolution = resolveMessageModel(history.messages[responseMessageId]);
+		const responseMessage = history.messages[responseMessageId];
+		const responseModelIndex = getMessageModelIndex(responseMessage);
+		const responseModelResolution = resolveMessageModelForAction(responseMessage, responseModelIndex);
 		if (
 			isBlockingModelResolution(responseModelResolution) ||
 			responseModelResolution.status !== 'resolved'
@@ -3666,8 +3688,9 @@
 
 	const chatActionHandler = async (chatId, actionId, modelId, responseMessageId, event = null) => {
 		const messages = createMessagesList(history, responseMessageId);
-		const responseModelIndex = history.messages[responseMessageId]?.modelIdx ?? 0;
-		const responseModelResolution = resolveMessageModel(history.messages[responseMessageId]);
+		const responseMessage = history.messages[responseMessageId];
+		const responseModelIndex = getMessageModelIndex(responseMessage);
+		const responseModelResolution = resolveMessageModelForAction(responseMessage, responseModelIndex);
 		if (
 			isBlockingModelResolution(responseModelResolution) ||
 			responseModelResolution.status !== 'resolved'
@@ -4300,19 +4323,30 @@
 		let selectedModelIds = [];
 		if (modelId) {
 			const requestedModelId = `${modelId ?? ''}`.trim();
+			const requestedModelIndex = Number.isInteger(Number(modelIdx)) ? Number(modelIdx) : 0;
 			const sourceMessage =
-				typeof modelIdx === 'number'
-					? Object.values(history.messages).find(
-							(message: any) => message?.role === 'assistant' && message?.model === requestedModelId
-						)
-					: null;
-			const resolution = resolveChatModelSelection($models, {
-				value: requestedModelId,
-				model_ref: (sourceMessage as any)?.model_ref,
-				display_name: (sourceMessage as any)?.modelName
-			});
+				Object.values(history.messages).find(
+					(message: any) =>
+						message?.role === 'assistant' &&
+						message?.model === requestedModelId &&
+						getMessageModelIndex(message, requestedModelIndex) === requestedModelIndex
+				) ??
+				Object.values(history.messages).find(
+					(message: any) => message?.role === 'assistant' && message?.model === requestedModelId
+				);
+			const resolution = resolveMessageModelForAction(
+				{
+					model: requestedModelId,
+					model_ref: (sourceMessage as any)?.model_ref,
+					modelName: (sourceMessage as any)?.modelName
+				},
+				requestedModelIndex
+			);
+			if (sourceMessage && resolution.status === 'resolved') {
+				applyResolvedMessageModel(sourceMessage, resolution);
+			}
 			if (isBlockingModelResolution(resolution) || resolution.status !== 'resolved') {
-				await promptModelResolution(resolution, typeof modelIdx === 'number' ? modelIdx : 0);
+				await promptModelResolution(resolution, requestedModelIndex);
 				return;
 			}
 			selectedModelIds = [resolution.value];
@@ -5191,13 +5225,14 @@
 
 		if (history.currentId && history.messages[history.currentId].done == true) {
 			const responseMessage = history.messages[history.currentId];
+			const responseModelIndex = getMessageModelIndex(responseMessage);
 			responseMessage.done = false;
 			await tick();
 
 			const requestedModelId = `${responseMessage?.model ?? ''}`.trim();
-			const resolution = resolveMessageModel(responseMessage);
+			const resolution = resolveMessageModelForAction(responseMessage, responseModelIndex);
 			if (isBlockingModelResolution(resolution) || resolution.status !== 'resolved') {
-				await promptModelResolution(resolution, responseMessage.modelIdx ?? 0);
+				await promptModelResolution(resolution, responseModelIndex);
 				responseMessage.done = true;
 				history.messages[history.currentId] = responseMessage;
 				return;
@@ -5219,7 +5254,7 @@
 			responseMessage.done = true;
 			history.messages[history.currentId] = responseMessage;
 			await promptModelReselection({
-				index: responseMessage.modelIdx ?? 0,
+				index: responseModelIndex,
 				rawModelId: requestedModelId,
 				ambiguous: false
 			});
