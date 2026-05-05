@@ -262,6 +262,9 @@ web_modules/
 # Local/private publishing exclusions
 .claude/
 .playwright/
+.playwright-cli/
+.tmp_pw/
+test-results/
 output/
 .vscode/
 check.log
