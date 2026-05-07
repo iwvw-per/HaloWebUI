@@ -106,7 +106,7 @@ def test_chat_image_generation_handler_emits_readable_error(monkeypatch):
         )
     )
 
-    assert events[-2] == {
+    assert events[-1] == {
         "type": "status",
         "data": {
             "action": "image_generation",
@@ -115,8 +115,7 @@ def test_chat_image_generation_handler_emits_readable_error(monkeypatch):
             "error": True,
         },
     }
-    assert events[-1]["type"] == "chat:completion"
-    assert events[-1]["data"]["error"]["content"] == "上游图片服务超时：edits 请求已发出"
+    assert not any(event.get("type") == "chat:completion" for event in events)
     assert metadata["local_response"]["error"]["detail"] == "上游图片服务超时：edits 请求已发出"
 
 

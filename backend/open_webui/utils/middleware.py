@@ -3025,17 +3025,6 @@ async def chat_image_generation_handler(
                 },
             }
         )
-        await __event_emitter__(
-            {
-                "type": "chat:completion",
-                "data": {
-                    "done": True,
-                    "content": "",
-                    "error": {"content": error_detail},
-                    "completedAt": int(time.time()),
-                },
-            }
-        )
         __metadata__["local_response"] = {
             "error": {
                 "detail": error_detail,
