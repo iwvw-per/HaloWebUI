@@ -48,7 +48,7 @@
 	} from '$lib/utils/browser-ai-assets';
 	import { localizeCommonError } from '$lib/utils/common-errors';
 	import { initScrollbarAutohide } from '$lib/utils/scrollbars';
-	import { setTextScale } from '$lib/utils/text-scale';
+	import { setTextScale, TEXT_SCALE_DEFAULT } from '$lib/utils/text-scale';
 	import { getAllTags, getChatList } from '$lib/apis/chats';
 	import { initPWAInstallSupport } from '$lib/utils/pwa';
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
@@ -67,7 +67,7 @@
 
 	const BREAKPOINT = 768;
 
-	$: setTextScale($settings?.textScale ?? 1);
+	$: setTextScale($settings?.textScale ?? TEXT_SCALE_DEFAULT);
 
 	const formatError = (error) =>
 		localizeCommonError(error, (key, options) => $i18n.t(key, options));

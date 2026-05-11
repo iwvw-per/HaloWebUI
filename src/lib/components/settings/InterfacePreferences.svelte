@@ -19,7 +19,12 @@
 	import { getLanguages, changeLanguage, translateWithDefault } from '$lib/i18n';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 	import { getModelSelectionId, resolveModelSelectionId } from '$lib/utils/model-identity';
-	import { setTextScale } from '$lib/utils/text-scale';
+	import {
+		setTextScale,
+		TEXT_SCALE_DEFAULT,
+		TEXT_SCALE_MAX,
+		TEXT_SCALE_MIN
+	} from '$lib/utils/text-scale';
 	import { revealExpandedSection } from '$lib/utils/expanded-section-scroll';
 
 	import Switch from '$lib/components/common/Switch.svelte';
@@ -392,7 +397,7 @@
 
 	const commitTextScaleSelection = (scale: number | null) => {
 		textScale = scale;
-		setTextScale(textScale ?? 1);
+		setTextScale(textScale ?? TEXT_SCALE_DEFAULT);
 	};
 
 	// Avoid TS type assertions in Svelte markup expressions (can break parsing depending on tooling).
@@ -1186,7 +1191,7 @@
 
 		notificationSound = $settings?.notificationSound ?? true;
 		textScale = $settings?.textScale ?? null;
-		setTextScale(textScale ?? 1);
+		setTextScale(textScale ?? TEXT_SCALE_DEFAULT);
 
 		hapticFeedback = $settings?.hapticFeedback ?? false;
 		ctrlEnterToSend = $settings?.ctrlEnterToSend ?? false;
@@ -1515,14 +1520,14 @@
 													<input
 														class="flex-1 h-1.5 accent-blue-500 cursor-pointer"
 														type="range"
-														min="1"
-														max="1.5"
+														min={TEXT_SCALE_MIN}
+														max={TEXT_SCALE_MAX}
 														step={0.01}
 														bind:value={textScale}
 													/>
 													<span
 														class="text-xs font-mono text-gray-500 dark:text-gray-400 w-10 text-right tabular-nums"
-														>{Math.round((textScale ?? 1) * 100)}%</span
+														>{Math.round((textScale ?? TEXT_SCALE_DEFAULT) * 100)}%</span
 													>
 												{/if}
 												<button
@@ -1532,7 +1537,7 @@
 														? 'border-blue-300 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
 														: 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5'}"
 													on:click={() => {
-														textScale = textScale === null ? 1 : null;
+														textScale = textScale === null ? TEXT_SCALE_DEFAULT : null;
 													}}
 												>
 													{textScale === null ? $i18n.t('Default') : $i18n.t('Reset')}
