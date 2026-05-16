@@ -1,3 +1,5 @@
+import { parseModelSelectionId } from '$lib/utils/model-identity';
+
 export type GeminiImageSizeOption = {
 	value: string;
 	label: string;
@@ -131,6 +133,12 @@ export const mapLegacySizeToGeminiParams = (size: unknown): {
 export const getFunctionPipeRootId = (modelId: unknown): string => {
 	const raw = `${modelId ?? ''}`.trim();
 	if (!raw) return '';
+	const parsed = parseModelSelectionId(raw);
+	if (parsed?.provider === 'pipe') {
+		const connectionId =
+			`${parsed.modelRef?.connection_id ?? parsed.modelRef?.prefix_id ?? ''}`.trim();
+		if (connectionId) return connectionId;
+	}
 	return raw.includes('.') ? raw.split('.', 1)[0] : raw;
 };
 

@@ -61,6 +61,10 @@ from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_model_system_prompt_to_body,
 )
+from open_webui.utils.model_identity import (
+    decorate_provider_model_identity,
+    parse_selection_id,
+)
 
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
@@ -82,6 +86,73 @@ def get_function_module_by_id(request: Request, pipe_id: str):
     return function_module
 
 
+def _clean_str(value) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _clean_connection_label(value) -> str:
+    return _clean_str(value).strip(" \t\r\n-|:")
+
+
+def _get_pipe_connection_name(pipe, function_module) -> str:
+    return (
+        _clean_connection_label(getattr(function_module, "name", None))
+        or _clean_connection_label(getattr(pipe, "name", None))
+        or _clean_connection_label(getattr(pipe, "id", None))
+    )
+
+
+def _set_pipe_connection_fields(model: dict, *, pipe, connection_name: str) -> None:
+    model["source"] = "function"
+    model["connection_id"] = pipe.id
+    if connection_name and _clean_str(model.get("name")) != connection_name:
+        model["connection_name"] = connection_name
+
+
+def _decorate_pipe_model_identity(
+    model: dict,
+    *,
+    pipe,
+    model_id: str,
+    connection_name: str,
+    legacy_ids: list,
+) -> dict:
+    _set_pipe_connection_fields(model, pipe=pipe, connection_name=connection_name)
+    return decorate_provider_model_identity(
+        model,
+        provider="pipe",
+        source="function",
+        model_id=model_id,
+        connection_id=pipe.id,
+        legacy_ids=legacy_ids,
+    )
+
+
+def resolve_function_model_runtime_id(model_id, models: dict | None = None) -> str:
+    raw_model_id = _clean_str(model_id)
+    if not raw_model_id:
+        return ""
+
+    model_entry = models.get(raw_model_id) if isinstance(models, dict) else None
+    if isinstance(model_entry, dict) and model_entry.get("pipe"):
+        runtime_id = _clean_str(model_entry.get("id"))
+        if runtime_id:
+            return runtime_id
+
+    parsed = parse_selection_id(raw_model_id)
+    if parsed and parsed.get("provider") == "pipe":
+        model_ref = parsed.get("model_ref") or {}
+        pipe_id = _clean_str(
+            model_ref.get("connection_id") or model_ref.get("prefix_id")
+        )
+        sub_model_id = _clean_str(parsed.get("model_id"))
+        if pipe_id and sub_model_id:
+            return pipe_id if pipe_id == sub_model_id else f"{pipe_id}.{sub_model_id}"
+        return pipe_id or sub_model_id or raw_model_id
+
+    return raw_model_id
+
+
 async def get_function_models(request):
     pipes = Functions.get_functions_by_type("pipe", active_only=True)
     pipe_models = []
@@ -89,6 +160,7 @@ async def get_function_models(request):
     for pipe in pipes:
         function_module = get_function_module_by_id(request, pipe.id)
         has_user_valves = hasattr(function_module, "UserValves")
+        connection_name = _get_pipe_connection_name(pipe, function_module)
 
         # Check if function is a manifold
         if hasattr(function_module, "pipes"):
@@ -112,42 +184,84 @@ async def get_function_models(request):
             )
 
             for p in sub_pipes:
-                sub_pipe_id = f'{pipe.id}.{p["id"]}'
-                sub_pipe_name = p["name"]
+                if not isinstance(p, dict):
+                    continue
 
-                if hasattr(function_module, "name"):
-                    sub_pipe_name = f"{function_module.name}{sub_pipe_name}"
+                sub_model_id = _clean_str(p.get("id"))
+                if not sub_model_id:
+                    continue
 
-                pipe_flag = {"type": pipe.type}
+                sub_pipe_id = f"{pipe.id}.{sub_model_id}"
+                sub_pipe_name = _clean_str(p.get("name")) or sub_model_id
+                legacy_prefixed_names = []
+                raw_module_name = getattr(function_module, "name", None)
+                for prefix in [
+                    "" if raw_module_name is None else str(raw_module_name),
+                    _clean_str(raw_module_name),
+                    connection_name,
+                ]:
+                    if prefix:
+                        legacy_prefixed_names.append(f"{prefix}{sub_pipe_name}")
 
+                pipe_flag = {"type": pipe.type, "id": pipe.id}
+
+                pipe_model = {
+                    **{
+                        key: value
+                        for key, value in p.items()
+                        if key
+                        not in {"id", "name", "object", "created", "owned_by", "pipe"}
+                    },
+                    "id": sub_pipe_id,
+                    "name": sub_pipe_name,
+                    "object": "model",
+                    "created": pipe.created_at,
+                    "owned_by": p.get("owned_by", "openai"),
+                    "pipe": pipe_flag,
+                    "has_user_valves": has_user_valves,
+                }
                 pipe_models.append(
-                    {
-                        "id": sub_pipe_id,
-                        "name": sub_pipe_name,
-                        "object": "model",
-                        "created": pipe.created_at,
-                        "owned_by": "openai",
-                        "pipe": pipe_flag,
-                        "has_user_valves": has_user_valves,
-                    }
+                    _decorate_pipe_model_identity(
+                        {
+                            **pipe_model,
+                        },
+                        pipe=pipe,
+                        model_id=sub_model_id,
+                        connection_name=connection_name,
+                        legacy_ids=[
+                            sub_pipe_id,
+                            sub_model_id,
+                            sub_pipe_name,
+                            *legacy_prefixed_names,
+                        ],
+                    )
                 )
         else:
-            pipe_flag = {"type": "pipe"}
+            pipe_flag = {"type": "pipe", "id": pipe.id}
 
             log.debug(
                 f"get_function_models: function '{pipe.id}' is a single pipe {{ 'id': {pipe.id}, 'name': {pipe.name} }}"
             )
 
+            pipe_model = {
+                "id": pipe.id,
+                "name": pipe.name,
+                "object": "model",
+                "created": pipe.created_at,
+                "owned_by": "openai",
+                "pipe": pipe_flag,
+                "has_user_valves": has_user_valves,
+            }
             pipe_models.append(
-                {
-                    "id": pipe.id,
-                    "name": pipe.name,
-                    "object": "model",
-                    "created": pipe.created_at,
-                    "owned_by": "openai",
-                    "pipe": pipe_flag,
-                    "has_user_valves": has_user_valves,
-                }
+                _decorate_pipe_model_identity(
+                    {
+                        **pipe_model,
+                    },
+                    pipe=pipe,
+                    model_id=pipe.id,
+                    connection_name=connection_name,
+                    legacy_ids=[pipe.id, pipe.name],
+                )
             )
 
     return pipe_models
@@ -330,6 +444,10 @@ async def generate_function_chat_completion(
         params = model_info.params.model_dump()
         form_data = apply_model_params_to_body_openai(params, form_data)
         form_data = apply_model_system_prompt_to_body(params, form_data, metadata, user)
+
+    runtime_model_id = resolve_function_model_runtime_id(form_data.get("model"), models)
+    if runtime_model_id:
+        form_data["model"] = runtime_model_id
 
     pipe_id = get_pipe_id(form_data)
     function_module = get_function_module_by_id(request, pipe_id)
