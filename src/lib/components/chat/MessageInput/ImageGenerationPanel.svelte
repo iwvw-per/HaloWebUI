@@ -86,7 +86,6 @@
 	export let imageGenerationOptions: ImageGenerationOptions = {};
 	export let currentModel: Model | null = null;
 	export let hasReferenceImage = false;
-	export let onAdvancedImageOptions: (() => void) | null = null;
 
 	let builtinLoading = false;
 	let builtinReady = false;
@@ -508,11 +507,6 @@
 		}
 	};
 
-	const openAdvanced = () => {
-		onAdvancedImageOptions?.();
-		open = false;
-	};
-
 	const setOpenAIRoute = (value: string) => {
 		openAIRouteTouchedKey = openAIRouteContextKey;
 		setOption({ image_route_mode: value || null });
@@ -679,6 +673,34 @@
 	$: canUseNegativePrompt = imageGenerationEnabled && !loading && !hasBuiltinImage;
 	$: canUseQuality =
 		imageGenerationEnabled && !loading && (hasBuiltinResolutionOption || hasBuiltinSizeOption);
+	$: qualityUnavailableLabel =
+		builtinEngine === 'openai'
+			? tr('不在此处选择', 'Set elsewhere')
+			: tr('当前接口不支持', 'Not supported');
+	$: qualityUnavailableDescription =
+		builtinEngine === 'openai'
+			? tr(
+					'OpenAI 尺寸在左侧比例里选择；这里的档位只用于 Gemini/Grok。',
+					'OpenAI size is selected from the aspect ratio presets on the left; this tier control is only used by Gemini/Grok.'
+				)
+			: tr(
+					'当前接口没有暴露可选择的清晰度或尺寸档位。',
+					'The current route does not expose selectable resolution or size tiers.'
+				);
+	$: qualityHelpDescription = canUseQuality
+		? hasBuiltinResolutionOption
+			? tr(
+					'这里选择当前模型支持的清晰度档位。',
+					'Select the resolution tier supported by the current model.'
+				)
+			: tr(
+					'这里选择当前模型支持的尺寸档位。',
+					'Select the size tier supported by the current model.'
+				)
+		: qualityUnavailableDescription;
+	$: stepsUnavailableLabel = hasBuiltinImage
+		? tr('当前接口不使用', 'Not used by this route')
+		: tr('当前配置不支持', 'Not supported');
 
 	$: builtinImageSizeOptions = GEMINI_IMAGE_SIZE_OPTIONS.map((option) => ({
 		value: option.value,
@@ -757,27 +779,26 @@
 	})();
 </script>
 
-	<DropdownMenu.Root bind:open closeFocus={false} typeahead={false} onOpenChange={handleOpenChange}>
-		<Tooltip
-			content={imageGenerationEnabled
-				? tr('图片生成已开启，点击调整', 'Image generation is on. Click to adjust.')
-				: tr('图片生成', 'Image generation')}
-			placement="top"
-		>
-			<DropdownMenu.Trigger
-				class="relative flex h-8 shrink-0 items-center justify-center rounded-full border transition
+<DropdownMenu.Root bind:open closeFocus={false} typeahead={false} onOpenChange={handleOpenChange}>
+	<Tooltip
+		content={imageGenerationEnabled
+			? tr('图片生成已开启，点击调整', 'Image generation is on. Click to adjust.')
+			: tr('图片生成', 'Image generation')}
+		placement="top"
+	>
+		<DropdownMenu.Trigger
+			class="relative flex h-8 shrink-0 items-center justify-center rounded-full border transition
 					{imageGenerationEnabled
-					? 'gap-1.5 border-teal-200 bg-teal-50 px-2.5 text-teal-700 hover:bg-teal-100 dark:border-teal-500/30 dark:bg-teal-500/15 dark:text-teal-100'
-					: 'w-8 border-transparent bg-transparent text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800'}"
-				aria-label={tr('图片生成设置', 'Image generation settings')}
-				aria-pressed={imageGenerationEnabled}
-			>
-				<Wand2 class="size-4" strokeWidth={1.9} />
-				{#if imageGenerationEnabled}
-					<span class="pr-0.5 text-xs font-medium leading-none">{tr('绘图', 'Draw')}</span>
-					<span class="absolute right-1 top-1 size-1.5 rounded-full bg-teal-500 dark:bg-teal-300" />
-				{/if}
-			</DropdownMenu.Trigger>
+				? 'gap-1.5 border-teal-200 bg-teal-50 px-2.5 text-teal-700 hover:bg-teal-100 dark:border-teal-500/30 dark:bg-teal-500/15 dark:text-teal-100'
+				: 'w-8 border-transparent bg-transparent text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800'}"
+			aria-label={tr('图片生成设置', 'Image generation settings')}
+			aria-pressed={imageGenerationEnabled}
+		>
+			<Wand2 class="size-4" strokeWidth={1.9} />
+			{#if imageGenerationEnabled}
+				<span class="pr-0.5 text-xs font-medium leading-none">{tr('绘图', 'Draw')}</span>
+			{/if}
+		</DropdownMenu.Trigger>
 	</Tooltip>
 
 	<DropdownMenu.Content
@@ -932,6 +953,32 @@
 							{/each}
 						</div>
 					</section>
+
+					<section class="space-y-2">
+						<div class="flex items-center justify-between">
+							<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">
+								{tr('负面提示词', 'Negative prompt')}
+							</div>
+							{#if !canUseNegativePrompt}
+								<div class="text-[11px] text-gray-400">
+									{tr('当前模型不支持', 'Not supported')}
+								</div>
+							{/if}
+						</div>
+						<textarea
+							rows="3"
+							disabled={!canUseNegativePrompt}
+							value={imageGenerationOptions?.negative_prompt ?? ''}
+							placeholder={canUseNegativePrompt
+								? tr('写下不希望出现在图片里的内容', 'Describe what should not appear in the image')
+								: tr(
+										'当前模型不会使用负面提示词。',
+										'The current model will not use a negative prompt.'
+									)}
+							class="min-h-[5.5rem] w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm leading-5 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-teal-300 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:border-teal-500/70 dark:disabled:bg-gray-800/60"
+							on:input={handleNegativePromptInput}
+						/>
+					</section>
 				</div>
 
 				<div class="space-y-4">
@@ -1024,13 +1071,24 @@
 
 							<div>
 								<div class="mb-1.5 flex items-center justify-between">
-									<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-										{hasBuiltinResolutionOption
-											? tr('清晰度', 'Resolution')
-											: tr('尺寸档位', 'Size tier')}
+									<div class="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300">
+										<span>
+											{hasBuiltinResolutionOption
+												? tr('清晰度', 'Resolution')
+												: tr('尺寸档位', 'Size tier')}
+										</span>
+										<Tooltip content={qualityHelpDescription} placement="top">
+											<button
+												type="button"
+												class="-m-1 rounded-full p-1 outline-none transition hover:bg-gray-100 focus:bg-gray-100 dark:hover:bg-gray-800 dark:focus:bg-gray-800"
+												aria-label={qualityHelpDescription}
+											>
+												<CircleHelp class={helpIconClass} strokeWidth={1.9} />
+											</button>
+										</Tooltip>
 									</div>
 									<div class="text-[11px] text-gray-400">
-										{canUseQuality ? currentQualityLabel : tr('当前模型不支持', 'Not supported')}
+										{canUseQuality ? currentQualityLabel : qualityUnavailableLabel}
 									</div>
 								</div>
 								<div class="grid grid-cols-2 gap-1.5">
@@ -1066,14 +1124,6 @@
 										{/each}
 									{/if}
 								</div>
-								{#if !canUseQuality}
-									<div class="mt-1.5 text-[11px] leading-4 text-gray-400">
-										{tr(
-											'当前模型没有暴露可选择的清晰度或尺寸档位。',
-											'The current model does not expose selectable resolution or size tiers.'
-										)}
-									</div>
-								{/if}
 							</div>
 
 							<div>
@@ -1118,7 +1168,7 @@
 											? currentSteps === 0
 												? tr('自动', 'Auto')
 												: currentSteps
-											: tr('当前模型不支持', 'Not supported')}
+											: stepsUnavailableLabel}
 									</div>
 								</div>
 								<input
@@ -1133,32 +1183,6 @@
 								/>
 							</div>
 						</div>
-					</section>
-
-					<section class="space-y-2">
-						<div class="flex items-center justify-between">
-							<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">
-								{tr('负面提示词', 'Negative prompt')}
-							</div>
-							{#if !canUseNegativePrompt}
-								<div class="text-[11px] text-gray-400">
-									{tr('当前模型不支持', 'Not supported')}
-								</div>
-							{/if}
-						</div>
-						<textarea
-							rows="3"
-							disabled={!canUseNegativePrompt}
-							value={imageGenerationOptions?.negative_prompt ?? ''}
-							placeholder={canUseNegativePrompt
-								? tr('写下不希望出现在图片里的内容', 'Describe what should not appear in the image')
-								: tr(
-										'当前模型不会使用负面提示词。',
-										'The current model will not use a negative prompt.'
-									)}
-							class="min-h-[5.5rem] w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm leading-5 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-teal-300 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:border-teal-500/70 dark:disabled:bg-gray-800/60"
-							on:input={handleNegativePromptInput}
-						/>
 					</section>
 
 					{#if hasCustomImage}
@@ -1224,16 +1248,7 @@
 						</section>
 					{/if}
 
-					<div
-						class="flex items-center justify-between gap-2 border-t border-gray-200 pt-3 dark:border-gray-700"
-					>
-						<button
-							type="button"
-							class="rounded-lg px-2.5 py-2 text-xs font-medium text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-							on:click={openAdvanced}
-						>
-							{tr('打开高级参数', 'Open advanced settings')}
-						</button>
+					<div class="flex items-center justify-end gap-2 pt-1">
 						<button
 							type="button"
 							class="rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"

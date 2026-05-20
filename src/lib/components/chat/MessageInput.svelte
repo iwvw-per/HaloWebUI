@@ -1743,9 +1743,6 @@
 												bind:imageGenerationOptions
 												currentModel={primarySelectedModel}
 												hasReferenceImage={hasReferenceImageForImageGeneration}
-												onAdvancedImageOptions={() => {
-													showControls.set(true);
-												}}
 											/>
 										{/if}
 
