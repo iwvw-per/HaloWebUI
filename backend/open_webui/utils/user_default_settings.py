@@ -3,6 +3,7 @@ from typing import Any
 
 
 DEFAULT_NEW_USER_DEFAULT_SETTINGS = {
+    "configured": False,
     "enabled": False,
     "roles": ["user", "pending"],
     "ui": {},
@@ -74,21 +75,13 @@ ALLOWED_UI_BOOL_KEYS = {
     "stylizedPdfExport",
     "showFloatingActionButtons",
     "memory",
-    "showEmojiInCall",
-    "voiceInterruption",
     "imageCompression",
     "imageCompressionInChannels",
-    "iframeSandboxAllowSameOrigin",
-    "iframeSandboxAllowForms",
-    "hapticFeedback",
-    "speechAutoSend",
-    "responseAutoPlayback",
 }
 
 ALLOWED_UI_STRING_KEYS = {
     "highlighterTheme": 120,
     "mermaidTheme": 40,
-    "landingPageMode": 40,
     "chatDirection": 10,
     "transitionMode": 20,
     "system": 12000,
@@ -96,13 +89,10 @@ ALLOWED_UI_STRING_KEYS = {
 
 ALLOWED_STRING_ARRAY_KEYS = {
     "models",
-    "pinnedModels",
-    "modelSelectorTagOrder",
 }
 
 ALLOWED_CHAT_DIRECTIONS = {"auto", "LTR", "RTL"}
 ALLOWED_TRANSITION_MODES = {"none", "fadeIn", "smooth"}
-ALLOWED_LANDING_PAGE_MODES = {"", "chat"}
 ALLOWED_MERMAID_THEMES = {"lobe-theme", "default", "base", "dark", "forest", "neutral"}
 
 
@@ -211,41 +201,6 @@ def _sanitize_title(value: Any) -> dict:
     return cleaned
 
 
-def _sanitize_audio(value: Any) -> dict:
-    raw = _as_dict(value)
-    cleaned: dict[str, Any] = {}
-
-    stt = _as_dict(raw.get("stt"))
-    cleaned_stt = {}
-    stt_engine = _clean_string(stt.get("engine"), max_length=80)
-    stt_language = _clean_string(stt.get("language"), max_length=80)
-    if stt_engine:
-        cleaned_stt["engine"] = stt_engine
-    if stt_language:
-        cleaned_stt["language"] = stt_language
-    if cleaned_stt:
-        cleaned["stt"] = cleaned_stt
-
-    tts = _as_dict(raw.get("tts"))
-    cleaned_tts = {}
-    tts_engine = _clean_string(tts.get("engine"), max_length=80)
-    if tts_engine and tts_engine != "browser-kokoro":
-        cleaned_tts["engine"] = tts_engine
-
-    playback_rate = _clean_number(
-        tts.get("playbackRate"),
-        min_value=0.25,
-        max_value=4,
-    )
-    if playback_rate is not None:
-        cleaned_tts["playbackRate"] = playback_rate
-
-    if cleaned_tts:
-        cleaned["tts"] = cleaned_tts
-
-    return cleaned
-
-
 def _sanitize_image_compression_size(value: Any) -> dict:
     raw = _as_dict(value)
     cleaned = {}
@@ -300,8 +255,6 @@ def sanitize_user_default_ui(value: Any) -> dict:
             continue
         if key == "transitionMode" and next_value not in ALLOWED_TRANSITION_MODES:
             continue
-        if key == "landingPageMode" and next_value not in ALLOWED_LANDING_PAGE_MODES:
-            continue
         if key == "mermaidTheme" and next_value not in ALLOWED_MERMAID_THEMES:
             continue
         cleaned[key] = next_value
@@ -322,10 +275,6 @@ def sanitize_user_default_ui(value: Any) -> dict:
     if title:
         cleaned["title"] = title
 
-    audio = _sanitize_audio(raw.get("audio"))
-    if audio:
-        cleaned["audio"] = audio
-
     image_compression_size = _sanitize_image_compression_size(
         raw.get("imageCompressionSize")
     )
@@ -343,16 +292,19 @@ def sanitize_user_default_ui(value: Any) -> dict:
 def sanitize_new_user_default_settings(value: Any) -> dict:
     raw = _as_dict(value)
     tools = _as_dict(raw.get("tools"))
+    ui = sanitize_user_default_ui(raw.get("ui"))
+    native_tools = sanitize_native_tools_config(tools.get("native_tools"))
+
+    configured = (_is_bool(raw.get("configured")) and raw["configured"]) or bool(
+        ui or native_tools
+    )
 
     return {
-        "enabled": raw.get("enabled") if _is_bool(raw.get("enabled")) else False,
-        "roles": _clean_roles(
-            raw.get("roles", DEFAULT_NEW_USER_DEFAULT_SETTINGS["roles"])
-        ),
-        "ui": sanitize_user_default_ui(raw.get("ui")),
-        "tools": {
-            "native_tools": sanitize_native_tools_config(tools.get("native_tools"))
-        },
+        "configured": configured,
+        "enabled": bool(ui or native_tools),
+        "roles": copy.deepcopy(DEFAULT_NEW_USER_DEFAULT_SETTINGS["roles"]),
+        "ui": ui,
+        "tools": {"native_tools": native_tools},
     }
 
 

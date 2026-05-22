@@ -3,19 +3,12 @@
 	import type { ComponentType } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import { toast } from 'svelte-sonner';
-	import {
-		AudioLines,
-		Box,
-		Copy,
-		MessageCircleMore,
-		PanelTop,
-		SlidersHorizontal,
-		Wrench
-	} from 'lucide-svelte';
+	import { MessageCircleMore, PanelTop, UserCog, Wrench } from 'lucide-svelte';
 
 	import { models, settings, user } from '$lib/stores';
 	import {
 		getNewUserDefaultSettings,
+		getUserSettings,
 		updateNewUserDefaultSettings,
 		type NewUserDefaultSettingsPayload
 	} from '$lib/apis/users';
@@ -51,7 +44,7 @@
 		key: Key;
 		description: string;
 	};
-	type SectionKey = 'models' | 'interface' | 'chat' | 'audio' | 'tools' | 'advanced';
+	type SectionKey = 'chat' | 'interface' | 'tools';
 
 	let loading = true;
 	let saving = false;
@@ -60,20 +53,25 @@
 	let initialPayload: NewUserDefaultSettingsPayload = createEmptyNewUserDefaultSettings();
 
 	let openSections = {
-		models: true,
+		chat: true,
 		interface: true,
-		chat: false,
-		audio: false,
-		tools: false,
-		advanced: false
+		tools: false
 	};
-	let activeSection: SectionKey = 'models';
+	let activeSection: SectionKey = 'chat';
 
 	$: payload = buildNewUserDefaultSettingsPayload(draft);
 	$: dirty = !isSettingsSnapshotEqual(payload, initialPayload);
-	$: activeSectionMeta = sectionMeta[activeSection];
-
-	const sectionOrder: SectionKey[] = ['models', 'interface', 'chat', 'audio', 'tools', 'advanced'];
+	const sectionOrder: SectionKey[] = ['chat', 'interface', 'tools'];
+	const pageMeta = {
+		title: tr('账户预设', 'Account Presets'),
+		description: tr(
+			'首次配置会带入当前管理员偏好；保存后仅影响新账号。',
+			'The first draft uses the current admin preferences. Saved presets only affect new accounts.'
+		),
+		badgeColor: 'bg-blue-50 dark:bg-blue-950/30',
+		iconColor: 'text-blue-500 dark:text-blue-400',
+		icon: UserCog
+	};
 	const sectionMeta: Record<
 		SectionKey,
 		{
@@ -84,15 +82,15 @@
 			icon: ComponentType;
 		}
 	> = {
-		models: {
-			title: tr('模型与首页', 'Models and Home'),
+		chat: {
+			title: tr('聊天行为', 'Chat Behavior'),
 			description: tr(
-				'设置默认模型、常用模型和新用户首页显示方式。',
-				'Set the default model, pinned models, and new user home behavior.'
+				'设置默认模型、新聊天、标题、追问、引用和折叠行为。',
+				'Set the default model, new chat, title, follow-up, citation, and collapse behavior.'
 			),
-			badgeColor: 'bg-blue-50 dark:bg-blue-950/30',
-			iconColor: 'text-blue-500 dark:text-blue-400',
-			icon: Box
+			badgeColor: 'bg-indigo-50 dark:bg-indigo-950/30',
+			iconColor: 'text-indigo-500 dark:text-indigo-400',
+			icon: MessageCircleMore
 		},
 		interface: {
 			title: tr('界面与输入', 'Interface and Input'),
@@ -104,26 +102,6 @@
 			iconColor: 'text-emerald-500 dark:text-emerald-400',
 			icon: PanelTop
 		},
-		chat: {
-			title: tr('聊天行为', 'Chat Behavior'),
-			description: tr(
-				'预置新聊天、标题、追问、引用、折叠和 Markdown 相关行为。',
-				'Preset chat, title, follow-up, citation, collapse, and Markdown behavior.'
-			),
-			badgeColor: 'bg-indigo-50 dark:bg-indigo-950/30',
-			iconColor: 'text-indigo-500 dark:text-indigo-400',
-			icon: MessageCircleMore
-		},
-		audio: {
-			title: tr('音频与通话', 'Audio and Calls'),
-			description: tr(
-				'设置语音识别、语音播放、播放速度和通话体验。',
-				'Set speech recognition, playback, playback speed, and call preferences.'
-			),
-			badgeColor: 'bg-cyan-50 dark:bg-cyan-950/30',
-			iconColor: 'text-cyan-500 dark:text-cyan-400',
-			icon: AudioLines
-		},
 		tools: {
 			title: tr('内置工具', 'Built-in Tools'),
 			description: tr(
@@ -133,16 +111,6 @@
 			badgeColor: 'bg-amber-50 dark:bg-amber-950/30',
 			iconColor: 'text-amber-500 dark:text-amber-400',
 			icon: Wrench
-		},
-		advanced: {
-			title: tr('高级', 'Advanced'),
-			description: tr(
-				'管理 iframe 沙盒、触感反馈和模板安全边界。',
-				'Manage iframe sandboxing, haptics, and template safety boundaries.'
-			),
-			badgeColor: 'bg-slate-50 dark:bg-slate-950/30',
-			iconColor: 'text-slate-500 dark:text-slate-400',
-			icon: SlidersHorizontal
 		}
 	};
 
@@ -160,18 +128,15 @@
 		draft = draft;
 	};
 
-	const toggleRole = (role: 'user' | 'pending', enabled: boolean) => {
-		const roles = new Set(draft.roles);
-		if (enabled) {
-			roles.add(role);
-		} else {
-			roles.delete(role);
-		}
-		draft.roles = [...roles].filter((item) => item === 'user' || item === 'pending');
+	const setUiBool = (key: UserDefaultUiBoolKey, value: boolean) => {
+		draft.ui[key] = value;
 		draft = draft;
 	};
 
-	const getRoleEnabled = (role: 'user' | 'pending') => draft.roles.includes(role);
+	const setNativeToolBool = (key: NativeToolBoolKey, value: boolean) => {
+		draft.tools.native_tools[key] = value;
+		draft = draft;
+	};
 
 	const openAndScrollToSection = async (section: SectionKey) => {
 		activeSection = section;
@@ -183,20 +148,54 @@
 		});
 	};
 
-	const setUiBool = (key: UserDefaultUiBoolKey, value: boolean) => {
-		draft.ui[key] = value;
-		draft = draft;
-	};
+	const hasTemplateContent = (value: NewUserDefaultSettingsPayload) =>
+		Object.keys(value.ui ?? {}).length > 0 ||
+		Object.keys(value.tools?.native_tools ?? {}).length > 0;
 
-	const setNativeToolBool = (key: NativeToolBoolKey, value: boolean) => {
-		draft.tools.native_tools[key] = value;
-		draft = draft;
+	const createCurrentAdminPreferenceDraft = async () => {
+		const [userSettings, native] = await Promise.all([
+			getUserSettings(localStorage.token).catch(() => null),
+			getNativeToolsConfig(localStorage.token).catch(() => null)
+		]);
+		const copied = cloneSettingsSnapshot(
+			pickUserDefaultUiFields(userSettings?.ui ?? $settings ?? {})
+		);
+		const normalized = normalizeNewUserDefaultSettings(createEmptyNewUserDefaultSettings());
+		normalized.ui = {
+			...normalized.ui,
+			...copied,
+			title: {
+				...normalized.ui.title,
+				...(copied.title ?? {})
+			},
+			imageCompressionSize: {
+				...normalized.ui.imageCompressionSize,
+				...(copied.imageCompressionSize ?? {})
+			}
+		};
+		if (native) {
+			normalized.tools.native_tools = {
+				...normalized.tools.native_tools,
+				...cloneSettingsSnapshot(native)
+			};
+		}
+
+		normalized.roles = ['user', 'pending'];
+		return normalizeNewUserDefaultSettings(normalized);
 	};
 
 	const syncInitial = (value: NewUserDefaultSettingsPayload) => {
 		const normalized = normalizeNewUserDefaultSettings(value);
+		const initial = buildNewUserDefaultSettingsPayload(normalized);
+		const enabled = hasTemplateContent(initial);
+		normalized.enabled = enabled;
+		normalized.roles = ['user', 'pending'];
 		draft = normalized;
-		initialPayload = buildNewUserDefaultSettingsPayload(normalized);
+		initialPayload = {
+			...initial,
+			enabled,
+			roles: ['user', 'pending']
+		};
 	};
 
 	const load = async () => {
@@ -208,9 +207,17 @@
 				ensureModels(localStorage.token, { reason: 'new-user-default-settings' }).catch(() => {})
 			]);
 			syncInitial(data);
+			if (
+				!data.configured &&
+				!hasTemplateContent(
+					buildNewUserDefaultSettingsPayload(normalizeNewUserDefaultSettings(data))
+				)
+			) {
+				draft = await createCurrentAdminPreferenceDraft();
+			}
 		} catch (error) {
 			loadError = String(error);
-			toast.error(tr('加载新用户默认偏好失败。', 'Failed to load new user defaults.'));
+			toast.error(tr('加载账户预设失败。', 'Failed to load account presets.'));
 		} finally {
 			loading = false;
 		}
@@ -220,9 +227,13 @@
 		if (saving) return;
 		saving = true;
 		try {
-			const saved = await updateNewUserDefaultSettings(localStorage.token, payload);
+			const saved = await updateNewUserDefaultSettings(localStorage.token, {
+				...payload,
+				enabled: hasTemplateContent(payload),
+				roles: ['user', 'pending']
+			});
 			syncInitial(saved);
-			toast.success(tr('新用户默认偏好已保存。', 'New user defaults saved.'));
+			toast.success(tr('账户预设已保存。', 'Account presets saved.'));
 		} catch (error) {
 			toast.error(String(error));
 		} finally {
@@ -231,53 +242,16 @@
 	};
 
 	const reset = () => {
-		draft = normalizeNewUserDefaultSettings(initialPayload);
+		const normalized = normalizeNewUserDefaultSettings(initialPayload);
+		normalized.roles = ['user', 'pending'];
+		draft = normalized;
 	};
 
 	const clearTemplate = () => {
-		draft = normalizeNewUserDefaultSettings(createEmptyNewUserDefaultSettings());
-	};
-
-	const copyCurrentAdminPreferences = async () => {
-		const copied = cloneSettingsSnapshot(pickUserDefaultUiFields($settings ?? {}));
-		const native = await getNativeToolsConfig(localStorage.token).catch(() => null);
-		draft.ui = {
-			...draft.ui,
-			...copied,
-			title: {
-				...draft.ui.title,
-				...(copied.title ?? {})
-			},
-			audio: {
-				...draft.ui.audio,
-				...(copied.audio ?? {}),
-				stt: {
-					...draft.ui.audio?.stt,
-					...(copied.audio?.stt ?? {})
-				},
-				tts: {
-					...draft.ui.audio?.tts,
-					...(copied.audio?.tts ?? {})
-				}
-			},
-			imageCompressionSize: {
-				...draft.ui.imageCompressionSize,
-				...(copied.imageCompressionSize ?? {})
-			}
-		};
-		if (native) {
-			draft.tools.native_tools = {
-				...draft.tools.native_tools,
-				...cloneSettingsSnapshot(native)
-			};
-		}
-		draft = normalizeNewUserDefaultSettings(draft);
-		toast.success(
-			tr(
-				'已从当前管理员账号复制可模板化偏好。',
-				'Copied template-safe preferences from your account.'
-			)
-		);
+		draft = normalizeNewUserDefaultSettings({
+			...createEmptyNewUserDefaultSettings(),
+			configured: true
+		});
 	};
 
 	const boolRow = <Key extends string>(
@@ -348,8 +322,6 @@
 			'showFloatingActionButtons'
 		),
 		boolRow(tr('记忆', 'Memory'), 'memory'),
-		boolRow(tr('通话显示表情', 'Show emoji in call'), 'showEmojiInCall'),
-		boolRow(tr('语音打断', 'Voice interruption'), 'voiceInterruption'),
 		boolRow(tr('图片压缩', 'Image compression'), 'imageCompression'),
 		boolRow(tr('频道内图片也压缩', 'Compress images in channels'), 'imageCompressionInChannels')
 	];
@@ -373,27 +345,21 @@
 		boolRow(tr('终端工具', 'Terminal tool'), 'ENABLE_TERMINAL_TOOL')
 	];
 
-	const advancedRows: BoolRow<UserDefaultUiBoolKey>[] = [
-		boolRow(tr('iframe 允许同源', 'iframe allow same-origin'), 'iframeSandboxAllowSameOrigin'),
-		boolRow(tr('iframe 允许表单', 'iframe allow forms'), 'iframeSandboxAllowForms'),
-		boolRow(tr('触感反馈', 'Haptic feedback'), 'hapticFeedback')
-	];
-
 	onMount(load);
 </script>
 
 <svelte:head>
-	<title>{tr('新用户默认偏好', 'New User Defaults')}</title>
+	<title>{pageMeta.title}</title>
 </svelte:head>
 
 {#if $user?.role !== 'admin'}
 	<div class="text-sm text-gray-500 dark:text-gray-400">
-		{tr('只有管理员可以管理新用户默认偏好。', 'Only admins can manage new user defaults.')}
+		{tr('只有管理员可以管理账户预设。', 'Only admins can manage account presets.')}
 	</div>
 {:else if loading}
 	<div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
 		<Spinner className="size-4" />
-		<span>{tr('正在加载新用户默认偏好...', 'Loading new user defaults...')}</span>
+		<span>{tr('正在加载账户预设...', 'Loading account presets...')}</span>
 	</div>
 {:else if loadError}
 	<div class="text-sm text-red-600 dark:text-red-400">{loadError}</div>
@@ -413,16 +379,14 @@
 									{$i18n.t('Settings')}
 								</span>
 								<span class="leading-none text-gray-300 dark:text-gray-600">/</span>
-								<span class="leading-none text-gray-900 dark:text-white">
-									{tr('新用户默认偏好', 'New User Defaults')}
-								</span>
+								<span class="leading-none text-gray-900 dark:text-white">{pageMeta.title}</span>
 							</div>
 
 							<div class="mt-3 flex items-start gap-3">
-								<div class="glass-icon-badge {activeSectionMeta.badgeColor}">
+								<div class="glass-icon-badge {pageMeta.badgeColor}">
 									<svelte:component
-										this={activeSectionMeta.icon}
-										class="shrink-0 {activeSectionMeta.iconColor}"
+										this={pageMeta.icon}
+										class="shrink-0 {pageMeta.iconColor}"
 										size={18}
 										strokeWidth={1.75}
 									/>
@@ -430,16 +394,15 @@
 								<div class="min-w-0">
 									<div class="flex flex-wrap items-center gap-2.5">
 										<div class="text-base font-semibold text-gray-800 dark:text-gray-100">
-											{activeSectionMeta.title}
+											{pageMeta.title}
 										</div>
 										<button
 											type="button"
-											class="inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-xl border border-gray-200/90 bg-white px-3.5 text-xs font-medium leading-none text-gray-700 shadow-[0_12px_24px_-20px_rgba(15,23,42,0.28)] transition-all hover:-translate-y-[1px] hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-100"
+											class="inline-flex h-9 items-center whitespace-nowrap rounded-xl border border-red-200 bg-white px-3.5 text-xs font-medium leading-none text-red-600 transition-all hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/50 dark:bg-gray-900 dark:text-red-400 dark:hover:bg-red-950/30"
 											disabled={saving}
-											on:click={copyCurrentAdminPreferences}
+											on:click={clearTemplate}
 										>
-											<Copy class="shrink-0" size={14} strokeWidth={1.75} />
-											<span>{tr('从当前偏好复制', 'Copy Current')}</span>
+											{tr('清空预设', 'Clear Preset')}
 										</button>
 										<InlineDirtyActions
 											{dirty}
@@ -452,7 +415,7 @@
 										/>
 									</div>
 									<p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
-										{activeSectionMeta.description}
+										{pageMeta.description}
 									</p>
 								</div>
 							</div>
@@ -478,72 +441,18 @@
 							{/each}
 						</div>
 					</div>
-
-					<div
-						class="rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 text-xs leading-5 text-gray-500 dark:border-gray-700/40 dark:bg-gray-900/35 dark:text-gray-400"
-					>
-						{tr(
-							'这里设置的是新账号第一次进入系统时的默认偏好。不会修改已有用户，也不会替代权限组。',
-							'These defaults are applied only when a new account is created. Existing users are not changed, and permissions still come from groups/default permissions.'
-						)}
-					</div>
-
-					<div class="grid gap-3 lg:grid-cols-3">
-						<div class="glass-item flex items-center justify-between px-4 py-3">
-							<div class="min-w-0 pr-3">
-								<div class="text-sm font-medium text-gray-800 dark:text-gray-100">
-									{tr('启用模板', 'Enable template')}
-								</div>
-								<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-									{tr(
-										'关闭时，新用户保持系统默认行为。',
-										'When off, new users keep the built-in defaults.'
-									)}
-								</div>
-							</div>
-							<Switch bind:state={draft.enabled} />
-						</div>
-						<label class="glass-item flex items-center gap-3 px-4 py-3">
-							<input
-								type="checkbox"
-								class="size-4 rounded border-gray-300"
-								checked={getRoleEnabled('user')}
-								on:change={(event) => toggleRole('user', event.currentTarget.checked)}
-							/>
-							<div class="min-w-0">
-								<div class="text-sm font-medium text-gray-800 dark:text-gray-100">
-									{tr('普通用户', 'Users')}
-								</div>
-								<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">role: user</div>
-							</div>
-						</label>
-						<label class="glass-item flex items-center gap-3 px-4 py-3">
-							<input
-								type="checkbox"
-								class="size-4 rounded border-gray-300"
-								checked={getRoleEnabled('pending')}
-								on:change={(event) => toggleRole('pending', event.currentTarget.checked)}
-							/>
-							<div class="min-w-0">
-								<div class="text-sm font-medium text-gray-800 dark:text-gray-100">
-									{tr('待审核用户', 'Pending users')}
-								</div>
-								<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">role: pending</div>
-							</div>
-						</label>
-					</div>
 				</div>
 			</section>
 
-			<div id="new-user-defaults-models" class="scroll-mt-4">
+			<div id="new-user-defaults-chat" class="scroll-mt-4">
 				<PreferenceSection
-					bind:open={openSections.models}
-					title={sectionMeta.models.title}
-					description={sectionMeta.models.description}
-					badgeColor={sectionMeta.models.badgeColor}
-					iconColor={sectionMeta.models.iconColor}
-					icon={sectionMeta.models.icon}
-					on:toggle={() => (activeSection = 'models')}
+					bind:open={openSections.chat}
+					title={sectionMeta.chat.title}
+					description={sectionMeta.chat.description}
+					badgeColor={sectionMeta.chat.badgeColor}
+					iconColor={sectionMeta.chat.iconColor}
+					icon={sectionMeta.chat.icon}
+					on:toggle={() => (activeSection = 'chat')}
 				>
 					<div class="space-y-3 pt-1">
 						<div
@@ -566,49 +475,38 @@
 								on:change={(event) => setDefaultModel(event.detail.value)}
 							/>
 						</div>
+						<div class="grid gap-2 md:grid-cols-2">
+							{#each chatRows as row}
+								<div class="glass-item flex items-center justify-between gap-3 px-4 py-3">
+									<div class="min-w-0 text-sm font-medium">{row.label}</div>
+									{#if row.key === 'title.auto'}
+										<Switch bind:state={draft.ui.title.auto} />
+									{:else}
+										<Switch
+											state={draft.ui[row.key]}
+											on:change={(event) => setUiBool(row.key, event.detail)}
+										/>
+									{/if}
+								</div>
+							{/each}
+						</div>
 						<div class="glass-item grid gap-3 px-4 py-3 md:grid-cols-2">
 							<label class="space-y-1">
-								<div class="text-sm font-medium">{tr('常用模型', 'Pinned models')}</div>
+								<div class="text-sm font-medium">{tr('压缩宽度', 'Compression width')}</div>
 								<input
 									class="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-700"
-									value={(draft.ui.pinnedModels ?? []).join(', ')}
-									placeholder="gpt-4.1, claude-sonnet"
-									on:input={(event) => {
-										draft.ui.pinnedModels = event.currentTarget.value
-											.split(',')
-											.map((item) => item.trim())
-											.filter(Boolean);
-										draft = draft;
-									}}
+									bind:value={draft.ui.imageCompressionSize.width}
+									placeholder="1920"
 								/>
 							</label>
 							<label class="space-y-1">
-								<div class="text-sm font-medium">{tr('模型标签顺序', 'Model tag order')}</div>
+								<div class="text-sm font-medium">{tr('压缩高度', 'Compression height')}</div>
 								<input
 									class="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-700"
-									value={(draft.ui.modelSelectorTagOrder ?? []).join(', ')}
-									placeholder="OpenAI, Anthropic"
-									on:input={(event) => {
-										draft.ui.modelSelectorTagOrder = event.currentTarget.value
-											.split(',')
-											.map((item) => item.trim())
-											.filter(Boolean);
-										draft = draft;
-									}}
+									bind:value={draft.ui.imageCompressionSize.height}
+									placeholder="1080"
 								/>
 							</label>
-						</div>
-						<div
-							class="glass-item flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-						>
-							<div class="text-sm font-medium">{tr('首页模式', 'Landing Page Mode')}</div>
-							<HaloSelect
-								bind:value={draft.ui.landingPageMode}
-								options={[
-									{ value: '', label: tr('默认', 'Default') },
-									{ value: 'chat', label: tr('聊天', 'Chat') }
-								]}
-							/>
 						</div>
 					</div>
 				</PreferenceSection>
@@ -728,130 +626,6 @@
 				</PreferenceSection>
 			</div>
 
-			<div id="new-user-defaults-chat" class="scroll-mt-4">
-				<PreferenceSection
-					bind:open={openSections.chat}
-					title={sectionMeta.chat.title}
-					description={sectionMeta.chat.description}
-					badgeColor={sectionMeta.chat.badgeColor}
-					iconColor={sectionMeta.chat.iconColor}
-					icon={sectionMeta.chat.icon}
-					on:toggle={() => (activeSection = 'chat')}
-				>
-					<div class="space-y-3 pt-1">
-						<div class="grid gap-2 md:grid-cols-2">
-							{#each chatRows as row}
-								<div class="glass-item flex items-center justify-between gap-3 px-4 py-3">
-									<div class="min-w-0 text-sm font-medium">{row.label}</div>
-									{#if row.key === 'title.auto'}
-										<Switch bind:state={draft.ui.title.auto} />
-									{:else}
-										<Switch
-											state={draft.ui[row.key]}
-											on:change={(event) => setUiBool(row.key, event.detail)}
-										/>
-									{/if}
-								</div>
-							{/each}
-						</div>
-						<div class="glass-item grid gap-3 px-4 py-3 md:grid-cols-2">
-							<label class="space-y-1">
-								<div class="text-sm font-medium">{tr('压缩宽度', 'Compression width')}</div>
-								<input
-									class="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-700"
-									bind:value={draft.ui.imageCompressionSize.width}
-									placeholder="1920"
-								/>
-							</label>
-							<label class="space-y-1">
-								<div class="text-sm font-medium">{tr('压缩高度', 'Compression height')}</div>
-								<input
-									class="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-700"
-									bind:value={draft.ui.imageCompressionSize.height}
-									placeholder="1080"
-								/>
-							</label>
-						</div>
-					</div>
-				</PreferenceSection>
-			</div>
-
-			<div id="new-user-defaults-audio" class="scroll-mt-4">
-				<PreferenceSection
-					bind:open={openSections.audio}
-					title={sectionMeta.audio.title}
-					description={sectionMeta.audio.description}
-					badgeColor={sectionMeta.audio.badgeColor}
-					iconColor={sectionMeta.audio.iconColor}
-					icon={sectionMeta.audio.icon}
-					on:toggle={() => (activeSection = 'audio')}
-				>
-					<div class="space-y-3 pt-1">
-						<div class="grid gap-3 md:grid-cols-2">
-							<label class="glass-item space-y-1 px-4 py-3">
-								<div class="text-sm font-medium">{tr('语音识别引擎', 'STT engine')}</div>
-								<input
-									class="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-700"
-									bind:value={draft.ui.audio.stt.engine}
-									placeholder="web"
-								/>
-							</label>
-							<label class="glass-item space-y-1 px-4 py-3">
-								<div class="text-sm font-medium">{tr('识别语言', 'STT language')}</div>
-								<input
-									class="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-700"
-									bind:value={draft.ui.audio.stt.language}
-									placeholder="zh-CN"
-								/>
-							</label>
-							<label class="glass-item space-y-1 px-4 py-3">
-								<div class="text-sm font-medium">{tr('语音播放引擎', 'TTS engine')}</div>
-								<input
-									class="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-700"
-									bind:value={draft.ui.audio.tts.engine}
-									placeholder="openai"
-								/>
-								<div class="text-xs text-gray-500 dark:text-gray-400">
-									{tr(
-										'浏览器 Kokoro 下载同意不会作为模板保存。',
-										'Browser Kokoro download consent is not saved as a template.'
-									)}
-								</div>
-							</label>
-							<label class="glass-item space-y-1 px-4 py-3">
-								<div class="text-sm font-medium">{tr('播放速度', 'Playback rate')}</div>
-								<input
-									type="number"
-									min="0.25"
-									max="4"
-									step="0.05"
-									class="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-700"
-									bind:value={draft.ui.audio.tts.playbackRate}
-								/>
-							</label>
-						</div>
-						<div class="grid gap-2 md:grid-cols-2">
-							<div class="glass-item flex items-center justify-between gap-3 px-4 py-3">
-								<div class="text-sm font-medium">
-									{tr('识别后自动发送', 'Auto-send after speech recognition')}
-								</div>
-								<Switch
-									state={draft.ui.speechAutoSend}
-									on:change={(event) => setUiBool('speechAutoSend', event.detail)}
-								/>
-							</div>
-							<div class="glass-item flex items-center justify-between gap-3 px-4 py-3">
-								<div class="text-sm font-medium">{tr('自动播放回复', 'Auto-play response')}</div>
-								<Switch
-									state={draft.ui.responseAutoPlayback}
-									on:change={(event) => setUiBool('responseAutoPlayback', event.detail)}
-								/>
-							</div>
-						</div>
-					</div>
-				</PreferenceSection>
-			</div>
-
 			<div id="new-user-defaults-tools" class="scroll-mt-4">
 				<PreferenceSection
 					bind:open={openSections.tools}
@@ -907,45 +681,6 @@
 								'These are only default tool preferences for new accounts and cannot bypass global feature switches or permissions.'
 							)}
 						</div>
-					</div>
-				</PreferenceSection>
-			</div>
-
-			<div id="new-user-defaults-advanced" class="scroll-mt-4">
-				<PreferenceSection
-					bind:open={openSections.advanced}
-					title={sectionMeta.advanced.title}
-					description={sectionMeta.advanced.description}
-					badgeColor={sectionMeta.advanced.badgeColor}
-					iconColor={sectionMeta.advanced.iconColor}
-					icon={sectionMeta.advanced.icon}
-					on:toggle={() => (activeSection = 'advanced')}
-				>
-					<div class="space-y-3 pt-1">
-						<div class="grid gap-2 md:grid-cols-2">
-							{#each advancedRows as row}
-								<div class="glass-item flex items-center justify-between gap-3 px-4 py-3">
-									<div class="min-w-0 text-sm font-medium">{row.label}</div>
-									<Switch
-										state={draft.ui[row.key]}
-										on:change={(event) => setUiBool(row.key, event.detail)}
-									/>
-								</div>
-							{/each}
-						</div>
-						<div class="glass-item px-4 py-3 text-xs text-gray-500 dark:text-gray-400">
-							{tr(
-								'个人连接密钥、Webhook、地理位置、浏览器通知授权、主题语言和侧边栏本地状态不会被保存到模板。',
-								'Personal connection keys, webhooks, location, browser notification permission, theme/language, and local sidebar state are not saved in this template.'
-							)}
-						</div>
-						<button
-							type="button"
-							class="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-600 transition hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-950/30"
-							on:click={clearTemplate}
-						>
-							{tr('清空模板草稿', 'Clear template draft')}
-						</button>
 					</div>
 				</PreferenceSection>
 			</div>

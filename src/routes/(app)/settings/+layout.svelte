@@ -137,10 +137,7 @@
 			</div>
 		</nav>
 
-		<div
-			class="pb-1 px-[18px] flex-1 max-h-full overflow-y-auto"
-			id="settings-container"
-		>
+		<div class="pb-1 px-[18px] flex-1 max-h-full overflow-y-auto" id="settings-container">
 			<div class="flex flex-col lg:flex-row w-full h-full min-h-0 pb-2 lg:space-x-4">
 				<div
 					id="settings-tabs-container"
@@ -148,9 +145,6 @@
 				>
 					{#if isAdmin}
 						<a class={navLinkClass(activeLinks.general)} href="/settings">{$i18n.t('General')}</a>
-						<a class={navLinkClass(activeLinks.userDefaults)} href="/settings/user-defaults">
-							新用户默认偏好
-						</a>
 					{/if}
 					<a class={navLinkClass(activeLinks.interface)} href="/settings/interface"
 						>{$i18n.t('Interface')}</a
@@ -160,16 +154,21 @@
 						>{$i18n.t('Connections')}</a
 					>
 
-						<a class={navLinkClass(activeLinks.tools)} href="/settings/tools"
-							>{$i18n.t('Tool Integrations', { defaultValue: $i18n.t('Tools') })}</a
-						>
+					<a class={navLinkClass(activeLinks.tools)} href="/settings/tools"
+						>{$i18n.t('Tool Integrations', { defaultValue: $i18n.t('Tools') })}</a
+					>
 
-						<a class={navLinkClass(activeLinks.audio)} href="/settings/audio">{$i18n.t('Audio')}</a>
-						<a class={navLinkClass(activeLinks.dataManagement)} href="/settings/chats">{$i18n.t('Database')}</a>
-						<a class={navLinkClass(activeLinks.account)} href="/settings/account"
-							>{$i18n.t('Account Management', { defaultValue: $i18n.t('Account') })}</a
-						>
+					<a class={navLinkClass(activeLinks.audio)} href="/settings/audio">{$i18n.t('Audio')}</a>
+					<a class={navLinkClass(activeLinks.dataManagement)} href="/settings/chats"
+						>{$i18n.t('Database')}</a
+					>
+					<a class={navLinkClass(activeLinks.account)} href="/settings/account"
+						>{$i18n.t('Account Management', { defaultValue: $i18n.t('Account') })}</a
+					>
 					{#if isAdmin}
+						<a class={navLinkClass(activeLinks.userDefaults)} href="/settings/user-defaults">
+							账户预设
+						</a>
 						<a class={navLinkClass(activeLinks.models)} href="/settings/models"
 							>{$i18n.t('Model Management')}</a
 						>

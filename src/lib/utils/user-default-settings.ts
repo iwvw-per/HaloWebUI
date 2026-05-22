@@ -7,11 +7,8 @@ import {
 
 type UserDefaultUiTemplate = {
 	models: string[];
-	pinnedModels: string[];
-	modelSelectorTagOrder: string[];
 	showFeaturedAssistantsOnHome: boolean;
 	showChatTitleInTab: boolean;
-	landingPageMode: string;
 	chatBubble: boolean;
 	showUsername: boolean;
 	widescreenMode: boolean;
@@ -63,20 +60,9 @@ type UserDefaultUiTemplate = {
 		  }[]
 		| null;
 	memory: boolean;
-	showEmojiInCall: boolean;
-	voiceInterruption: boolean;
 	imageCompression: boolean;
 	imageCompressionSize: { width: string; height: string };
 	imageCompressionInChannels: boolean;
-	audio: {
-		stt: { engine: string; language: string };
-		tts: { engine: string; playbackRate: number };
-	};
-	speechAutoSend: boolean;
-	responseAutoPlayback: boolean;
-	iframeSandboxAllowSameOrigin: boolean;
-	iframeSandboxAllowForms: boolean;
-	hapticFeedback: boolean;
 };
 
 export type UserDefaultUiBoolKey = {
@@ -129,11 +115,8 @@ export const DEFAULT_NATIVE_TOOLS_TEMPLATE: NativeToolsTemplate = {
 
 export const DEFAULT_USER_DEFAULT_UI_TEMPLATE: UserDefaultUiTemplate = {
 	models: [],
-	pinnedModels: [],
-	modelSelectorTagOrder: [],
 	showFeaturedAssistantsOnHome: true,
 	showChatTitleInTab: true,
-	landingPageMode: '',
 	chatBubble: true,
 	showUsername: false,
 	widescreenMode: false,
@@ -178,20 +161,9 @@ export const DEFAULT_USER_DEFAULT_UI_TEMPLATE: UserDefaultUiTemplate = {
 	showFloatingActionButtons: true,
 	floatingActionButtons: null,
 	memory: false,
-	showEmojiInCall: false,
-	voiceInterruption: false,
 	imageCompression: false,
 	imageCompressionSize: { width: '', height: '' },
-	imageCompressionInChannels: true,
-	audio: {
-		stt: { engine: '', language: '' },
-		tts: { engine: '', playbackRate: 1 }
-	},
-	speechAutoSend: false,
-	responseAutoPlayback: false,
-	iframeSandboxAllowSameOrigin: false,
-	iframeSandboxAllowForms: false,
-	hapticFeedback: false
+	imageCompressionInChannels: true
 };
 
 const UI_BOOL_KEYS: UserDefaultUiBoolKey[] = [
@@ -233,27 +205,19 @@ const UI_BOOL_KEYS: UserDefaultUiBoolKey[] = [
 	'stylizedPdfExport',
 	'showFloatingActionButtons',
 	'memory',
-	'showEmojiInCall',
-	'voiceInterruption',
 	'imageCompression',
-	'imageCompressionInChannels',
-	'speechAutoSend',
-	'responseAutoPlayback',
-	'iframeSandboxAllowSameOrigin',
-	'iframeSandboxAllowForms',
-	'hapticFeedback'
+	'imageCompressionInChannels'
 ];
 
 const UI_STRING_KEYS = [
 	'highlighterTheme',
 	'mermaidTheme',
-	'landingPageMode',
 	'chatDirection',
 	'transitionMode',
 	'system'
 ];
 
-const UI_ARRAY_KEYS = ['models', 'pinnedModels', 'modelSelectorTagOrder'];
+const UI_ARRAY_KEYS = ['models'];
 const NATIVE_TOOL_BOOL_KEYS: NativeToolBoolKey[] = [
 	'ENABLE_INTERLEAVED_THINKING',
 	'ENABLE_WEB_SEARCH_TOOL',
@@ -286,6 +250,7 @@ const clampToolRounds = (value: unknown) => {
 const isEqual = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 export const createEmptyNewUserDefaultSettings = (): NewUserDefaultSettingsPayload => ({
+	configured: false,
 	enabled: false,
 	roles: ['user', 'pending'],
 	ui: {},
@@ -303,6 +268,7 @@ export const normalizeNewUserDefaultSettings = (
 	const nativeDefaults = clone(DEFAULT_NATIVE_TOOLS_TEMPLATE);
 
 	return {
+		configured: Boolean(raw.configured),
 		enabled: Boolean(raw.enabled),
 		roles: Array.isArray(raw.roles)
 			? raw.roles.filter((role: unknown) => role === 'user' || role === 'pending')
@@ -311,10 +277,6 @@ export const normalizeNewUserDefaultSettings = (
 			...defaults,
 			...rawUi,
 			models: Array.isArray(rawUi.models) ? rawUi.models : [],
-			pinnedModels: Array.isArray(rawUi.pinnedModels) ? rawUi.pinnedModels : [],
-			modelSelectorTagOrder: Array.isArray(rawUi.modelSelectorTagOrder)
-				? rawUi.modelSelectorTagOrder
-				: [],
 			title: {
 				...defaults.title,
 				...asRecord(rawUi.title)
@@ -322,16 +284,6 @@ export const normalizeNewUserDefaultSettings = (
 			imageCompressionSize: {
 				...defaults.imageCompressionSize,
 				...asRecord(rawUi.imageCompressionSize)
-			},
-			audio: {
-				stt: {
-					...defaults.audio.stt,
-					...asRecord(asRecord(rawUi.audio).stt)
-				},
-				tts: {
-					...defaults.audio.tts,
-					...asRecord(asRecord(rawUi.audio).tts)
-				}
 			}
 		},
 		tools: {
@@ -372,29 +324,6 @@ export const pickUserDefaultUiFields = (ui: Record<string, any>) => {
 
 	if (source.title && typeof source.title.auto === 'boolean') {
 		picked.title = { auto: source.title.auto };
-	}
-
-	if (source.audio) {
-		const audio = asRecord(source.audio);
-		const stt = asRecord(audio.stt);
-		const tts = asRecord(audio.tts);
-		const pickedAudio: Record<string, any> = {};
-
-		if (typeof stt.engine === 'string' || typeof stt.language === 'string') {
-			pickedAudio.stt = {};
-			if (typeof stt.engine === 'string') pickedAudio.stt.engine = stt.engine;
-			if (typeof stt.language === 'string') pickedAudio.stt.language = stt.language;
-		}
-
-		if (typeof tts.engine === 'string' || typeof tts.playbackRate === 'number') {
-			pickedAudio.tts = {};
-			if (typeof tts.engine === 'string' && tts.engine !== 'browser-kokoro') {
-				pickedAudio.tts.engine = tts.engine;
-			}
-			if (typeof tts.playbackRate === 'number') pickedAudio.tts.playbackRate = tts.playbackRate;
-		}
-
-		if (Object.keys(pickedAudio).length > 0) picked.audio = pickedAudio;
 	}
 
 	if (source.imageCompressionSize) {
@@ -452,6 +381,7 @@ export const buildNewUserDefaultSettingsPayload = (
 	}
 
 	return {
+		configured: Boolean(value.configured),
 		enabled: Boolean(value.enabled),
 		roles: value.roles.filter((role) => role === 'user' || role === 'pending'),
 		ui,

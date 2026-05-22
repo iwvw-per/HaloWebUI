@@ -15,6 +15,7 @@ export type UserSettingsUpdatePayload = {
 };
 
 export type NewUserDefaultSettingsPayload = {
+	configured?: boolean;
 	enabled: boolean;
 	roles: string[];
 	ui: Record<string, any>;
@@ -274,6 +275,7 @@ export const getNewUserDefaultSettings = async (
 	}
 
 	return (res ?? {
+		configured: false,
 		enabled: false,
 		roles: ['user', 'pending'],
 		ui: {},

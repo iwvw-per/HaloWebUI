@@ -237,6 +237,7 @@ async def update_default_user_permissions(
 # New User Default Settings
 ############################
 class NewUserDefaultSettingsForm(BaseModel):
+    configured: bool = False
     enabled: bool = False
     roles: list[str] = Field(default_factory=lambda: ["user", "pending"])
     ui: dict = Field(default_factory=dict)
@@ -261,7 +262,9 @@ async def get_new_user_default_settings(request: Request, user=Depends(get_admin
 async def update_new_user_default_settings(
     request: Request, form_data: NewUserDefaultSettingsForm, user=Depends(get_admin_user)
 ):
-    sanitized = sanitize_new_user_default_settings(form_data.model_dump())
+    sanitized = sanitize_new_user_default_settings(
+        {**form_data.model_dump(), "configured": True}
+    )
     request.app.state.config.NEW_USER_DEFAULT_SETTINGS = sanitized
     return request.app.state.config.NEW_USER_DEFAULT_SETTINGS
 

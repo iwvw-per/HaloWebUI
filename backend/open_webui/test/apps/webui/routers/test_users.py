@@ -541,8 +541,9 @@ class TestUsers(AbstractPostgresTest):
 
             assert response.status_code == 200
             saved = response.json()
+            assert saved["configured"] is True
             assert saved["enabled"] is True
-            assert saved["roles"] == ["user"]
+            assert saved["roles"] == ["user", "pending"]
             assert saved["ui"]["models"] == ["gpt-4o"]
             assert saved["ui"]["temporaryChatByDefault"] is True
             assert "connections" not in saved["ui"]
@@ -564,6 +565,15 @@ class TestUsers(AbstractPostgresTest):
             )
             assert created.settings.tools["native_tools"]["MAX_TOOL_CALL_ROUNDS"] == 12
             assert created.settings.revision == 0
+
+            pending_created = self.users.insert_new_user(
+                id="templated-pending",
+                name="Templated Pending",
+                email="templated-pending@example.com",
+                role="pending",
+            )
+            assert pending_created.settings.ui["models"] == ["gpt-4o"]
+            assert pending_created.settings.ui["temporaryChatByDefault"] is True
 
             admin_created = self.users.insert_new_user(
                 id="new-admin",
