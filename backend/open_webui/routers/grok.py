@@ -12,6 +12,12 @@ from pydantic import BaseModel
 from open_webui.env import AIOHTTP_CLIENT_SESSION_SSL, SRC_LOG_LEVELS
 from open_webui.routers import openai as openai_router
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.api_key_pool import (
+    get_api_key_attempts,
+    normalize_api_key_pool_config,
+    normalize_indexed_api_key_pools,
+    should_retry_api_key,
+)
 from open_webui.utils.error_handling import build_error_detail
 from open_webui.utils.model_identity import decorate_provider_model_identity
 from open_webui.utils.user_connections import get_user_connections
@@ -91,6 +97,31 @@ def _build_grok_headers(
     )
 
 
+def _get_grok_connection_key(api_config: Optional[dict], url_idx: Optional[int] = None) -> str:
+    cfg = api_config or {}
+    prefix = str(cfg.get("_resolved_prefix_id") or cfg.get("prefix_id") or "").strip()
+    if prefix:
+        return prefix
+    if url_idx is not None:
+        return f"idx:{url_idx}"
+    return str(cfg.get("name") or cfg.get("remark") or "").strip()
+
+
+def _normalize_grok_connection_key(
+    key: str,
+    api_config: Optional[dict],
+    *,
+    url_idx: Optional[int] = None,
+) -> tuple[str, dict]:
+    cfg, primary_key = normalize_api_key_pool_config(
+        api_config or {},
+        key or "",
+        provider="grok",
+        connection_key=_get_grok_connection_key(api_config, url_idx),
+    )
+    return primary_key, cfg
+
+
 def _extract_grok_models(body: Any) -> list[dict[str, Any]]:
     if isinstance(body, list):
         items = body
@@ -157,26 +188,64 @@ async def _fetch_grok_models(
     user=None,
 ) -> list[dict[str, Any]]:
     models_url = _get_grok_models_url(url)
-    headers = _build_grok_headers(url, key, api_config or {}, user=user)
+    key, api_config = _normalize_grok_connection_key(key or "", api_config or {})
+    key_attempts = get_api_key_attempts(
+        provider="grok",
+        connection_key=_get_grok_connection_key(api_config),
+        api_config=api_config,
+        fallback_key=key,
+    )
 
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-        async with session.get(
-            models_url,
-            headers=headers,
-            ssl=AIOHTTP_CLIENT_SESSION_SSL,
-        ) as response:
-            body = await _read_response_body(response)
-            if response.status >= 400:
-                raise HTTPException(
-                    status_code=response.status,
-                    detail=build_error_detail(
-                        body,
-                        default=f"Failed to load Grok image models from {models_url}",
-                    ),
-                )
+        for attempt_idx, attempt in enumerate(key_attempts):
+            try:
+                async with session.get(
+                    models_url,
+                    headers=_build_grok_headers(url, attempt.key, api_config or {}, user=user),
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                ) as response:
+                    body = await _read_response_body(response)
+                    if response.status < 400:
+                        return _extract_grok_models(body)
+                    if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                        api_config,
+                        status_code=response.status,
+                        body=body,
+                    ):
+                        log.warning(
+                            "[GROK KEY RETRY] models status=%s key_label=%s next=%s/%s",
+                            response.status,
+                            attempt.safe_label,
+                            attempt_idx + 2,
+                            len(key_attempts),
+                        )
+                        continue
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=build_error_detail(
+                            body,
+                            default=f"Failed to load Grok image models from {models_url}",
+                        ),
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                    api_config,
+                    exception=e,
+                ):
+                    log.warning(
+                        "[GROK KEY RETRY] models exception=%s key_label=%s next=%s/%s",
+                        e.__class__.__name__,
+                        attempt.safe_label,
+                        attempt_idx + 2,
+                        len(key_attempts),
+                    )
+                    continue
+                raise
 
-    return _extract_grok_models(body)
+    return []
 
 
 def _get_grok_user_config(connection_user) -> tuple[list[str], list[str], dict]:
@@ -323,6 +392,14 @@ async def update_config(
         normalized_configs[idx_str] = normalized_cfg
 
     request.app.state.config.GROK_API_CONFIGS = normalized_configs
+    request.app.state.config.GROK_API_KEYS, request.app.state.config.GROK_API_CONFIGS = (
+        normalize_indexed_api_key_pools(
+            provider="grok",
+            urls=request.app.state.config.GROK_API_BASE_URLS,
+            keys=request.app.state.config.GROK_API_KEYS,
+            configs=request.app.state.config.GROK_API_CONFIGS,
+        )
+    )
     request.app.state.GROK_MODELS = {}
 
     return {
@@ -346,6 +423,11 @@ async def get_models(
         for idx, url in enumerate(base_urls):
             api_key = keys[idx] if idx < len(keys) else ""
             api_config = cfgs.get(str(idx), {}) if isinstance(cfgs, dict) else {}
+            api_key, api_config = _normalize_grok_connection_key(
+                api_key,
+                api_config,
+                url_idx=idx,
+            )
             prefix_id = str(api_config.get("prefix_id") or "").strip()
             connection_name = str(api_config.get("remark") or api_config.get("name") or "").strip()
             if not url or not api_key:
@@ -387,6 +469,11 @@ async def get_models(
         url = base_urls[url_idx]
         api_key = keys[url_idx] if url_idx < len(keys) else ""
         api_config = cfgs.get(str(url_idx), {}) if isinstance(cfgs, dict) else {}
+        api_key, api_config = _normalize_grok_connection_key(
+            api_key,
+            api_config,
+            url_idx=url_idx,
+        )
         prefix_id = str(api_config.get("prefix_id") or "").strip()
         connection_name = str(api_config.get("remark") or api_config.get("name") or "").strip()
         payload = await _fetch_grok_models(url, api_key, api_config, user=user)
@@ -444,7 +531,11 @@ async def verify_connection(
     if not url:
         raise HTTPException(status_code=400, detail="Grok: URL is required")
 
-    models = await _fetch_grok_models(url, form_data.key or "", form_data.config or {}, user=user)
+    key, config = _normalize_grok_connection_key(
+        form_data.key or "",
+        form_data.config or {},
+    )
+    models = await _fetch_grok_models(url, key, config, user=user)
     return {"models": models}
 
 
@@ -457,8 +548,10 @@ async def health_check_connection(
     if not url:
         raise HTTPException(status_code=400, detail="Grok: URL is required")
 
-    key = form_data.key or ""
-    config = form_data.config or {}
+    key, config = _normalize_grok_connection_key(
+        form_data.key or "",
+        form_data.config or {},
+    )
     chosen_model = str(form_data.model or "").strip()
     if not chosen_model:
         models = await _fetch_grok_models(url, key, config, user=user)
@@ -476,34 +569,69 @@ async def health_check_connection(
         "response_format": "b64_json",
         "n": 1,
     }
-    headers = _build_grok_headers(url, key, config, user=user)
-
     timeout = aiohttp.ClientTimeout(total=20)
     started_at = time.monotonic()
+    key_attempts = get_api_key_attempts(
+        provider="grok",
+        connection_key=_get_grok_connection_key(config),
+        api_config=config,
+        fallback_key=key,
+    )
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            async with session.post(
-                request_url,
-                headers=headers,
-                json=payload,
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            ) as response:
-                body = await _read_response_body(response)
-                if response.status < 400:
-                    return {
-                        "ok": True,
-                        "model": chosen_model,
-                        "response_time_ms": max(
-                            1, int((time.monotonic() - started_at) * 1000)
-                        ),
-                    }
-                raise HTTPException(
-                    status_code=response.status,
-                    detail=build_error_detail(
-                        body,
-                        default="Failed to generate image via Grok /images/generations",
-                    ),
-                )
+            for attempt_idx, attempt in enumerate(key_attempts):
+                try:
+                    async with session.post(
+                        request_url,
+                        headers=_build_grok_headers(url, attempt.key, config, user=user),
+                        json=payload,
+                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ) as response:
+                        body = await _read_response_body(response)
+                        if response.status < 400:
+                            return {
+                                "ok": True,
+                                "model": chosen_model,
+                                "response_time_ms": max(
+                                    1, int((time.monotonic() - started_at) * 1000)
+                                ),
+                            }
+                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            config,
+                            status_code=response.status,
+                            body=body,
+                        ):
+                            log.warning(
+                                "[GROK KEY RETRY] health status=%s key_label=%s next=%s/%s",
+                                response.status,
+                                attempt.safe_label,
+                                attempt_idx + 2,
+                                len(key_attempts),
+                            )
+                            continue
+                        raise HTTPException(
+                            status_code=response.status,
+                            detail=build_error_detail(
+                                body,
+                                default="Failed to generate image via Grok /images/generations",
+                            ),
+                        )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                        config,
+                        exception=e,
+                    ):
+                        log.warning(
+                            "[GROK KEY RETRY] health exception=%s key_label=%s next=%s/%s",
+                            e.__class__.__name__,
+                            attempt.safe_label,
+                            attempt_idx + 2,
+                            len(key_attempts),
+                        )
+                        continue
+                    raise
     except HTTPException:
         raise
     except Exception as e:

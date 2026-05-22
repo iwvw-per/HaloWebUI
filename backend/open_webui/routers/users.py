@@ -23,7 +23,7 @@ from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import SRC_LOG_LEVELS
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from open_webui.utils.auth import (
     get_admin_user,
@@ -37,6 +37,10 @@ from open_webui.utils.user_connections import (
 )
 from open_webui.utils.user_tools import maybe_migrate_user_tool_settings
 from open_webui.utils.access_control import get_permissions
+from open_webui.utils.user_default_settings import (
+    DEFAULT_NEW_USER_DEFAULT_SETTINGS,
+    sanitize_new_user_default_settings,
+)
 
 
 log = logging.getLogger(__name__)
@@ -227,6 +231,39 @@ async def update_default_user_permissions(
 ):
     request.app.state.config.USER_PERMISSIONS = form_data.model_dump()
     return request.app.state.config.USER_PERMISSIONS
+
+
+############################
+# New User Default Settings
+############################
+class NewUserDefaultSettingsForm(BaseModel):
+    enabled: bool = False
+    roles: list[str] = Field(default_factory=lambda: ["user", "pending"])
+    ui: dict = Field(default_factory=dict)
+    tools: dict = Field(default_factory=lambda: {"native_tools": {}})
+
+
+@router.get("/default/settings", response_model=NewUserDefaultSettingsForm)
+async def get_new_user_default_settings(request: Request, user=Depends(get_admin_user)):
+    sanitized = sanitize_new_user_default_settings(
+        getattr(
+            request.app.state.config,
+            "NEW_USER_DEFAULT_SETTINGS",
+            DEFAULT_NEW_USER_DEFAULT_SETTINGS,
+        )
+    )
+    if sanitized != request.app.state.config.NEW_USER_DEFAULT_SETTINGS:
+        request.app.state.config.NEW_USER_DEFAULT_SETTINGS = sanitized
+    return sanitized
+
+
+@router.post("/default/settings", response_model=NewUserDefaultSettingsForm)
+async def update_new_user_default_settings(
+    request: Request, form_data: NewUserDefaultSettingsForm, user=Depends(get_admin_user)
+):
+    sanitized = sanitize_new_user_default_settings(form_data.model_dump())
+    request.app.state.config.NEW_USER_DEFAULT_SETTINGS = sanitized
+    return request.app.state.config.NEW_USER_DEFAULT_SETTINGS
 
 
 ############################

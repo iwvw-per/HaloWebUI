@@ -5,8 +5,8 @@
 	import { flyAndScale } from '$lib/utils/transitions';
 
 	export let show = false;
-	export let side = 'bottom';
-	export let align = 'start';
+	export let side: 'top' | 'right' | 'bottom' | 'left' = 'bottom';
+	export let align: 'start' | 'center' | 'end' = 'start';
 	const dispatch = createEventDispatcher();
 </script>
 
@@ -18,8 +18,10 @@
 	}}
 	typeahead={false}
 >
-	<DropdownMenu.Trigger>
-		<slot />
+	<DropdownMenu.Trigger asChild let:builder>
+		<div {...builder} use:builder.action class="contents">
+			<slot {builder} />
+		</div>
 	</DropdownMenu.Trigger>
 
 	<slot name="content">

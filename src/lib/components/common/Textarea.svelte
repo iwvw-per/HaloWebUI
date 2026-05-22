@@ -2,6 +2,7 @@
 	import { onMount, tick } from 'svelte';
 
 	export let value = '';
+	export let id = '';
 	export let placeholder = '';
 	export let rows = 1;
 	export let minSize: number | null = null;
@@ -52,6 +53,7 @@
 <textarea
 	bind:this={textareaElement}
 	bind:value
+	{id}
 	{placeholder}
 	class={className}
 	style="field-sizing: content;"

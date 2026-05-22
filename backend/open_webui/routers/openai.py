@@ -75,6 +75,12 @@ from open_webui.utils.model_identity import (
     resolve_model_from_lookup,
     resolve_provider_connection_by_model_id,
 )
+from open_webui.utils.api_key_pool import (
+    get_api_key_attempts,
+    normalize_indexed_api_key_pools,
+    normalize_api_key_pool_config,
+    should_retry_api_key,
+)
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
@@ -750,6 +756,31 @@ def _get_openai_file_cache_key(api_config: dict, url_idx: int) -> str:
     return prefix if prefix else f"idx:{url_idx}"
 
 
+def _get_openai_connection_key(api_config: Optional[dict], url_idx: Optional[int] = None) -> str:
+    cfg = api_config or {}
+    prefix = str(cfg.get("_resolved_prefix_id") or cfg.get("prefix_id") or "").strip()
+    if prefix:
+        return prefix
+    if url_idx is not None:
+        return f"idx:{url_idx}"
+    return str(cfg.get("name") or cfg.get("remark") or "").strip()
+
+
+def _normalize_openai_connection_key(
+    key: str,
+    api_config: Optional[dict],
+    *,
+    url_idx: Optional[int] = None,
+) -> tuple[str, dict]:
+    cfg, primary_key = normalize_api_key_pool_config(
+        api_config or {},
+        key or "",
+        provider="openai",
+        connection_key=_get_openai_connection_key(api_config, url_idx),
+    )
+    return primary_key, cfg
+
+
 def _get_cached_openai_file_id(file_meta: dict, conn_key: str) -> Optional[str]:
     try:
         provider_meta = (file_meta or {}).get("openai", {}) or {}
@@ -1346,38 +1377,78 @@ async def send_get_request(
     api_config: Optional[dict] = None,
 ):
     timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
+    attempts = get_api_key_attempts(
+        provider="openai",
+        connection_key=_get_openai_connection_key(api_config),
+        api_config=api_config or {},
+        fallback_key=key or "",
+    )
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            async with session.get(
-                url,
-                headers=_build_upstream_headers(url, key or "", api_config or {}, user=user),
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            ) as response:
-                body = await _safe_read_upstream_body(response)
-                if response.status == 200:
-                    normalized = _normalize_openai_models_response(body)
-                    return normalized if normalized is not None else body
+            for attempt_idx, attempt in enumerate(attempts):
+                try:
+                    async with session.get(
+                        url,
+                        headers=_build_upstream_headers(
+                            url, attempt.key, api_config or {}, user=user
+                        ),
+                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ) as response:
+                        body = await _safe_read_upstream_body(response)
+                        if response.status == 200:
+                            normalized = _normalize_openai_models_response(body)
+                            return normalized if normalized is not None else body
 
-                fallback = _build_models_listing_fallback(
-                    url=url,
-                    api_config=api_config,
-                    purpose="models",
-                    status=response.status,
-                    body=body,
-                )
-                if fallback is not None:
-                    return fallback
+                        fallback = _build_models_listing_fallback(
+                            url=url,
+                            api_config=api_config,
+                            purpose="models",
+                            status=response.status,
+                            body=body,
+                        )
+                        if fallback is not None:
+                            return fallback
 
-                log.warning(
-                    "Model fetch failed from %s with status=%s body=%s",
-                    url,
-                    response.status,
-                    _truncate_text(_stringify_upstream_body(body), 800),
-                )
-                return None
+                        if attempt_idx + 1 < len(attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=response.status,
+                            body=body,
+                        ):
+                            log.warning(
+                                "[OPENAI KEY RETRY] models fetch status=%s key_label=%s next=%s/%s",
+                                response.status,
+                                attempt.safe_label,
+                                attempt_idx + 2,
+                                len(attempts),
+                            )
+                            continue
+
+                        log.warning(
+                            "Model fetch failed from %s with status=%s body=%s",
+                            url,
+                            response.status,
+                            _truncate_text(_stringify_upstream_body(body), 800),
+                        )
+                        return None
+                except Exception as e:
+                    if attempt_idx + 1 < len(attempts) and should_retry_api_key(
+                        api_config,
+                        exception=e,
+                    ):
+                        log.warning(
+                            "[OPENAI KEY RETRY] models fetch exception=%s key_label=%s next=%s/%s",
+                            e.__class__.__name__,
+                            attempt.safe_label,
+                            attempt_idx + 2,
+                            len(attempts),
+                        )
+                        continue
+                    raise
     except Exception as e:
         # Handle connection error here
         log.error(f"Connection error: {e}")
+        if len(attempts) > 1 and should_retry_api_key(api_config, exception=e):
+            log.warning("[OPENAI KEY RETRY] models fetch exception after all attempts: %s", e)
         return None
 
 
@@ -1553,6 +1624,14 @@ async def update_config(
         normalized_configs[idx_str] = normalized_cfg
 
     request.app.state.config.OPENAI_API_CONFIGS = normalized_configs
+    request.app.state.config.OPENAI_API_KEYS, request.app.state.config.OPENAI_API_CONFIGS = (
+        normalize_indexed_api_key_pools(
+            provider="openai",
+            urls=request.app.state.config.OPENAI_API_BASE_URLS,
+            keys=request.app.state.config.OPENAI_API_KEYS,
+            configs=request.app.state.config.OPENAI_API_CONFIGS,
+        )
+    )
 
     # Refresh model list cache when config changes
     from open_webui.utils.models import invalidate_base_model_cache
@@ -1738,6 +1817,11 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
     for idx, url in enumerate(base_urls):
         idx_key = str(idx)
         api_config = cfgs.get(idx_key, cfgs.get(url, {})) or {}
+        selected_key, api_config = _normalize_openai_connection_key(
+            keys[idx] if idx < len(keys) else "",
+            api_config,
+            url_idx=idx,
+        )
 
         enable = api_config.get("enable", True)
         model_ids = api_config.get("model_ids", [])
@@ -1776,7 +1860,7 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
         request_tasks.append(
             send_get_request(
                 _get_openai_models_url(url, api_config),
-                keys[idx] if idx < len(keys) else "",
+                selected_key,
                 user=user,
                 api_config=api_config,
             )
@@ -1805,6 +1889,11 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
 
         url = base_urls[idx]
         api_config = cfgs.get(str(idx), cfgs.get(url, {})) or {}
+        _selected_key, api_config = _normalize_openai_connection_key(
+            keys[idx] if idx < len(keys) else "",
+            api_config,
+            url_idx=idx,
+        )
         prefix_id = (api_config.get("prefix_id") or "").strip() or None
         connection_name = (api_config.get("remark") or "").strip()
         if not connection_name:
@@ -1955,6 +2044,11 @@ async def get_models(
         url = base_urls[url_idx]
         key = keys[url_idx] if url_idx < len(keys) else ""
         api_config = _cfgs.get(str(url_idx), _cfgs.get(url, {})) or {}
+        key, api_config = _normalize_openai_connection_key(
+            key,
+            api_config,
+            url_idx=url_idx,
+        )
         models_url = _get_openai_models_url(url, api_config)
 
         r = None
@@ -1962,32 +2056,57 @@ async def get_models(
             timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
         ) as session:
             try:
-                async with session.get(
-                    models_url,
-                    headers=_build_upstream_headers(url, key, api_config, user=user),
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                ) as r:
-                    response_data = await _safe_read_upstream_body(r)
-                    if r.status != 200:
-                        fallback = _build_models_listing_fallback(
-                            url=url,
-                            api_config=api_config,
-                            purpose="models",
-                            status=r.status,
-                            body=response_data,
-                        )
-                        if fallback is not None:
-                            models = fallback
-                            response_data = None
-                        else:
+                attempts = get_api_key_attempts(
+                    provider="openai",
+                    connection_key=_get_openai_connection_key(api_config, url_idx),
+                    api_config=api_config,
+                    fallback_key=key,
+                )
+                last_error_detail = None
+                for attempt_idx, attempt in enumerate(attempts):
+                    async with session.get(
+                        models_url,
+                        headers=_build_upstream_headers(
+                            url, attempt.key, api_config, user=user
+                        ),
+                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ) as r:
+                        response_data = await _safe_read_upstream_body(r)
+                        if r.status != 200:
+                            fallback = _build_models_listing_fallback(
+                                url=url,
+                                api_config=api_config,
+                                purpose="models",
+                                status=r.status,
+                                body=response_data,
+                            )
+                            if fallback is not None:
+                                models = fallback
+                                response_data = None
+                                break
+                            last_error_detail = _extract_upstream_error_detail(
+                                r.status, response_data
+                            )
+                            if attempt_idx + 1 < len(attempts) and should_retry_api_key(
+                                api_config,
+                                status_code=r.status,
+                                body=response_data,
+                            ):
+                                log.warning(
+                                    "[OPENAI KEY RETRY] /models status=%s key_label=%s next=%s/%s",
+                                    r.status,
+                                    attempt.safe_label,
+                                    attempt_idx + 2,
+                                    len(attempts),
+                                )
+                                continue
                             raise HTTPException(
                                 status_code=400,
-                                detail=_extract_upstream_error_detail(r.status, response_data),
+                                detail=last_error_detail,
                             )
 
-                    if response_data is None:
-                        pass
-                    else:
+                        if response_data is None:
+                            break
                         normalized_response = _normalize_openai_models_response(response_data)
                         if normalized_response is None:
                             raise HTTPException(
@@ -1996,7 +2115,6 @@ async def get_models(
                             )
                         response_data = normalized_response
 
-                    if response_data is not None:
                         # Check if we're calling OpenAI API based on the URL
                         if "api.openai.com" in url:
                             # Filter models according to the specified conditions
@@ -2021,6 +2139,7 @@ async def get_models(
                             url=url,
                             api_config=api_config,
                         )
+                        break
             except aiohttp.ClientError as e:
                 # ClientError covers all aiohttp requests issues
                 log.exception(f"Client error: {str(e)}")
@@ -2099,51 +2218,91 @@ async def verify_connection(
 ):
     url = form_data.url
     key = form_data.key
-    api_config = form_data.config or {}
+    key, api_config = _normalize_openai_connection_key(
+        form_data.key,
+        form_data.config or {},
+    )
     purpose = form_data.purpose or "connection"
     models_url = _get_openai_models_url(url, api_config)
-    headers = _build_upstream_headers(url, key, api_config, user=user)
+    attempts = get_api_key_attempts(
+        provider="openai",
+        connection_key=_get_openai_connection_key(api_config),
+        api_config=api_config,
+        fallback_key=key,
+    )
 
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST),
         trust_env=True,
     ) as session:
         try:
-            async with session.get(
-                models_url,
-                headers=headers,
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            ) as r:
-                response_body = await _safe_read_upstream_body(r)
+            for attempt_idx, attempt in enumerate(attempts):
+                try:
+                    async with session.get(
+                        models_url,
+                        headers=_build_upstream_headers(url, attempt.key, api_config, user=user),
+                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ) as r:
+                        response_body = await _safe_read_upstream_body(r)
 
-                if r.status == 200:
-                    normalized_response = _normalize_openai_models_response(response_body)
-                    if normalized_response is not None:
-                        return _apply_native_web_search_support_to_models_response(
-                            normalized_response,
+                        if r.status == 200:
+                            normalized_response = _normalize_openai_models_response(response_body)
+                            if normalized_response is not None:
+                                return _apply_native_web_search_support_to_models_response(
+                                    normalized_response,
+                                    url=url,
+                                    api_config=api_config,
+                                )
+
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Invalid response from upstream /models endpoint",
+                            )
+
+                        fallback = _build_models_listing_fallback(
                             url=url,
                             api_config=api_config,
+                            purpose=purpose,
+                            status=r.status,
+                            body=response_body,
                         )
+                        if fallback is not None:
+                            return fallback
 
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid response from upstream /models endpoint",
-                    )
+                        if attempt_idx + 1 < len(attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=r.status,
+                            body=response_body,
+                        ):
+                            log.warning(
+                                "[OPENAI KEY RETRY] verify status=%s key_label=%s next=%s/%s",
+                                r.status,
+                                attempt.safe_label,
+                                attempt_idx + 2,
+                                len(attempts),
+                            )
+                            continue
 
-                fallback = _build_models_listing_fallback(
-                    url=url,
-                    api_config=api_config,
-                    purpose=purpose,
-                    status=r.status,
-                    body=response_body,
-                )
-                if fallback is not None:
-                    return fallback
-
-                raise HTTPException(
-                    status_code=400,
-                    detail=_extract_upstream_error_detail(r.status, response_body),
-                )
+                        raise HTTPException(
+                            status_code=400,
+                            detail=_extract_upstream_error_detail(r.status, response_body),
+                        )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    if attempt_idx + 1 < len(attempts) and should_retry_api_key(
+                        api_config,
+                        exception=e,
+                    ):
+                        log.warning(
+                            "[OPENAI KEY RETRY] verify exception=%s key_label=%s next=%s/%s",
+                            e.__class__.__name__,
+                            attempt.safe_label,
+                            attempt_idx + 2,
+                            len(attempts),
+                        )
+                        continue
+                    raise
 
         except HTTPException:
             raise
@@ -2168,13 +2327,27 @@ async def health_check_connection(
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
 
-    key = form_data.key or ""
-    api_config = form_data.config or {}
-    headers = _build_upstream_headers(url, key, api_config, user=user)
+    key, api_config = _normalize_openai_connection_key(
+        form_data.key or "",
+        form_data.config or {},
+    )
+    attempts = get_api_key_attempts(
+        provider="openai",
+        connection_key=_get_openai_connection_key(api_config),
+        api_config=api_config,
+        fallback_key=key,
+    )
 
     timeout = aiohttp.ClientTimeout(total=15)
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            first_attempt = attempts[0] if attempts else None
+            headers = _build_upstream_headers(
+                url,
+                first_attempt.key if first_attempt else key,
+                api_config,
+                user=user,
+            )
             chosen_model = form_data.model or await _discover_openai_probe_model(
                 session=session,
                 url=url,
@@ -2244,10 +2417,12 @@ async def health_check_connection(
                     payload_dict=payload_dict,
                 )
 
-            async def _post_once(target_url: str, payload: dict):
+            async def _post_once(target_url: str, payload: dict, attempt_key: str):
                 async with session.post(
                     target_url,
-                    headers=headers,
+                    headers=_build_upstream_headers(
+                        url, attempt_key, api_config, user=user
+                    ),
                     data=json.dumps(payload, ensure_ascii=False, default=str),
                     ssl=AIOHTTP_CLIENT_SESSION_SSL,
                 ) as response:
@@ -2255,53 +2430,92 @@ async def health_check_connection(
                     return response.status, body
 
             started_at = time.monotonic()
-            attempt_idx = 0
-            request_url, payload_dict = request_attempts[attempt_idx]
-            status, response_body = await _post_once(request_url, payload_dict)
+            response_body = None
+            status = 500
 
-            if not use_responses_api:
-                if (
-                    status >= 400
-                    and attempt_idx + 1 < len(request_attempts)
-                    and _looks_like_chat_completions_endpoint_unsupported(
-                        status, response_body
-                    )
-                ):
-                    attempt_idx += 1
+            for key_attempt_idx, key_attempt in enumerate(attempts):
+                try:
+                    attempt_idx = 0
                     request_url, payload_dict = request_attempts[attempt_idx]
-                    status, response_body = await _post_once(request_url, payload_dict)
+                    status, response_body = await _post_once(
+                        request_url, payload_dict, key_attempt.key
+                    )
 
-                if status >= 400:
+                    if not use_responses_api:
+                        if (
+                            status >= 400
+                            and attempt_idx + 1 < len(request_attempts)
+                            and _looks_like_chat_completions_endpoint_unsupported(
+                                status, response_body
+                            )
+                        ):
+                            attempt_idx += 1
+                            request_url, payload_dict = request_attempts[attempt_idx]
+                            status, response_body = await _post_once(
+                                request_url, payload_dict, key_attempt.key
+                            )
+                    else:
+                        if (
+                            status >= 400
+                            and auto_reasoning_summary_applied
+                            and _looks_like_reasoning_summary_incompatible(
+                                status, response_body
+                            )
+                        ):
+                            next_payload_dict, removed = _strip_reasoning_summary_from_payload(
+                                payload_dict
+                            )
+                            if removed:
+                                payload_dict = next_payload_dict
+                                status, response_body = await _post_once(
+                                    request_url, payload_dict, key_attempt.key
+                                )
+                except Exception as e:
+                    if key_attempt_idx + 1 < len(attempts) and should_retry_api_key(
+                        api_config,
+                        exception=e,
+                    ):
+                        log.warning(
+                            "[OPENAI KEY RETRY] health exception=%s key_label=%s next=%s/%s",
+                            e.__class__.__name__,
+                            key_attempt.safe_label,
+                            key_attempt_idx + 2,
+                            len(attempts),
+                        )
+                        continue
+                    raise
+
+                if status < 400:
+                    break
+
+                if key_attempt_idx + 1 < len(attempts) and should_retry_api_key(
+                    api_config,
+                    status_code=status,
+                    body=response_body,
+                ):
+                    log.warning(
+                        "[OPENAI KEY RETRY] health status=%s key_label=%s next=%s/%s",
+                        status,
+                        key_attempt.safe_label,
+                        key_attempt_idx + 2,
+                        len(attempts),
+                    )
+                    continue
+
+                if not use_responses_api:
                     raise HTTPException(
                         status_code=status,
                         detail=_extract_upstream_error_detail(status, response_body),
                     )
-            else:
-                if (
-                    status >= 400
-                    and auto_reasoning_summary_applied
-                    and _looks_like_reasoning_summary_incompatible(
-                        status, response_body
-                    )
-                ):
-                    next_payload_dict, removed = _strip_reasoning_summary_from_payload(
-                        payload_dict
-                    )
-                    if removed:
-                        payload_dict = next_payload_dict
-                        status, response_body = await _post_once(
-                            request_url, payload_dict
-                        )
 
-                if status >= 400:
-                    raise HTTPException(
-                        status_code=status,
-                        detail=_format_responses_upstream_error(
-                            request_url=request_url,
-                            status=status,
-                            body=response_body,
-                        ),
-                    )
+                raise HTTPException(
+                    status_code=status,
+                    detail=_format_responses_upstream_error(
+                        request_url=request_url,
+                        status=status,
+                        body=response_body,
+                    ),
+                )
 
             if not isinstance(response_body, dict):
                 raise HTTPException(
@@ -2495,6 +2709,11 @@ async def generate_chat_completion(
     )
     if not url:
         raise HTTPException(status_code=404, detail="Connection not found")
+    key, api_config = _normalize_openai_connection_key(
+        key,
+        api_config,
+        url_idx=idx,
+    )
 
     if api_config.get("_resolved_model_id"):
         payload["model"] = api_config["_resolved_model_id"]
@@ -2508,6 +2727,14 @@ async def generate_chat_completion(
 
     url = (url or "").rstrip("/")
     key = key or ""
+    key_attempts = get_api_key_attempts(
+        provider="openai",
+        connection_key=_get_openai_connection_key(api_config, idx),
+        api_config=api_config,
+        fallback_key=key,
+    )
+    key_attempt_idx = 0
+    current_key_attempt = key_attempts[key_attempt_idx]
     native_retry_metadata = metadata if isinstance(metadata, dict) else {}
     native_cache_retry_detail = "Native file input cache was invalidated; retrying upload."
 
@@ -2530,9 +2757,6 @@ async def generate_chat_completion(
         if use_responses_api
         else _get_openai_chat_completions_url(url, api_config)
     )
-
-    # Build headers (supports per-connection custom headers).
-    headers = _build_upstream_headers(url, key, api_config, user=user)
 
     payload_dict = None
     auto_reasoning_summary_applied = False
@@ -2618,6 +2842,9 @@ async def generate_chat_completion(
         use_responses_api,
     )
     if log.isEnabledFor(logging.DEBUG):
+        headers = _build_upstream_headers(
+            url, current_key_attempt.key, api_config, user=user
+        )
         _diag_headers = {
             k: ("***" if k.lower() in ("authorization", "api-key") else v)
             for k, v in headers.items()
@@ -2654,17 +2881,22 @@ async def generate_chat_completion(
 
             if retry_reason:
                 log.warning(
-                    "[UPSTREAM RETRY] reason=%s | url=%s | model=%s",
+                    "[UPSTREAM RETRY] reason=%s | url=%s | model=%s | key_label=%s | key_attempt=%s/%s",
                     retry_reason,
                     request_url,
                     payload_dict.get("model", "?") if isinstance(payload_dict, dict) else "?",
+                    current_key_attempt.safe_label,
+                    current_key_attempt.attempt,
+                    current_key_attempt.total,
                 )
 
             r = await session.request(
                 method="POST",
                 url=request_url,
                 data=payload_json,
-                headers=headers,
+                headers=_build_upstream_headers(
+                    url, current_key_attempt.key, api_config, user=user
+                ),
                 ssl=AIOHTTP_CLIENT_SESSION_SSL,
             )
 
@@ -2686,26 +2918,87 @@ async def generate_chat_completion(
                     },
                 )
 
-        await _send_current_request()
+        async def _send_current_request_with_key_retry(
+            *, retry_reason: Optional[str] = None
+        ):
+            nonlocal key_attempt_idx, current_key_attempt
+
+            current_retry_reason = retry_reason
+            while True:
+                try:
+                    await _send_current_request(retry_reason=current_retry_reason)
+                    return
+                except Exception as e:
+                    if (
+                        key_attempt_idx + 1 < len(key_attempts)
+                        and should_retry_api_key(api_config, exception=e)
+                    ):
+                        log.warning(
+                            "[OPENAI KEY RETRY] chat exception=%s key_label=%s next=%s/%s",
+                            e.__class__.__name__,
+                            current_key_attempt.safe_label,
+                            key_attempt_idx + 2,
+                            len(key_attempts),
+                        )
+                        key_attempt_idx += 1
+                        current_key_attempt = key_attempts[key_attempt_idx]
+                        current_retry_reason = "api_key_pool_exception"
+                        continue
+                    raise
+
+        await _send_current_request_with_key_retry()
 
         # Chat Completions: normalize non-2xx upstreams into truthful errors
         # instead of letting downstream guess from an empty stream.
         if not use_responses_api and r.status >= 400:
-            response = await _safe_read_upstream_body(r)
-            if (
-                attempt_idx + 1 < len(request_attempts)
-                and _looks_like_chat_completions_endpoint_unsupported(r.status, response)
-            ):
-                attempt_idx += 1
-                request_url, payload_dict = request_attempts[attempt_idx]
-                payload_json = json.dumps(payload_dict, ensure_ascii=False, default=str)
-                response = None
-                r.close()
-                await _send_current_request(retry_reason="azure_chat_completions_fallback")
-                if r.status >= 400:
-                    response = await _safe_read_upstream_body(r)
+            response = None
+            while True:
+                response = await _safe_read_upstream_body(r)
+                if (
+                    attempt_idx + 1 < len(request_attempts)
+                    and _looks_like_chat_completions_endpoint_unsupported(r.status, response)
+                ):
+                    attempt_idx += 1
+                    request_url, payload_dict = request_attempts[attempt_idx]
+                    payload_json = json.dumps(payload_dict, ensure_ascii=False, default=str)
+                    response = None
+                    r.close()
+                    await _send_current_request_with_key_retry(
+                        retry_reason="azure_chat_completions_fallback"
+                    )
+                    if r.status < 400:
+                        break
+                    continue
 
-            if native_file_inputs and _looks_like_stale_native_file_id_error(response):
+                if r.status >= 400:
+                    if (
+                        key_attempt_idx + 1 < len(key_attempts)
+                        and should_retry_api_key(
+                            api_config,
+                            status_code=r.status,
+                            body=response,
+                        )
+                    ):
+                        key_attempt_idx += 1
+                        current_key_attempt = key_attempts[key_attempt_idx]
+                        attempt_idx = 0
+                        request_url, payload_dict = request_attempts[attempt_idx]
+                        payload_json = json.dumps(
+                            payload_dict, ensure_ascii=False, default=str
+                        )
+                        response = None
+                        r.close()
+                        await _send_current_request_with_key_retry(
+                            retry_reason="api_key_pool"
+                        )
+                        if r.status < 400:
+                            break
+                        continue
+                break
+
+            if r.status < 400:
+                pass
+            elif native_file_inputs and _looks_like_stale_native_file_id_error(response):
                 cleared_file_ids = _clear_native_file_input_cache_for_request(
                     native_retry_metadata
                 )
@@ -2715,39 +3008,40 @@ async def generate_chat_completion(
                         detail=native_cache_retry_detail,
                     )
 
-            error_message = _get_chat_upstream_error_message(
-                status=r.status, body=response
-            )
-            client_requested_stream = (
-                bool(payload_dict.get("stream"))
-                if isinstance(payload_dict, dict)
-                else False
-            )
-            log.warning(
-                "[UPSTREAM ERROR] status=%d | url=%s | body=%s",
-                r.status,
-                request_url,
-                error_message[:2000],
-            )
-
-            if client_requested_stream:
-                streaming = True
-                return StreamingResponse(
-                    error_sse_generator(
-                        error_message,
-                        code=f"http_{r.status}",
-                    ),
-                    media_type="text/event-stream",
-                    status_code=200,
-                    background=BackgroundTask(
-                        cleanup_response, response=r, session=session
-                    ),
+            if r.status >= 400:
+                error_message = _get_chat_upstream_error_message(
+                    status=r.status, body=response
+                )
+                client_requested_stream = (
+                    bool(payload_dict.get("stream"))
+                    if isinstance(payload_dict, dict)
+                    else False
+                )
+                log.warning(
+                    "[UPSTREAM ERROR] status=%d | url=%s | body=%s",
+                    r.status,
+                    request_url,
+                    error_message[:2000],
                 )
 
-            raise HTTPException(
-                status_code=r.status,
-                detail=_extract_upstream_error_detail(r.status, response),
-            )
+                if client_requested_stream:
+                    streaming = True
+                    return StreamingResponse(
+                        error_sse_generator(
+                            error_message,
+                            code=f"http_{r.status}",
+                        ),
+                        media_type="text/event-stream",
+                        status_code=200,
+                        background=BackgroundTask(
+                            cleanup_response, response=r, session=session
+                        ),
+                    )
+
+                raise HTTPException(
+                    status_code=r.status,
+                    detail=_extract_upstream_error_detail(r.status, response),
+                )
 
         # Responses API handling (strict mode).
         if use_responses_api:
@@ -2759,30 +3053,62 @@ async def generate_chat_completion(
             )
 
             if r.status >= 400:
-                response = await _safe_read_upstream_body(r)
+                response = None
+                while True:
+                    response = await _safe_read_upstream_body(r)
 
-                if (
-                    auto_reasoning_summary_applied
-                    and _looks_like_reasoning_summary_incompatible(r.status, response)
-                ):
-                    next_payload_dict, removed = _strip_reasoning_summary_from_payload(
-                        payload_dict
-                    )
-                    if removed:
-                        log.warning(
-                            "[RESPONSES RETRY] reasoning.summary rejected by upstream; retrying once without summary"
+                    if (
+                        auto_reasoning_summary_applied
+                        and _looks_like_reasoning_summary_incompatible(r.status, response)
+                    ):
+                        next_payload_dict, removed = _strip_reasoning_summary_from_payload(
+                            payload_dict
                         )
-                        payload_dict = next_payload_dict
-                        payload_json = json.dumps(
-                            payload_dict, ensure_ascii=False, default=str
+                        if removed:
+                            log.warning(
+                                "[RESPONSES RETRY] reasoning.summary rejected by upstream; retrying once without summary"
+                            )
+                            payload_dict = next_payload_dict
+                            payload_json = json.dumps(
+                                payload_dict, ensure_ascii=False, default=str
+                            )
+                            response = None
+                            auto_reasoning_summary_applied = False
+                            r.close()
+                            await _send_current_request_with_key_retry(
+                                retry_reason="reasoning_summary_incompatible"
+                            )
+
+                            if r.status < 400:
+                                content_type = r.headers.get("Content-Type", "") or ""
+                                looks_streaming = any(
+                                    t in content_type.lower()
+                                    for t in (
+                                        "text/event-stream",
+                                        "application/x-ndjson",
+                                        "application/ndjson",
+                                        "application/jsonl",
+                                    )
+                                )
+                                break
+                            continue
+
+                    if (
+                        r.status >= 400
+                        and key_attempt_idx + 1 < len(key_attempts)
+                        and should_retry_api_key(
+                            api_config,
+                            status_code=r.status,
+                            body=response,
                         )
+                    ):
+                        key_attempt_idx += 1
+                        current_key_attempt = key_attempts[key_attempt_idx]
                         response = None
-                        auto_reasoning_summary_applied = False
                         r.close()
-                        await _send_current_request(
-                            retry_reason="reasoning_summary_incompatible"
+                        await _send_current_request_with_key_retry(
+                            retry_reason="api_key_pool"
                         )
-
                         if r.status < 400:
                             content_type = r.headers.get("Content-Type", "") or ""
                             looks_streaming = any(
@@ -2794,8 +3120,10 @@ async def generate_chat_completion(
                                     "application/jsonl",
                                 )
                             )
-                        else:
-                            response = await _safe_read_upstream_body(r)
+                            break
+                        continue
+
+                    break
 
                 if r.status >= 400:
                     if native_file_inputs and _looks_like_stale_native_file_id_error(

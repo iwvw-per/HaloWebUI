@@ -4,6 +4,7 @@
 	import type { i18n as i18nType } from 'i18next';
 	import { toast } from 'svelte-sonner';
 	import { translateWithDefault } from '$lib/i18n';
+	import type { NativeWebSearchSupport } from '$lib/stores';
 
 	const i18n = getContext('i18n') as Writable<i18nType>;
 
@@ -41,6 +42,7 @@
 	export let url = '';
 	export let force_mode = false;
 	export let key = '';
+	export let api_key_pool: any = undefined;
 	export let azure = false;
 	export let api_version: string | undefined = undefined;
 	export let ollama = false;
@@ -59,7 +61,7 @@
 		id: string;
 		name?: string;
 		native_web_search_supported?: boolean;
-		native_web_search_support?: Record<string, any>;
+		native_web_search_support?: NativeWebSearchSupport;
 	};
 	let availableModels: AvailableModel[] = [];
 	let serverModelListRequiresManualEntry = false;
@@ -144,6 +146,7 @@
 					key,
 					config: {
 						...(auth_type ? { auth_type } : {}),
+						...(api_key_pool ? { api_key_pool } : {}),
 						...(headers ? { headers } : {})
 					}
 				});
@@ -165,6 +168,7 @@
 					key,
 					config: {
 						...(auth_type ? { auth_type } : {}),
+						...(api_key_pool ? { api_key_pool } : {}),
 						...(headers ? { headers } : {})
 					}
 				});
@@ -185,6 +189,7 @@
 						...(auth_type ? { auth_type } : {}),
 						...(anthropic_version ? { anthropic_version } : {}),
 						...(anthropic_beta && anthropic_beta.length ? { anthropic_beta } : {}),
+						...(api_key_pool ? { api_key_pool } : {}),
 						...(headers ? { headers } : {})
 					}
 				});
@@ -208,6 +213,7 @@
 							...(azure ? { azure: true } : {}),
 							...(api_version ? { api_version } : {}),
 							...(auth_type ? { auth_type } : {}),
+							...(api_key_pool ? { api_key_pool } : {}),
 							...(headers ? { headers } : {})
 						}
 					});

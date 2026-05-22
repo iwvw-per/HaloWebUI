@@ -14,6 +14,16 @@ export type UserSettingsUpdatePayload = {
 	[key: string]: any;
 };
 
+export type NewUserDefaultSettingsPayload = {
+	enabled: boolean;
+	roles: string[];
+	ui: Record<string, any>;
+	tools: {
+		native_tools?: Record<string, any>;
+		[key: string]: any;
+	};
+};
+
 export const exportUsersCsv = async (token: string) => {
 	const res = await fetch(`${WEBUI_API_BASE_URL}/users/export/csv`, {
 		method: 'GET',
@@ -207,7 +217,7 @@ export const getUserSettings = async (token: string): Promise<UserSettingsPayloa
 		throw error;
 	}
 
-	return res;
+	return res as UserSettingsPayload | null;
 };
 
 export const updateUserSettings = async (
@@ -237,7 +247,66 @@ export const updateUserSettings = async (
 		throw error;
 	}
 
-	return res;
+	return res as UserSettingsPayload | null;
+};
+
+export const getNewUserDefaultSettings = async (
+	token: string
+): Promise<NewUserDefaultSettingsPayload> => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/users/default/settings`, {
+		method: 'GET',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		}
+	})
+		.then(parseJsonResponse)
+		.catch((err) => {
+			console.log(err);
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return (res ?? {
+		enabled: false,
+		roles: ['user', 'pending'],
+		ui: {},
+		tools: { native_tools: {} }
+	}) as NewUserDefaultSettingsPayload;
+};
+
+export const updateNewUserDefaultSettings = async (
+	token: string,
+	settings: NewUserDefaultSettingsPayload
+): Promise<NewUserDefaultSettingsPayload> => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/users/default/settings`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify(settings)
+	})
+		.then(parseJsonResponse)
+		.catch((err) => {
+			console.log(err);
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res as NewUserDefaultSettingsPayload;
 };
 
 export const getUserById = async (token: string, userId: string) => {

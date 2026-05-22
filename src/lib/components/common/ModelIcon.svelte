@@ -4,7 +4,7 @@
 
 	export let src: string | null | undefined;
 	export let alt = '';
-	export let title: string | undefined;
+	export let title: string | undefined = undefined;
 	export let loading: 'eager' | 'lazy' | undefined = undefined;
 	export let decoding: 'async' | 'sync' | 'auto' = 'async';
 	export let bare = false;
@@ -13,7 +13,7 @@
 	export let className = '';
 	// Optional override for the <img> `object-fit` class.
 	// If omitted, we auto-pick `object-cover` for raster icons and `object-contain` for SVGs.
-	export let imgClassName: string | undefined;
+	export let imgClassName: string | undefined = undefined;
 
 	let loaded = false;
 	let lastSrc: string | null | undefined = undefined;

@@ -59,6 +59,12 @@ from open_webui.utils.model_identity import (
     resolve_model_from_lookup,
     resolve_provider_connection_by_model_id,
 )
+from open_webui.utils.api_key_pool import (
+    get_api_key_attempts,
+    normalize_api_key_pool_config,
+    normalize_indexed_api_key_pools,
+    should_retry_api_key,
+)
 
 
 log = logging.getLogger(__name__)
@@ -153,6 +159,31 @@ def _resolve_gemini_connection_by_model_id(
         model_ref=model_ref,
         request_models=request_models,
     )
+
+
+def _get_gemini_connection_key(api_config: Optional[dict], url_idx: Optional[int] = None) -> str:
+    cfg = api_config or {}
+    prefix = str(cfg.get("_resolved_prefix_id") or cfg.get("prefix_id") or "").strip()
+    if prefix:
+        return prefix
+    if url_idx is not None:
+        return f"idx:{url_idx}"
+    return str(cfg.get("name") or cfg.get("remark") or "").strip()
+
+
+def _normalize_gemini_connection_key(
+    key: str,
+    api_config: Optional[dict],
+    *,
+    url_idx: Optional[int] = None,
+) -> tuple[str, dict]:
+    cfg, primary_key = normalize_api_key_pool_config(
+        api_config or {},
+        key or "",
+        provider="gemini",
+        connection_key=_get_gemini_connection_key(api_config, url_idx),
+    )
+    return primary_key, cfg
 
 
 async def _is_user_visible_model(
@@ -265,19 +296,75 @@ def _auth_attempts(url: str, key: str, config: Optional[dict]) -> list[tuple[str
 async def send_get_request(url: str, key: str = None, config: dict = None) -> dict:
     """Send a GET request to the Gemini API (proxy-friendly with auth fallbacks)."""
     timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
+    key, config = _normalize_gemini_connection_key(key or "", config or {})
+    key_attempts = get_api_key_attempts(
+        provider="gemini",
+        connection_key=_get_gemini_connection_key(config),
+        api_config=config,
+        fallback_key=key,
+    )
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             last_text = ""
-            for full_url, headers in _auth_attempts(url, key or "", config):
-                log.info(f"[GEMINI] GET {full_url}")
-                async with session.get(full_url, headers=headers) as response:
-                    try:
-                        return await response.json(content_type=None)
-                    except Exception:
-                        last_text = await response.text()
-                        log.error(
-                            f"[GEMINI] Failed to parse JSON (status {response.status}): {last_text[:500]}"
+            for key_attempt_idx, key_attempt in enumerate(key_attempts):
+                try:
+                    for full_url, headers in _auth_attempts(url, key_attempt.key, config):
+                        log.info(f"[GEMINI] GET {full_url}")
+                        async with session.get(full_url, headers=headers) as response:
+                            body = None
+                            try:
+                                body = await response.json(content_type=None)
+                                if response.status < 400:
+                                    return body
+                                last_text = _stringify_gemini_error_body(body)
+                            except Exception:
+                                last_text = await response.text()
+                                log.error(
+                                    f"[GEMINI] Failed to parse JSON (status {response.status}): {last_text[:500]}"
+                                )
+
+                            if (
+                                key_attempt_idx + 1 < len(key_attempts)
+                                and should_retry_api_key(
+                                    config,
+                                    status_code=response.status,
+                                    body=body if body is not None else last_text,
+                                )
+                            ):
+                                log.warning(
+                                    "[GEMINI KEY RETRY] models status=%s key_label=%s next=%s/%s",
+                                    response.status,
+                                    key_attempt.safe_label,
+                                    key_attempt_idx + 2,
+                                    len(key_attempts),
+                                )
+                                break
+                            return body if body is not None else {
+                                "error": {
+                                    "message": f"Invalid response from Gemini API: {last_text[:200]}"
+                                }
+                            }
+                    else:
+                        return {
+                            "error": {
+                                "message": f"Invalid response from Gemini API: {last_text[:200]}"
+                            }
+                        }
+                    continue
+                except Exception as e:
+                    if key_attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                        config,
+                        exception=e,
+                    ):
+                        log.warning(
+                            "[GEMINI KEY RETRY] models exception=%s key_label=%s next=%s/%s",
+                            e.__class__.__name__,
+                            key_attempt.safe_label,
+                            key_attempt_idx + 2,
+                            len(key_attempts),
                         )
+                        continue
+                    raise
 
             return {
                 "error": {
@@ -1081,6 +1168,14 @@ async def update_config(
         normalized_configs[idx_str] = normalized_cfg
 
     request.app.state.config.GEMINI_API_CONFIGS = normalized_configs
+    request.app.state.config.GEMINI_API_KEYS, request.app.state.config.GEMINI_API_CONFIGS = (
+        normalize_indexed_api_key_pools(
+            provider="gemini",
+            urls=request.app.state.config.GEMINI_API_BASE_URLS,
+            keys=request.app.state.config.GEMINI_API_KEYS,
+            configs=request.app.state.config.GEMINI_API_CONFIGS,
+        )
+    )
 
     # Clear model cache when config changes
     from open_webui.utils.models import invalidate_base_model_cache
@@ -1171,6 +1266,12 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
     request_tasks = []
     for idx, _url in enumerate(base_urls):
         api_config = cfgs.get(str(idx), {}) or {}
+        selected_key, api_config = _normalize_gemini_connection_key(
+            keys[idx] if idx < len(keys) else "",
+            api_config,
+            url_idx=idx,
+        )
+        cfgs[str(idx)] = api_config
         enable = api_config.get("enable", True)
         model_ids = api_config.get("model_ids", [])
 
@@ -1350,6 +1451,11 @@ async def get_models(
         url = base_urls[url_idx]
         key = keys[url_idx] if url_idx < len(keys) else ""
         api_config = cfgs.get(str(url_idx), {}) if isinstance(cfgs, dict) else {}
+        key, api_config = _normalize_gemini_connection_key(
+            key,
+            api_config,
+            url_idx=url_idx,
+        )
 
         response = await send_get_request(f"{url}/models", key, api_config)
         connection_support = build_native_web_search_support(
@@ -1428,8 +1534,10 @@ async def verify_connection(
 ):
     """Verify Gemini API connection."""
     url = form_data.url
-    key = form_data.key
-    config = form_data.config or {}
+    key, config = _normalize_gemini_connection_key(
+        form_data.key,
+        form_data.config or {},
+    )
 
     try:
         response = await send_get_request(f"{url}/models", key, config)
@@ -1480,8 +1588,10 @@ async def health_check_connection(
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
 
-    key = form_data.key or ""
-    config = form_data.config or {}
+    key, config = _normalize_gemini_connection_key(
+        form_data.key or "",
+        form_data.config or {},
+    )
 
     chosen_model = form_data.model
     if not chosen_model:
@@ -1526,21 +1636,57 @@ async def health_check_connection(
     last_status = None
     last_body = None
     started_at = time.monotonic()
+    key_attempts = get_api_key_attempts(
+        provider="gemini",
+        connection_key=_get_gemini_connection_key(config),
+        api_config=config,
+        fallback_key=key,
+    )
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            for full_url, headers in _auth_attempts(request_url, key or "", config):
-                async with session.post(full_url, headers=headers, json=payload) as response:
-                    body = await _read_gemini_upstream_body(response)
-                    if response.status < 400 and isinstance(body, dict):
-                        return {
-                            "ok": True,
-                            "model": chosen_model,
-                            "response_time_ms": max(
-                                1, int((time.monotonic() - started_at) * 1000)
-                            ),
-                        }
-                    last_status = response.status
-                    last_body = body
+            for key_attempt_idx, key_attempt in enumerate(key_attempts):
+                try:
+                    for full_url, headers in _auth_attempts(request_url, key_attempt.key, config):
+                        async with session.post(full_url, headers=headers, json=payload) as response:
+                            body = await _read_gemini_upstream_body(response)
+                            if response.status < 400 and isinstance(body, dict):
+                                return {
+                                    "ok": True,
+                                    "model": chosen_model,
+                                    "response_time_ms": max(
+                                        1, int((time.monotonic() - started_at) * 1000)
+                                    ),
+                                }
+                            last_status = response.status
+                            last_body = body
+                except Exception as e:
+                    if key_attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                        config,
+                        exception=e,
+                    ):
+                        log.warning(
+                            "[GEMINI KEY RETRY] health exception=%s key_label=%s next=%s/%s",
+                            e.__class__.__name__,
+                            key_attempt.safe_label,
+                            key_attempt_idx + 2,
+                            len(key_attempts),
+                        )
+                        continue
+                    raise
+                if key_attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                    config,
+                    status_code=last_status,
+                    body=last_body,
+                ):
+                    log.warning(
+                        "[GEMINI KEY RETRY] health status=%s key_label=%s next=%s/%s",
+                        last_status,
+                        key_attempt.safe_label,
+                        key_attempt_idx + 2,
+                        len(key_attempts),
+                    )
+                    continue
+                break
     except HTTPException:
         raise
     except Exception as e:
@@ -1654,6 +1800,11 @@ async def generate_chat_completion(
     )
     if not url:
         raise HTTPException(status_code=404, detail="Connection not found")
+    key, api_config = _normalize_gemini_connection_key(
+        key,
+        api_config,
+        url_idx=idx,
+    )
 
     if api_config.get("_resolved_model_id"):
         form_data["model"] = api_config["_resolved_model_id"]
@@ -2170,10 +2321,14 @@ async def generate_chat_completion(
     )
     request_url = stream_url if stream else non_stream_url
 
-    attempts = _auth_attempts(request_url, key or "", api_config)
-    non_stream_attempts = _auth_attempts(non_stream_url, key or "", api_config)
+    key_attempts = get_api_key_attempts(
+        provider="gemini",
+        connection_key=_get_gemini_connection_key(api_config, idx),
+        api_config=api_config,
+        fallback_key=key or "",
+    )
     log.info(
-        f"Gemini Chat Request: URL={attempts[0][0]}, AuthType={api_config.get('auth_type', 'x-goog-api-key')}, Stream={stream}"
+        f"Gemini Chat Request: URL={request_url}, AuthType={api_config.get('auth_type', 'x-goog-api-key')}, Stream={stream}"
     )
 
     if stream:
@@ -2188,30 +2343,70 @@ async def generate_chat_completion(
 
             try:
                 async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-                    response, _used_payload, last_status, last_err_text = await _open_gemini_response(
-                        session,
-                        attempts,
-                        gemini_payload,
-                        log_prefix="Gemini Stream Response",
-                        allow_drop_response_modalities=not is_image_model,
-                    )
+                    response = None
+                    last_status = None
+                    last_err_text = ""
+                    for key_attempt_idx, key_attempt in enumerate(key_attempts):
+                        response, _used_payload, last_status, last_err_text = await _open_gemini_response(
+                            session,
+                            _auth_attempts(request_url, key_attempt.key, api_config),
+                            gemini_payload,
+                            log_prefix="Gemini Stream Response",
+                            allow_drop_response_modalities=not is_image_model,
+                        )
+                        if response is not None:
+                            break
+                        if key_attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=last_status,
+                            body=last_err_text,
+                        ):
+                            log.warning(
+                                "[GEMINI KEY RETRY] stream status=%s key_label=%s next=%s/%s",
+                                last_status,
+                                key_attempt.safe_label,
+                                key_attempt_idx + 2,
+                                len(key_attempts),
+                            )
+                            continue
+                        break
 
                     if response is None and is_image_model:
                         log.info(
                             "[GEMINI STREAM] Falling back to generateContent for image-capable model"
                         )
-                        (
-                            fallback_response,
-                            _fallback_payload,
-                            fallback_status,
-                            fallback_err_text,
-                        ) = await _open_gemini_response(
-                            session,
-                            non_stream_attempts,
-                            gemini_payload,
-                            log_prefix="Gemini Chat Fallback Response",
-                            allow_drop_response_modalities=False,
-                        )
+                        fallback_response = None
+                        fallback_status = None
+                        fallback_err_text = ""
+                        for key_attempt_idx, key_attempt in enumerate(key_attempts):
+                            (
+                                fallback_response,
+                                _fallback_payload,
+                                fallback_status,
+                                fallback_err_text,
+                            ) = await _open_gemini_response(
+                                session,
+                                _auth_attempts(non_stream_url, key_attempt.key, api_config),
+                                gemini_payload,
+                                log_prefix="Gemini Chat Fallback Response",
+                                allow_drop_response_modalities=False,
+                            )
+                            if fallback_response is not None:
+                                break
+                            if key_attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                                api_config,
+                                status_code=fallback_status,
+                                body=fallback_err_text,
+                            ):
+                                log.warning(
+                                    "[GEMINI KEY RETRY] stream fallback status=%s key_label=%s next=%s/%s",
+                                    fallback_status,
+                                    key_attempt.safe_label,
+                                    key_attempt_idx + 2,
+                                    len(key_attempts),
+                                )
+                                continue
+                            break
                         if fallback_response is not None:
                             try:
                                 gemini_response = await fallback_response.json(content_type=None)
@@ -2356,13 +2551,33 @@ async def generate_chat_completion(
     try:
         timeout = aiohttp.ClientTimeout(total=300)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            response, _used_payload, last_status, last_err_text = await _open_gemini_response(
-                session,
-                attempts,
-                gemini_payload,
-                log_prefix="Gemini Chat Response",
-                allow_drop_response_modalities=not is_image_model,
-            )
+            response = None
+            last_status = None
+            last_err_text = ""
+            for key_attempt_idx, key_attempt in enumerate(key_attempts):
+                response, _used_payload, last_status, last_err_text = await _open_gemini_response(
+                    session,
+                    _auth_attempts(request_url, key_attempt.key, api_config),
+                    gemini_payload,
+                    log_prefix="Gemini Chat Response",
+                    allow_drop_response_modalities=not is_image_model,
+                )
+                if response is not None:
+                    break
+                if key_attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                    api_config,
+                    status_code=last_status,
+                    body=last_err_text,
+                ):
+                    log.warning(
+                        "[GEMINI KEY RETRY] chat status=%s key_label=%s next=%s/%s",
+                        last_status,
+                        key_attempt.safe_label,
+                        key_attempt_idx + 2,
+                        len(key_attempts),
+                    )
+                    continue
+                break
             if response is None:
                 raise HTTPException(
                     status_code=last_status or 500,

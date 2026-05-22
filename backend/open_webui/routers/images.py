@@ -36,6 +36,11 @@ from open_webui.utils.chat_image_refs import (
 )
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
+from open_webui.utils.api_key_pool import (
+    get_api_key_attempts,
+    normalize_api_key_pool_config,
+    should_retry_api_key,
+)
 from open_webui.utils.error_handling import build_error_detail, read_requests_error_payload
 from open_webui.utils.model_identity import (
     AMBIGUOUS_MODEL_CODE,
@@ -1092,6 +1097,82 @@ def _match_global_provider_connection(
     return None, "", {}
 
 
+def _get_image_source_connection_key(provider: str, source: dict[str, Any]) -> str:
+    api_config = source.get("api_config") if isinstance(source, dict) else {}
+    api_config = api_config if isinstance(api_config, dict) else {}
+    prefix = str(api_config.get("_resolved_prefix_id") or api_config.get("prefix_id") or "").strip()
+    if prefix:
+        return prefix
+    if source.get("connection_index") is not None:
+        return f"idx:{source.get('connection_index')}"
+    cache_scope = str(source.get("cache_scope") or "").strip()
+    if cache_scope:
+        return cache_scope
+    return f"{provider}:{_normalize_base_url(source.get('base_url') or '')}"
+
+
+def _normalize_image_source_api_key_pool(
+    provider: str, source: dict[str, Any]
+) -> dict[str, Any]:
+    normalized_source = dict(source or {})
+    api_config = normalized_source.get("api_config")
+    api_config = api_config if isinstance(api_config, dict) else {}
+    primary_config, primary_key = normalize_api_key_pool_config(
+        api_config,
+        normalized_source.get("key") or "",
+        provider=provider,
+        connection_key=_get_image_source_connection_key(provider, normalized_source),
+    )
+    normalized_source["api_config"] = primary_config
+    normalized_source["key"] = primary_key
+    return normalized_source
+
+
+def _get_image_source_key_attempts(
+    provider: str, source: dict[str, Any]
+) -> list:
+    normalized_source = _normalize_image_source_api_key_pool(provider, source)
+    api_config = normalized_source.get("api_config") or {}
+    return get_api_key_attempts(
+        provider=provider,
+        connection_key=_get_image_source_connection_key(provider, normalized_source),
+        api_config=api_config,
+        fallback_key=normalized_source.get("key") or "",
+    )
+
+
+def _log_image_key_retry(
+    provider: str,
+    route_label: str,
+    attempt,
+    *,
+    next_attempt: int,
+    total: int,
+    status_code: Optional[int] = None,
+    exception: Optional[BaseException] = None,
+) -> None:
+    if exception is not None:
+        log.warning(
+            "[IMAGE KEY RETRY] provider=%s route=%s error_type=%s key_label=%s next=%s/%s",
+            provider,
+            route_label,
+            exception.__class__.__name__,
+            attempt.safe_label,
+            next_attempt,
+            total,
+        )
+        return
+    log.warning(
+        "[IMAGE KEY RETRY] provider=%s route=%s status=%s key_label=%s next=%s/%s",
+        provider,
+        route_label,
+        status_code,
+        attempt.safe_label,
+        next_attempt,
+        total,
+    )
+
+
 def _get_connection_name(
     api_config: Optional[dict], base_url: str, *, fallback: str = ""
 ) -> str:
@@ -1214,7 +1295,7 @@ def _list_image_provider_sources(
             resolved_api_config = {**shared_api_config, **resolved_api_config}
 
         effective_source = "shared" if not for_settings else "settings"
-        return {
+        source = {
             "provider": provider,
             "effective_source": effective_source,
             "base_url": shared_base_url,
@@ -1229,6 +1310,7 @@ def _list_image_provider_sources(
             ),
             "connection_icon": _get_connection_icon(resolved_api_config),
         }
+        return _normalize_image_source_api_key_pool(provider, source)
 
     if context == "settings":
         settings_source = _build_shared_source(for_settings=True, fallback_to_global_key=True)
@@ -1253,7 +1335,7 @@ def _list_image_provider_sources(
 
         idx, base_url, api_key = chosen
         api_config = personal_cfgs.get(str(idx), personal_cfgs.get(base_url, {})) or {}
-        return {
+        source = {
             "provider": provider,
             "effective_source": "personal",
             "base_url": _normalize_base_url(base_url),
@@ -1264,6 +1346,7 @@ def _list_image_provider_sources(
             "connection_name": _get_connection_name(api_config, base_url),
             "connection_icon": _get_connection_icon(api_config),
         }
+        return _normalize_image_source_api_key_pool(provider, source)
 
     def _list_personal_sources() -> list[dict[str, Any]]:
         sources: list[dict[str, Any]] = []
@@ -2401,30 +2484,62 @@ async def _discover_openai_image_models(
         ]
     else:
         models_url = openai_router._get_openai_models_url(base_url, api_config)
-        headers = _build_openai_image_headers(base_url, api_key, api_config, user)
-
+        key_attempts = _get_image_source_key_attempts("openai", source)
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST),
             trust_env=True,
         ) as session:
-            async with session.get(
-                models_url,
-                headers=headers,
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            ) as response:
-                body = await _read_aiohttp_body(response)
-                if response.status != 200:
-                    if openai_router._looks_like_models_listing_unsupported(
-                        response.status, body
+            for attempt_idx, attempt in enumerate(key_attempts):
+                headers = _build_openai_image_headers(base_url, attempt.key, api_config, user)
+                try:
+                    async with session.get(
+                        models_url,
+                        headers=headers,
+                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ) as response:
+                        body = await _read_aiohttp_body(response)
+                        if response.status != 200:
+                            if openai_router._looks_like_models_listing_unsupported(
+                                response.status, body
+                            ):
+                                return []
+                            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                                api_config,
+                                status_code=response.status,
+                                body=body,
+                            ):
+                                _log_image_key_retry(
+                                    "openai",
+                                    "models",
+                                    attempt,
+                                    next_attempt=attempt_idx + 2,
+                                    total=len(key_attempts),
+                                    status_code=response.status,
+                                )
+                                continue
+                            raise HTTPException(
+                                status_code=400,
+                                detail=build_error_detail(
+                                    body,
+                                    default=f"Failed to load image models from {models_url}",
+                                ),
+                            )
+                        break
+                except Exception as error:
+                    if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                        api_config,
+                        exception=error,
                     ):
-                        return []
-                    raise HTTPException(
-                        status_code=400,
-                        detail=build_error_detail(
-                            body,
-                            default=f"Failed to load image models from {models_url}",
-                        ),
-                    )
+                        _log_image_key_retry(
+                            "openai",
+                            "models",
+                            attempt,
+                            next_attempt=attempt_idx + 2,
+                            total=len(key_attempts),
+                            exception=error,
+                        )
+                        continue
+                    raise
 
         normalized = openai_router._normalize_openai_models_response(body)
         if normalized is None:
@@ -4460,6 +4575,66 @@ async def _send_openai_image_request(
         ) from error
 
 
+async def _send_openai_image_request_with_key_pool(
+    *,
+    provider: str,
+    source: dict[str, Any],
+    api_config: dict,
+    route_label: str,
+    headers_factory: Callable[[str], dict[str, str]],
+    **request_kwargs,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    key_attempts = _get_image_source_key_attempts(provider, source)
+
+    for attempt_idx, attempt in enumerate(key_attempts):
+        headers = headers_factory(attempt.key)
+        try:
+            result = await _send_openai_image_request(
+                headers=headers,
+                **request_kwargs,
+            )
+        except Exception as error:
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                exception=error,
+            ):
+                _log_image_key_retry(
+                    provider,
+                    route_label,
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    exception=error,
+                )
+                continue
+            raise
+
+        response_status = result.get("status")
+        if (
+            isinstance(response_status, int)
+            and response_status >= 400
+            and attempt_idx + 1 < len(key_attempts)
+            and should_retry_api_key(
+                api_config,
+                status_code=response_status,
+                body=result.get("response_body"),
+            )
+        ):
+            _log_image_key_retry(
+                provider,
+                route_label,
+                attempt,
+                next_attempt=attempt_idx + 2,
+                total=len(key_attempts),
+                status_code=response_status,
+            )
+            continue
+
+        return result, headers
+
+    raise RuntimeError("Failed to contact upstream image generation service")
+
+
 def _parse_openai_image_response_json(
     result: dict[str, Any], *, default_message: str
 ) -> Any:
@@ -4730,19 +4905,24 @@ async def _generate_via_openai_image_edits_endpoint(
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
-    headers = _build_openai_image_headers(
-        base_url,
-        api_key,
-        api_config,
-        user,
-        content_type=None,
-    )
-    content_type_header = next(
-        (header for header in list(headers.keys()) if header.lower() == "content-type"),
-        None,
-    )
-    if content_type_header:
-        headers.pop(content_type_header, None)
+
+    def build_attempt_headers(selected_key: str) -> dict[str, str]:
+        headers = _build_openai_image_headers(
+            base_url,
+            selected_key,
+            api_config,
+            user,
+            content_type=None,
+        )
+        content_type_header = next(
+            (header for header in list(headers.keys()) if header.lower() == "content-type"),
+            None,
+        )
+        if content_type_header:
+            headers.pop(content_type_header, None)
+        return headers
+
+    headers = build_attempt_headers(api_key)
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
     base_name = _model_id_basename(upstream_model_id).lower()
 
@@ -4801,9 +4981,13 @@ async def _generate_via_openai_image_edits_endpoint(
     except Exception:
         pass
     generation_url = _get_openai_images_edit_url(base_url, api_config)
-    result = await _send_openai_image_request(
+    result, headers = await _send_openai_image_request_with_key_pool(
+        provider="openai",
+        source=source,
+        api_config=api_config,
+        route_label="edits",
+        headers_factory=build_attempt_headers,
         url=generation_url,
-        headers=headers,
         request_kind="multipart",
         form_fields=payload,
         files=[
@@ -4908,7 +5092,10 @@ async def _generate_via_openai_images_endpoint(
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
-    headers = _build_openai_image_headers(base_url, api_key, api_config, user)
+
+    def build_attempt_headers(selected_key: str) -> dict[str, str]:
+        return _build_openai_image_headers(base_url, selected_key, api_config, user)
+
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
     base_name = _model_id_basename(upstream_model_id).lower()
 
@@ -4926,9 +5113,13 @@ async def _generate_via_openai_images_endpoint(
         payload["background"] = background
 
     generation_url = _get_openai_images_generation_url(base_url, api_config)
-    result = await _send_openai_image_request(
+    result, headers = await _send_openai_image_request_with_key_pool(
+        provider="openai",
+        source=source,
+        api_config=api_config,
+        route_label="generations",
+        headers_factory=build_attempt_headers,
         url=generation_url,
-        headers=headers,
         request_kind="json",
         json_body=payload,
     )
@@ -4991,7 +5182,6 @@ async def _generate_via_xai_images(
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
-    headers = _build_openai_image_headers(base_url, api_key, api_config, user)
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
 
     effective_aspect_ratio = _normalize_grok_aspect_ratio(aspect_ratio)
@@ -5014,22 +5204,67 @@ async def _generate_via_xai_images(
         payload["resolution"] = effective_resolution
 
     generation_url = _get_openai_images_generation_url(base_url, api_config)
-    response = await asyncio.to_thread(
-        requests.post,
-        generation_url,
-        json=payload,
-        headers=headers,
-        verify=REQUESTS_VERIFY,
-    )
+    response: Optional[requests.Response] = None
+    headers: dict[str, str] = {}
+    key_attempts = _get_image_source_key_attempts("grok", source)
+    for attempt_idx, attempt in enumerate(key_attempts):
+        headers = _build_openai_image_headers(base_url, attempt.key, api_config, user)
+        try:
+            response = await asyncio.to_thread(
+                requests.post,
+                generation_url,
+                json=payload,
+                headers=headers,
+                verify=REQUESTS_VERIFY,
+            )
+        except Exception as error:
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                exception=error,
+            ):
+                _log_image_key_retry(
+                    "grok",
+                    "xai_images",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    exception=error,
+                )
+                continue
+            raise RuntimeError(
+                build_error_detail(
+                    str(error),
+                    default="Failed to contact xAI /images/generations",
+                )
+            ) from error
 
-    if response.status_code >= 400:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=build_error_detail(
-                read_requests_error_payload(response),
-                default="Failed to generate image via xAI /images/generations",
-            ),
-        )
+        if response.status_code >= 400:
+            error_body = read_requests_error_payload(response)
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                status_code=response.status_code,
+                body=error_body,
+            ):
+                _log_image_key_retry(
+                    "grok",
+                    "xai_images",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    status_code=response.status_code,
+                )
+                continue
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=build_error_detail(
+                    error_body,
+                    default="Failed to generate image via xAI /images/generations",
+                ),
+            )
+        break
+
+    if response is None:
+        raise RuntimeError("Failed to contact xAI /images/generations")
 
     response_body = _parse_upstream_json_response(
         response,
@@ -5067,7 +5302,6 @@ async def _generate_via_openai_chat_image(
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
-    headers = _build_openai_image_headers(base_url, api_key, api_config, user)
     chat_url = openai_router._get_openai_chat_completions_url(base_url, api_config)
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
     use_responses_api = bool(prefer_responses) or openai_router._should_use_responses_api(
@@ -5150,118 +5384,78 @@ async def _generate_via_openai_chat_image(
 
     try:
         timeout = None if AIOHTTP_CLIENT_TIMEOUT is None else float(AIOHTTP_CLIENT_TIMEOUT)
+        key_attempts = _get_image_source_key_attempts("openai", source)
         async with httpx.AsyncClient(
             timeout=timeout,
             trust_env=True,
             verify=REQUESTS_VERIFY,
             follow_redirects=True,
         ) as client:
-            if use_responses_api:
-                response = await client.post(
-                    request_url,
-                    headers=headers,
-                    json=payload,
-                )
-                if response.status_code >= 400:
-                    error_body = response.text
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=_build_openai_image_upstream_error_detail(
-                            response.status_code,
-                            error_body,
-                            default="Failed to generate image via upstream /responses",
-                            route_label="responses",
-                        ),
-                    )
-
-                try:
-                    response_body = response.json()
-                except Exception as error:
-                    raise HTTPException(
-                        status_code=502,
-                        detail=build_error_detail(
-                            response.text,
-                            error,
-                            default="Invalid JSON response from upstream /responses",
-                        ),
-                    )
-
-                elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                usage = _build_openai_image_usage(response_body, elapsed_ms)
-                _append_unique_generated_images(
-                    images,
-                    _extract_generated_images_from_openai_response(
-                        response_body,
+            for attempt_idx, attempt in enumerate(key_attempts):
+                headers = _build_openai_image_headers(base_url, attempt.key, api_config, user)
+                if use_responses_api:
+                    response = await client.post(
+                        request_url,
                         headers=headers,
-                        allowed_base_urls=[base_url],
-                    ),
-                    seen_images,
-                )
-
-                try:
-                    log.info(
-                        "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
-                        response.status_code,
-                        elapsed_ms,
-                        len(images),
-                        "yes",
-                        json.dumps(
-                            _redact_upstream_headers(dict(response.headers)),
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
+                        json=payload,
                     )
-                except Exception:
-                    pass
-            else:
-                async with client.stream(
-                    "POST",
-                    request_url,
-                    headers=headers,
-                    json=payload,
-                ) as response:
                     if response.status_code >= 400:
-                        error_body = (await response.aread()).decode("utf-8", errors="replace")
+                        error_body = response.text
+                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=response.status_code,
+                            body=error_body,
+                        ):
+                            _log_image_key_retry(
+                                "openai",
+                                "responses",
+                                attempt,
+                                next_attempt=attempt_idx + 2,
+                                total=len(key_attempts),
+                                status_code=response.status_code,
+                            )
+                            continue
                         raise HTTPException(
                             status_code=response.status_code,
                             detail=_build_openai_image_upstream_error_detail(
                                 response.status_code,
                                 error_body,
-                                default="Failed to generate image via upstream chat/completions",
-                                route_label="chat",
+                                default="Failed to generate image via upstream /responses",
+                                route_label="responses",
                             ),
                         )
 
-                    async for raw_line in response.aiter_lines():
-                        line = str(raw_line or "").strip()
-                        if not line or line.startswith(":") or line.startswith("event:"):
-                            continue
-                        data = line[len("data:") :].strip() if line.startswith("data:") else line
-                        if not data or data == "[DONE]":
-                            continue
-                        try:
-                            event = json.loads(data)
-                        except Exception:
-                            continue
-                        if isinstance(event, dict) and isinstance(event.get("usage"), dict):
-                            usage = event["usage"]
-                        _append_unique_generated_images(
-                            images,
-                            _extract_generated_images_from_openai_response(
-                                event,
-                                headers=headers,
-                                allowed_base_urls=[base_url],
+                    try:
+                        response_body = response.json()
+                    except Exception as error:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=build_error_detail(
+                                response.text,
+                                error,
+                                default="Invalid JSON response from upstream /responses",
                             ),
-                            seen_images,
                         )
+
+                    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                    usage = _build_openai_image_usage(response_body, elapsed_ms)
+                    _append_unique_generated_images(
+                        images,
+                        _extract_generated_images_from_openai_response(
+                            response_body,
+                            headers=headers,
+                            allowed_base_urls=[base_url],
+                        ),
+                        seen_images,
+                    )
 
                     try:
                         log.info(
                             "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
                             response.status_code,
-                            int((time.monotonic() - started_at) * 1000),
+                            elapsed_ms,
                             len(images),
-                            "no",
+                            "yes",
                             json.dumps(
                                 _redact_upstream_headers(dict(response.headers)),
                                 ensure_ascii=False,
@@ -5270,6 +5464,79 @@ async def _generate_via_openai_chat_image(
                         )
                     except Exception:
                         pass
+                    break
+                else:
+                    async with client.stream(
+                        "POST",
+                        request_url,
+                        headers=headers,
+                        json=payload,
+                    ) as response:
+                        if response.status_code >= 400:
+                            error_body = (await response.aread()).decode("utf-8", errors="replace")
+                            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                                api_config,
+                                status_code=response.status_code,
+                                body=error_body,
+                            ):
+                                _log_image_key_retry(
+                                    "openai",
+                                    "chat",
+                                    attempt,
+                                    next_attempt=attempt_idx + 2,
+                                    total=len(key_attempts),
+                                    status_code=response.status_code,
+                                )
+                                continue
+                            raise HTTPException(
+                                status_code=response.status_code,
+                                detail=_build_openai_image_upstream_error_detail(
+                                    response.status_code,
+                                    error_body,
+                                    default="Failed to generate image via upstream chat/completions",
+                                    route_label="chat",
+                                ),
+                            )
+
+                        async for raw_line in response.aiter_lines():
+                            line = str(raw_line or "").strip()
+                            if not line or line.startswith(":") or line.startswith("event:"):
+                                continue
+                            data = line[len("data:") :].strip() if line.startswith("data:") else line
+                            if not data or data == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(data)
+                            except Exception:
+                                continue
+                            if isinstance(event, dict) and isinstance(event.get("usage"), dict):
+                                usage = event["usage"]
+                            _append_unique_generated_images(
+                                images,
+                                _extract_generated_images_from_openai_response(
+                                    event,
+                                    headers=headers,
+                                    allowed_base_urls=[base_url],
+                                ),
+                                seen_images,
+                            )
+
+                        try:
+                            log.info(
+                                "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
+                                response.status_code,
+                                int((time.monotonic() - started_at) * 1000),
+                                len(images),
+                                "no",
+                                json.dumps(
+                                    _redact_upstream_headers(dict(response.headers)),
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                ),
+                            )
+                        except Exception:
+                            pass
+                        break
     except HTTPException:
         raise
     except Exception as error:
@@ -5312,9 +5579,6 @@ async def _generate_via_gemini_predict(
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
-    attempts = gemini_router._auth_attempts(
-        f"{base_url}/models/{upstream_model_id}:predict", api_key, api_config
-    )
     payload = {
         "instances": {"prompt": prompt},
         "parameters": {
@@ -5323,22 +5587,62 @@ async def _generate_via_gemini_predict(
         },
     }
 
-    try:
-        response, _used_url = await asyncio.to_thread(
-            _post_json_with_attempts,
-            attempts,
-            payload,
-        )
-    except requests.HTTPError as error:
-        response = error.response
-        raise HTTPException(
-            status_code=response.status_code if response is not None else 500,
-            detail=build_error_detail(
-                read_requests_error_payload(response),
-                error,
-                default="Failed to generate image via Gemini predict",
-            ),
-        )
+    response: Optional[requests.Response] = None
+    key_attempts = _get_image_source_key_attempts("gemini", source)
+    request_url = f"{base_url}/models/{upstream_model_id}:predict"
+    for attempt_idx, attempt in enumerate(key_attempts):
+        attempts = gemini_router._auth_attempts(request_url, attempt.key, api_config)
+        try:
+            response, _used_url = await asyncio.to_thread(
+                _post_json_with_attempts,
+                attempts,
+                payload,
+            )
+            break
+        except requests.HTTPError as error:
+            response = error.response
+            error_body = read_requests_error_payload(response)
+            status_code = response.status_code if response is not None else 500
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                status_code=status_code,
+                body=error_body,
+            ):
+                _log_image_key_retry(
+                    "gemini",
+                    "predict",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    status_code=status_code,
+                )
+                continue
+            raise HTTPException(
+                status_code=status_code,
+                detail=build_error_detail(
+                    error_body,
+                    error,
+                    default="Failed to generate image via Gemini predict",
+                ),
+            )
+        except Exception as error:
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                exception=error,
+            ):
+                _log_image_key_retry(
+                    "gemini",
+                    "predict",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    exception=error,
+                )
+                continue
+            raise
+
+    if response is None:
+        raise RuntimeError("Failed to contact Gemini predict")
 
     response_body = _parse_upstream_json_response(
         response,
@@ -5373,9 +5677,6 @@ async def _generate_via_gemini_generate_content(
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
-    attempts = gemini_router._auth_attempts(
-        f"{base_url}/models/{upstream_model_id}:generateContent", api_key, api_config
-    )
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
@@ -5390,22 +5691,62 @@ async def _generate_via_gemini_generate_content(
     if image_config:
         payload["generationConfig"]["imageConfig"] = image_config
 
-    try:
-        response, _used_url = await asyncio.to_thread(
-            _post_json_with_attempts,
-            attempts,
-            payload,
-        )
-    except requests.HTTPError as error:
-        response = error.response
-        raise HTTPException(
-            status_code=response.status_code if response is not None else 500,
-            detail=build_error_detail(
-                read_requests_error_payload(response),
-                error,
-                default="Failed to generate image via Gemini generateContent",
-            ),
-        )
+    response: Optional[requests.Response] = None
+    key_attempts = _get_image_source_key_attempts("gemini", source)
+    request_url = f"{base_url}/models/{upstream_model_id}:generateContent"
+    for attempt_idx, attempt in enumerate(key_attempts):
+        attempts = gemini_router._auth_attempts(request_url, attempt.key, api_config)
+        try:
+            response, _used_url = await asyncio.to_thread(
+                _post_json_with_attempts,
+                attempts,
+                payload,
+            )
+            break
+        except requests.HTTPError as error:
+            response = error.response
+            error_body = read_requests_error_payload(response)
+            status_code = response.status_code if response is not None else 500
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                status_code=status_code,
+                body=error_body,
+            ):
+                _log_image_key_retry(
+                    "gemini",
+                    "generateContent",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    status_code=status_code,
+                )
+                continue
+            raise HTTPException(
+                status_code=status_code,
+                detail=build_error_detail(
+                    error_body,
+                    error,
+                    default="Failed to generate image via Gemini generateContent",
+                ),
+            )
+        except Exception as error:
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                exception=error,
+            ):
+                _log_image_key_retry(
+                    "gemini",
+                    "generateContent",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    exception=error,
+                )
+                continue
+            raise
+
+    if response is None:
+        raise RuntimeError("Failed to contact Gemini generateContent")
 
     response_body = _parse_upstream_json_response(
         response,

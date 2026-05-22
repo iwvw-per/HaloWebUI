@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 from open_webui.utils.model_identity import derive_connection_id
 from open_webui.models.users import UserModel, UserSettings, Users
+from open_webui.utils.api_key_pool import normalize_api_key_pool_config
 
 
 UI_KEY = "ui"
@@ -394,6 +395,16 @@ def normalize_provider_connection_config(
 
         normalized_cfg = {**cfg, "name": name}
         normalized_cfg["prefix_id"] = prefix_id
+        if keys_key:
+            pool_connection_key = prefix_id or f"idx:{idx}:{url}"
+            normalized_cfg, primary_key = normalize_api_key_pool_config(
+                normalized_cfg,
+                keys[idx] if idx < len(keys) else "",
+                provider=provider,
+                connection_key=pool_connection_key,
+            )
+            if idx < len(keys):
+                keys[idx] = primary_key
 
         normalized_cfgs[str(idx)] = normalized_cfg
 

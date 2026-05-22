@@ -175,3 +175,43 @@ def test_normalize_connections_payload_does_not_reuse_index_prefix_when_name_cha
     openai = normalized["openai"]
     assert openai["OPENAI_API_CONFIGS"]["0"]["prefix_id"] != "aaaaaaaa"
     assert re.fullmatch(r"[0-9a-f]{8}", openai["OPENAI_API_CONFIGS"]["0"]["prefix_id"])
+
+
+def test_normalize_connections_payload_mirrors_first_enabled_api_key_pool_key():
+    normalized = normalize_connections_payload(
+        {
+            "openai": {
+                "OPENAI_API_BASE_URLS": ["https://relay.example.com/v1"],
+                "OPENAI_API_KEYS": ["sk-legacy"],
+                "OPENAI_API_CONFIGS": {
+                    "0": {
+                        "remark": "Relay",
+                        "api_key_pool": {
+                            "keys": [
+                                {
+                                    "id": "old",
+                                    "label": "Old",
+                                    "key": "sk-old",
+                                    "enabled": False,
+                                },
+                                {
+                                    "id": "new",
+                                    "label": "New",
+                                    "key": "sk-new",
+                                    "enabled": True,
+                                },
+                            ],
+                            "mode": "priority",
+                            "retry": {"enabled": True},
+                        },
+                    },
+                },
+            }
+        },
+        existing_connections={},
+        id_strategy="derived",
+    )
+
+    openai = normalized["openai"]
+    assert openai["OPENAI_API_KEYS"] == ["sk-new"]
+    assert openai["OPENAI_API_CONFIGS"]["0"]["api_key_pool"]["mode"] == "priority"

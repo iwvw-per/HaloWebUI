@@ -184,6 +184,52 @@ class TestAuths(AbstractPostgresTest):
         assert data["token"] is not None and len(data["token"]) > 0
         assert data["token_type"] == "Bearer"
 
+    def test_add_user_applies_new_user_default_settings(self):
+        from main import app
+
+        try:
+            app.state.config.NEW_USER_DEFAULT_SETTINGS = {
+                "enabled": True,
+                "roles": ["user"],
+                "ui": {
+                    "models": ["gpt-4o"],
+                    "temporaryChatByDefault": True,
+                },
+                "tools": {
+                    "native_tools": {
+                        "TOOL_CALLING_MODE": "native",
+                        "ENABLE_WEB_SEARCH_TOOL": False,
+                    }
+                },
+            }
+
+            with mock_webui_user(role="admin"):
+                response = self.fast_api_client.post(
+                    self.create_url("/add"),
+                    json={
+                        "name": "Templated User",
+                        "email": "templated@example.com",
+                        "password": "password2",
+                        "role": "user",
+                    },
+                )
+
+            assert response.status_code == 200
+            user = self.users.get_user_by_id(response.json()["id"])
+            assert user.settings.ui["models"] == ["gpt-4o"]
+            assert user.settings.ui["temporaryChatByDefault"] is True
+            assert user.settings.tools["native_tools"]["TOOL_CALLING_MODE"] == "native"
+            assert (
+                user.settings.tools["native_tools"]["ENABLE_WEB_SEARCH_TOOL"] is False
+            )
+        finally:
+            app.state.config.NEW_USER_DEFAULT_SETTINGS = {
+                "enabled": False,
+                "roles": ["user", "pending"],
+                "ui": {},
+                "tools": {"native_tools": {}},
+            }
+
     def test_get_admin_details(self):
         self.auths.insert_new_auth(
             email="john.doe@openwebui.com",

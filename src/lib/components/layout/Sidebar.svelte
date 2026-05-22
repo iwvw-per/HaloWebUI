@@ -483,11 +483,19 @@
 		}
 	};
 
-	const onFocus = () => {};
+	const onFocus = () => {
+		shiftKey = false;
+	};
 
 	const onBlur = () => {
 		shiftKey = false;
 		selectedChatId = null;
+	};
+
+	const onVisibilityChange = () => {
+		if (document.hidden) {
+			onBlur();
+		}
 	};
 
 	onMount(async () => {
@@ -547,7 +555,8 @@
 		window.addEventListener('touchend', onTouchEnd);
 
 		window.addEventListener('focus', onFocus);
-		window.addEventListener('blur-sm', onBlur);
+		window.addEventListener('blur', onBlur);
+		document.addEventListener('visibilitychange', onVisibilityChange);
 
 	});
 
@@ -559,7 +568,8 @@
 		window.removeEventListener('touchend', onTouchEnd);
 
 		window.removeEventListener('focus', onFocus);
-		window.removeEventListener('blur-sm', onBlur);
+		window.removeEventListener('blur', onBlur);
+		document.removeEventListener('visibilitychange', onVisibilityChange);
 
 	});
 </script>

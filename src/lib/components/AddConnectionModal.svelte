@@ -26,10 +26,29 @@
 	import Textarea from './common/Textarea.svelte';
 	import CollapsibleSection from '$lib/components/common/CollapsibleSection.svelte';
 	import ModelSelectorModal from '$lib/components/common/ModelSelectorModal.svelte';
+	import ApiKeyPoolModal from '$lib/components/common/ApiKeyPoolModal.svelte';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import HaloSelect from '$lib/components/common/HaloSelect.svelte';
 	import { formatConnectionErrorToast } from '$lib/utils/connection-errors';
 	import { resolveAzureProviderType } from '$lib/utils/connection-provider-state';
+
+	type ApiKeyPoolMode = 'round_robin' | 'random' | 'priority';
+	type ApiKeyPoolEntry = {
+		id: string;
+		label: string;
+		key: string;
+		enabled: boolean;
+	};
+	type ApiKeyPool = {
+		keys: ApiKeyPoolEntry[];
+		mode: ApiKeyPoolMode;
+		retry: {
+			enabled: boolean;
+			preset: string;
+			status_codes: number[];
+			error_keywords: string[];
+		};
+	};
 
 	interface ConnectionConfig {
 		enable?: boolean;
@@ -55,6 +74,7 @@
 		files_cache_ttl?: string;
 		files_citations?: boolean;
 		anthropic_extra_body?: Record<string, any>;
+		api_key_pool?: ApiKeyPool;
 	}
 
 	interface Connection {
@@ -82,6 +102,42 @@
 	let url = '';
 	let key = '';
 	let auth_type = 'bearer';
+	const API_KEY_POOL_RETRY_PRESET = 'rate_limit_transient';
+	const DEFAULT_API_KEY_POOL_STATUS_CODES = [429, 500, 502, 503, 504];
+	const DEFAULT_API_KEY_POOL_ERROR_KEYWORDS = [
+		'rate limit',
+		'rate_limit',
+		'too many requests',
+		'quota',
+		'insufficient_quota',
+		'over quota',
+		'temporarily unavailable',
+		'timeout',
+		'timed out',
+		'overloaded',
+		'server error',
+		'internal server error',
+		'bad gateway',
+		'service unavailable',
+		'gateway timeout',
+		'限流',
+		'额度',
+		'配额',
+		'超时',
+		'暂时不可用',
+		'服务繁忙'
+	];
+	let keyPool: ApiKeyPool = {
+		keys: [{ id: 'k_initial', label: '', key: '', enabled: true }],
+		mode: 'round_robin',
+		retry: {
+			enabled: true,
+			preset: API_KEY_POOL_RETRY_PRESET,
+			status_codes: [...DEFAULT_API_KEY_POOL_STATUS_CODES],
+			error_keywords: [...DEFAULT_API_KEY_POOL_ERROR_KEYWORDS]
+		}
+	};
+	let showApiKeyPoolModal = false;
 
 	let connectionType = 'external';
 	let azure = false;
@@ -377,6 +433,132 @@
 			duration: description ? 6000 : 4000
 		});
 	};
+	const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+	const elapsedMs = (startedAt: number) => Math.max(0, Math.round(nowMs() - startedAt));
+	const showVerifiedToast = (startedAt: number) => {
+		toast.success(
+			$i18n.t('Server connection verified ({{time}}ms)', {
+				time: elapsedMs(startedAt)
+			})
+		);
+	};
+
+	const newApiKeyPoolId = () =>
+		`k_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+	const isApiKeyPoolProvider = () => !ollama && !direct;
+	const defaultApiKeyPoolLabel = (index: number) => `Key ${index}`;
+	const normalizeApiKeyPoolLabel = (value: any, index: number) => {
+		const label = (value || '').toString().trim();
+		return label && !/^(Key|密钥|金鑰)\s*\d+$/i.test(label) ? label : defaultApiKeyPoolLabel(index);
+	};
+
+	const normalizeApiKeyPool = (poolValue?: Partial<ApiKeyPool> | null, fallbackKey = ''): ApiKeyPool => {
+		const rawKeys = Array.isArray(poolValue?.keys) ? poolValue.keys : [];
+		const keys = rawKeys.map((entry: any, idx: number) => ({
+			id: (entry?.id || '').toString().trim() || newApiKeyPoolId(),
+			label: normalizeApiKeyPoolLabel(entry?.label, idx + 1),
+			key: (entry?.key || '').toString(),
+			enabled: entry?.enabled !== false
+		}));
+
+		if (!keys.length || (fallbackKey && !keys.some((entry) => entry.key.trim()))) {
+			keys.unshift({
+				id: newApiKeyPoolId(),
+				label: defaultApiKeyPoolLabel(1),
+				key: fallbackKey || '',
+				enabled: true
+			});
+		}
+
+		return {
+			keys,
+			mode: ['round_robin', 'random', 'priority'].includes(poolValue?.mode as string)
+				? (poolValue?.mode as ApiKeyPoolMode)
+				: 'round_robin',
+			retry: {
+				enabled: poolValue?.retry?.enabled !== false,
+				preset: poolValue?.retry?.preset || API_KEY_POOL_RETRY_PRESET,
+				status_codes: Array.isArray(poolValue?.retry?.status_codes)
+					? poolValue.retry.status_codes
+					: [...DEFAULT_API_KEY_POOL_STATUS_CODES],
+				error_keywords: Array.isArray(poolValue?.retry?.error_keywords)
+					? poolValue.retry.error_keywords
+					: [...DEFAULT_API_KEY_POOL_ERROR_KEYWORDS]
+			}
+		};
+	};
+
+	const getPrimaryKeyFromPool = (poolValue = keyPool) => {
+		const firstEnabled = poolValue.keys.find((entry) => entry.enabled !== false && entry.key.trim());
+		return firstEnabled?.key.trim() ?? '';
+	};
+
+	const getSavableApiKeyPool = (): ApiKeyPool => {
+		const normalized = normalizeApiKeyPool(keyPool, key);
+		const keys = normalized.keys
+			.map((entry, idx) => ({
+				id: entry.id || newApiKeyPoolId(),
+				label: normalizeApiKeyPoolLabel(entry.label, idx + 1),
+				key: entry.key.trim(),
+				enabled: entry.enabled !== false
+			}))
+			.filter((entry) => entry.key);
+
+		return {
+			...normalized,
+			keys,
+			retry: {
+				...normalized.retry,
+				preset: API_KEY_POOL_RETRY_PRESET,
+				status_codes: normalized.retry.status_codes.length
+					? normalized.retry.status_codes
+					: [...DEFAULT_API_KEY_POOL_STATUS_CODES],
+				error_keywords: normalized.retry.error_keywords.length
+					? normalized.retry.error_keywords
+					: [...DEFAULT_API_KEY_POOL_ERROR_KEYWORDS]
+			}
+		};
+	};
+
+	const withApiKeyPoolConfig = <T extends Record<string, any>>(config: T): T & { api_key_pool?: ApiKeyPool } => {
+		if (!isApiKeyPoolProvider()) {
+			return config;
+		}
+		return {
+			...config,
+			api_key_pool: getSavableApiKeyPool()
+		};
+	};
+
+	const testApiKeyPoolEntry = (entry: ApiKeyPoolEntry) => {
+		const previousPool = keyPool;
+		keyPool = {
+			...keyPool,
+			keys: keyPool.keys.map((item) =>
+				item.id === entry.id ? { ...item, enabled: true } : { ...item, enabled: false }
+			)
+		};
+		Promise.resolve(verifyHandler()).finally(() => {
+			keyPool = previousPool;
+		});
+	};
+
+	$: apiKeyPoolSummary = (() => {
+		const keys = keyPool.keys.filter((entry) => entry.key.trim());
+		const enabledKeys = keys.filter((entry) => entry.enabled !== false);
+		return {
+			total: keys.length || (key.trim() ? 1 : 0),
+			enabled: enabledKeys.length || (key.trim() ? 1 : 0),
+			mode:
+				keyPool.mode === 'random'
+					? $i18n.t('Random')
+					: keyPool.mode === 'priority'
+						? $i18n.t('Priority')
+						: $i18n.t('Round Robin'),
+			retry: keyPool.retry.enabled
+		};
+	})();
 
 	const getHostname = (inputUrl: string): string => {
 		const trimmed = (inputUrl || '').trim().replace(/#$/, '');
@@ -534,33 +716,34 @@
 		}
 	};
 
-	const getOpenAIConnectionConfig = (parsedHeaders?: Record<string, string>) => ({
-		...(direct && preserveEmptyPrefixId
-			? { prefix_id: '' }
-			: prefixId.trim()
-				? { prefix_id: prefixId.trim() }
+	const getOpenAIConnectionConfig = (parsedHeaders?: Record<string, string>) =>
+		withApiKeyPoolConfig({
+			...(direct && preserveEmptyPrefixId
+				? { prefix_id: '' }
+				: prefixId.trim()
+					? { prefix_id: prefixId.trim() }
+					: {}),
+			force_mode: isForceMode,
+			auth_type,
+			...(azure ? { azure: true } : {}),
+			...(apiVersion ? { api_version: apiVersion } : {}),
+			...(parsedHeaders ? { headers: parsedHeaders } : {}),
+			...(!ollama && !gemini && !grok && !anthropic && !isForceMode && useResponsesApi
+				? {
+						use_responses_api: true,
+						responses_api_exclude_patterns: responsesApiExcludePatterns
+							.map((p) => p.name)
+							.filter((p) => p.trim())
+					}
 				: {}),
-		force_mode: isForceMode,
-		auth_type,
-		...(azure ? { azure: true } : {}),
-		...(apiVersion ? { api_version: apiVersion } : {}),
-		...(parsedHeaders ? { headers: parsedHeaders } : {}),
-		...(!ollama && !gemini && !grok && !anthropic && !isForceMode && useResponsesApi
-			? {
-					use_responses_api: true,
-					responses_api_exclude_patterns: responsesApiExcludePatterns
-						.map((p) => p.name)
-						.filter((p) => p.trim())
-				}
-			: {}),
-		...(!ollama && !direct && !gemini && !grok && !anthropic && !azure && !isForceMode && useResponsesApi
-			? {
-					native_file_inputs_enabled: nativeFileInputsEnabled
-				}
-			: {})
-	});
+			...(!ollama && !direct && !gemini && !grok && !anthropic && !azure && !isForceMode && useResponsesApi
+				? {
+						native_file_inputs_enabled: nativeFileInputsEnabled
+					}
+				: {})
+		});
 
-	const normalizedKey = () => key.trim();
+	const normalizedKey = () => (isApiKeyPoolProvider() ? getPrimaryKeyFromPool() : key.trim());
 
 	const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -599,31 +782,31 @@
 		const parsedGeminiHeaders = parseHeadersInput();
 		if (headers && parsedGeminiHeaders === null) return null;
 
-		return {
-			url: normalizedUrl,
-			key: normalizedKey(),
-			config: {
-				auth_type,
-				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
-				...(parsedGeminiHeaders ? { headers: parsedGeminiHeaders } : {})
-			}
+			return {
+				url: normalizedUrl,
+				key: normalizedKey(),
+				config: withApiKeyPoolConfig({
+					auth_type,
+					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
+					...(parsedGeminiHeaders ? { headers: parsedGeminiHeaders } : {})
+				})
+			};
 		};
-	};
 
 	const buildGrokHealthCheckPayload = () => {
 		const parsedGrokHeaders = parseHeadersInput();
 		if (headers && parsedGrokHeaders === null) return null;
 
-		return {
-			url: normalizedUrl,
-			key: normalizedKey(),
-			config: {
-				auth_type,
-				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
-				...(parsedGrokHeaders ? { headers: parsedGrokHeaders } : {})
-			}
+			return {
+				url: normalizedUrl,
+				key: normalizedKey(),
+				config: withApiKeyPoolConfig({
+					auth_type,
+					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
+					...(parsedGrokHeaders ? { headers: parsedGrokHeaders } : {})
+				})
+			};
 		};
-	};
 
 	const buildAnthropicHealthCheckPayload = () => {
 		const parsedAnthropicHeaders = parseHeadersInput();
@@ -633,25 +816,25 @@
 			return null;
 		}
 
-		return {
-			url: normalizedUrl,
-			key: normalizedKey(),
-			config: {
-				auth_type,
-				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
-				anthropic_version: anthropicVersion,
+			return {
+				url: normalizedUrl,
+				key: normalizedKey(),
+				config: withApiKeyPoolConfig({
+					auth_type,
+					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
+					anthropic_version: anthropicVersion,
 				anthropic_beta: anthropicBetas.map((b) => b.name).filter((b) => b.trim()),
 				use_files_api: useFilesApi,
 				files_auto_attach: filesAutoAttach,
 				files_cache_ttl: filesCacheTtl,
 				files_citations: filesCitations,
-				...(parsedAnthropicExtraBody
-					? { anthropic_extra_body: parsedAnthropicExtraBody }
-					: {}),
-				...(parsedAnthropicHeaders ? { headers: parsedAnthropicHeaders } : {})
-			}
+					...(parsedAnthropicExtraBody
+						? { anthropic_extra_body: parsedAnthropicExtraBody }
+						: {}),
+					...(parsedAnthropicHeaders ? { headers: parsedAnthropicHeaders } : {})
+				})
+			};
 		};
-	};
 
 	const buildOllamaHealthCheckPayload = () => ({
 		url: normalizedUrl,
@@ -692,6 +875,7 @@
 
 	const verifyOllamaHandler = async () => {
 		const verifyUrl = normalizedUrl;
+		const startedAt = nowMs();
 
 		const res = await verifyOllamaConnection(localStorage.token, {
 			url: verifyUrl,
@@ -701,7 +885,7 @@
 		});
 
 		if (res) {
-			toast.success($i18n.t('Server connection verified'));
+			showVerifiedToast(startedAt);
 		}
 	};
 
@@ -710,6 +894,7 @@
 		const parsedOpenAIHeaders = parseHeadersInput();
 		if (headers && parsedOpenAIHeaders === null) return;
 
+		const startedAt = nowMs();
 		const res = await verifyOpenAIConnection(
 			localStorage.token,
 			{
@@ -724,7 +909,7 @@
 		});
 
 		if (res) {
-			toast.success($i18n.t('Server connection verified'));
+			showVerifiedToast(startedAt);
 		}
 	};
 
@@ -743,7 +928,7 @@
 		updateModelHealthState(modelId, { status: 'testing' });
 
 		try {
-			let result;
+			let result: any;
 			if (request.provider === 'openai') {
 				result = await healthCheckOpenAIConnection(localStorage.token, {
 					...request.connection,
@@ -895,8 +1080,9 @@
 			prefixId,
 			azure,
 			apiVersion,
-			headers,
-			isForceMode,
+				headers,
+				keyPool,
+				isForceMode,
 			useResponsesApi,
 			modelIds,
 			anthropicVersion,
@@ -936,19 +1122,21 @@
 			}
 		}
 
+		const startedAt = nowMs();
 		const res = await verifyGeminiConnection(localStorage.token, {
 			url: verifyUrl,
 			key: normalizedKey(),
-			config: {
+			config: withApiKeyPoolConfig({
 				auth_type,
+				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
 				...(_headers ? { headers: _headers } : {})
-			}
+			})
 		}).catch((error) => {
 			showConnectionErrorToast(error);
 		});
 
 		if (res) {
-			toast.success($i18n.t('Server connection verified'));
+			showVerifiedToast(startedAt);
 		}
 	};
 
@@ -971,19 +1159,21 @@
 			}
 		}
 
+		const startedAt = nowMs();
 		const res = await verifyGrokConnection(localStorage.token, {
 			url: verifyUrl,
 			key: normalizedKey(),
-			config: {
+			config: withApiKeyPoolConfig({
 				auth_type,
+				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
 				...(_headers ? { headers: _headers } : {})
-			}
+			})
 		}).catch((error) => {
 			showConnectionErrorToast(error);
 		});
 
 		if (res) {
-			toast.success($i18n.t('Server connection verified'));
+			showVerifiedToast(startedAt);
 		}
 	};
 
@@ -1006,11 +1196,13 @@
 			}
 		}
 
+		const startedAt = nowMs();
 		const res = await verifyAnthropicConnection(localStorage.token, {
 			url: verifyUrl,
 			key: normalizedKey(),
-			config: {
+			config: withApiKeyPoolConfig({
 				auth_type,
+				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
 				anthropic_version: anthropicVersion,
 				anthropic_beta: anthropicBetas.map((b) => b.name).filter((b) => b.trim()),
 				use_files_api: useFilesApi,
@@ -1018,27 +1210,27 @@
 				files_cache_ttl: filesCacheTtl,
 				files_citations: filesCitations,
 				...(_headers ? { headers: _headers } : {})
-			}
+			})
 		}).catch((error) => {
 			showConnectionErrorToast(error);
 		});
 
 		if (res) {
-			toast.success($i18n.t('Server connection verified'));
+			showVerifiedToast(startedAt);
 		}
 	};
 
 	const verifyHandler = () => {
 		if (ollama) {
-			verifyOllamaHandler();
+			return verifyOllamaHandler();
 		} else if (gemini) {
-			verifyGeminiHandler();
+			return verifyGeminiHandler();
 		} else if (grok) {
-			verifyGrokHandler();
+			return verifyGrokHandler();
 		} else if (anthropic) {
-			verifyAnthropicHandler();
+			return verifyAnthropicHandler();
 		} else {
-			verifyOpenAIHandler();
+			return verifyOpenAIHandler();
 		}
 	};
 
@@ -1057,10 +1249,10 @@
 			return;
 		}
 
-		if (azure) {
-			if (!key && !['azure_ad', 'microsoft_entra_id'].includes(auth_type)) {
-				loading = false;
-				toast.error($i18n.t('Key is required'));
+			if (azure) {
+				if (!normalizedKey() && !['azure_ad', 'microsoft_entra_id'].includes(auth_type)) {
+					loading = false;
+					toast.error($i18n.t('Key is required'));
 				return;
 			}
 
@@ -1120,53 +1312,55 @@
 				}
 			}
 
-			const connection = {
-				url: submitUrl,
-				key: normalizedKey(),
-				config: {
-					enable: enable,
-					tags: tags,
-					...(direct && preserveEmptyPrefixId
-						? { prefix_id: '' }
-						: prefixId.trim()
-							? { prefix_id: prefixId.trim() }
+				const connection = {
+					url: submitUrl,
+					key: normalizedKey(),
+					config: withApiKeyPoolConfig({
+						enable: enable,
+						tags: tags,
+						...(direct && preserveEmptyPrefixId
+							? { prefix_id: '' }
+							: prefixId.trim()
+								? { prefix_id: prefixId.trim() }
+								: {}),
+						remark: remark,
+						icon: icon || undefined,
+						model_ids: modelIds,
+						connection_type: connectionType,
+						auth_type,
+						headers: headers ? JSON.parse(headers) : undefined,
+						...(!grok && isForceMode ? { force_mode: true } : {}),
+						...(anthropic
+							? {
+									anthropic_version: anthropicVersion,
+									anthropic_beta: anthropicBetas.map((b) => b.name).filter((b) => b.trim()),
+									use_files_api: useFilesApi,
+									files_auto_attach: filesAutoAttach,
+									files_cache_ttl: filesCacheTtl,
+									files_citations: filesCitations,
+									...(parsedAnthropicExtraBody
+										? { anthropic_extra_body: parsedAnthropicExtraBody }
+										: {})
+								}
 							: {}),
-					remark: remark,
-					icon: icon || undefined,
-					model_ids: modelIds,
-					connection_type: connectionType,
-					auth_type,
-					headers: headers ? JSON.parse(headers) : undefined,
-					...(!grok && isForceMode ? { force_mode: true } : {}),
-					...(anthropic
-						? {
-								anthropic_version: anthropicVersion,
-								anthropic_beta: anthropicBetas.map((b) => b.name).filter((b) => b.trim()),
-								use_files_api: useFilesApi,
-								files_auto_attach: filesAutoAttach,
-								files_cache_ttl: filesCacheTtl,
-								files_citations: filesCitations,
-								...(parsedAnthropicExtraBody
-									? { anthropic_extra_body: parsedAnthropicExtraBody }
-									: {})
-							}
-						: {}),
-					...(!ollama && azure ? { azure: true, ...(apiVersion ? { api_version: apiVersion } : {}) } : {}),
-					...(!ollama && !gemini && !grok && !anthropic && !direct && !azure && !isForceMode && useResponsesApi
-						? {
-								native_file_inputs_enabled: nativeFileInputsEnabled
-							}
-						: {}),
-					...(!ollama && !gemini && !grok && !anthropic && !isForceMode && useResponsesApi
-						? {
-								use_responses_api: true,
-								responses_api_exclude_patterns: responsesApiExcludePatterns
-									.map((p) => p.name)
-									.filter((p) => p.trim())
-							}
-						: {})
-				}
-			};
+						...(!ollama && azure
+							? { azure: true, ...(apiVersion ? { api_version: apiVersion } : {}) }
+							: {}),
+						...(!ollama && !gemini && !grok && !anthropic && !direct && !azure && !isForceMode && useResponsesApi
+							? {
+									native_file_inputs_enabled: nativeFileInputsEnabled
+								}
+							: {}),
+						...(!ollama && !gemini && !grok && !anthropic && !isForceMode && useResponsesApi
+							? {
+									use_responses_api: true,
+									responses_api_exclude_patterns: responsesApiExcludePatterns
+										.map((p) => p.name)
+										.filter((p) => p.trim())
+								}
+							: {})
+					})
+				};
 
 			try {
 				await onSubmit(connection);
@@ -1195,11 +1389,12 @@
 				return;
 			}
 
-			show = false;
+				show = false;
 
-			url = '';
-			key = '';
-			auth_type = gemini ? 'x-goog-api-key' : anthropic ? 'x-api-key' : 'bearer';
+				url = '';
+				key = '';
+				keyPool = normalizeApiKeyPool(null, '');
+				auth_type = gemini ? 'x-goog-api-key' : anthropic ? 'x-api-key' : 'bearer';
 			prefixId = '';
 			preserveEmptyPrefixId = false;
 			remark = '';
@@ -1252,13 +1447,12 @@
 					? `${connection.url}#`
 					: connection.url;
 			key = connection.key;
+			keyPool = normalizeApiKeyPool(connection.config?.api_key_pool, connection.key);
 
 			auth_type = gemini
 				? normalizeGeminiAuthType(connection.config.auth_type)
 				: (connection.config.auth_type ?? 'bearer');
-			headers = connection.config?.headers
-				? JSON.stringify(connection.config.headers, null, 2)
-				: '';
+			headers = connection.config?.headers ? JSON.stringify(connection.config.headers, null, 2) : '';
 
 			enable = connection.config?.enable ?? true;
 			tags = connection.config?.tags ?? [];
@@ -1332,6 +1526,8 @@
 			}
 		} else {
 			savedAzureProviderType = false;
+			key = '';
+			keyPool = normalizeApiKeyPool(null, '');
 			if (gemini) {
 				auth_type = 'x-goog-api-key';
 			}
@@ -1374,33 +1570,42 @@
 	});
 </script>
 
-<ModelSelectorModal
-	bind:show={showModelSelector}
-	bind:modelIds
-	url={normalizedUrl}
-	force_mode={isForceMode}
-	{key}
-	{azure}
-	api_version={apiVersion}
-	{auth_type}
-	headers={parsedHeaders}
+	<ModelSelectorModal
+		bind:show={showModelSelector}
+		bind:modelIds
+		url={normalizedUrl}
+		force_mode={isForceMode}
+		key={normalizedKey()}
+		api_key_pool={isApiKeyPoolProvider() ? getSavableApiKeyPool() : undefined}
+		{azure}
+		api_version={apiVersion}
+		{auth_type}
+		headers={parsedHeaders}
 	anthropic_version={anthropicVersion}
 	anthropic_beta={anthropicBetas.map((b) => b.name).filter((b) => b.trim())}
 	{ollama}
 	{gemini}
 	{grok}
-	{anthropic}
-/>
+		{anthropic}
+	/>
 
-<ConfirmDialog
-	bind:show={showNoModelsConfirm}
-	title={$i18n.t('No Models Added')}
-	message={$i18n.t('No models added yet. Are you sure you want to save?')}
-	confirmLabel={$i18n.t('Save Anyway')}
-	on:confirm={doSubmit}
-/>
+	<ConfirmDialog
+		bind:show={showNoModelsConfirm}
+		title={$i18n.t('No Models Added')}
+		message={$i18n.t('No models added yet. Are you sure you want to save?')}
+		confirmLabel={$i18n.t('Save Anyway')}
+		on:confirm={doSubmit}
+	/>
 
-<Modal size="sm" bind:show dismissible={false}>
+	{#if isApiKeyPoolProvider()}
+		<ApiKeyPoolModal
+			bind:show={showApiKeyPoolModal}
+			bind:pool={keyPool}
+			onTestKey={testApiKeyPoolEntry}
+		/>
+	{/if}
+
+	<Modal size="sm" bind:show dismissible={false}>
 	<div class="select-text flex flex-col max-h-[calc(100dvh-4rem)] overflow-hidden">
 		<div class="flex items-center justify-between dark:text-gray-100 px-5 pt-4 pb-3">
 			<div class="flex items-center gap-3">
@@ -1612,21 +1817,62 @@
 								{/if}
 							</div>
 
-							<!-- API Key -->
-							<div class="flex flex-col">
-								<label for="api-key-input" class="text-xs text-gray-500 mb-1">
-									{$i18n.t('API Key')}
-								</label>
-								<SensitiveInput
-									bind:value={key}
-									placeholder={$i18n.t('Enter API key, usually starts with sk')}
-									required={false}
-									outerClassName="flex flex-1 px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg"
-									inputClassName="w-full text-sm bg-transparent outline-none"
-								/>
-							</div>
+								<!-- API Key -->
+								{#if isApiKeyPoolProvider()}
+									<div class="flex flex-col">
+										<span class="text-xs text-gray-500 mb-1">{$i18n.t('API Keys')}</span>
+										<div
+											class="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-800 dark:bg-gray-900"
+										>
+											<div class="min-w-0">
+												<div class="flex flex-wrap items-center gap-1.5">
+													<span class="text-sm font-medium text-gray-800 dark:text-gray-100">
+														{$i18n.t('{{count}} keys', { count: apiKeyPoolSummary.total || 1 })}
+													</span>
+													<span
+														class="rounded-md bg-white px-1.5 py-0.5 text-xs text-gray-500 dark:bg-gray-950 dark:text-gray-400"
+													>
+														{apiKeyPoolSummary.mode}
+													</span>
+													{#if apiKeyPoolSummary.retry}
+														<span
+															class="rounded-md bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+														>
+															{$i18n.t('Auto retry')}
+														</span>
+													{/if}
+												</div>
+												<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+													{$i18n.t('{{count}} enabled', { count: apiKeyPoolSummary.enabled || 0 })}
+												</div>
+											</div>
+											<button
+												type="button"
+												class="shrink-0 rounded-lg bg-gray-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+												on:click={() => {
+													showApiKeyPoolModal = true;
+												}}
+											>
+												{$i18n.t('Manage keys')}
+											</button>
+										</div>
+									</div>
+								{:else}
+									<div class="flex flex-col">
+										<label for="api-key-input" class="text-xs text-gray-500 mb-1">
+											{$i18n.t('API Key')}
+										</label>
+										<SensitiveInput
+											bind:value={key}
+											placeholder={$i18n.t('Enter API key, usually starts with sk')}
+											required={false}
+											outerClassName="flex flex-1 px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg"
+											inputClassName="w-full text-sm bg-transparent outline-none"
+										/>
+									</div>
+								{/if}
 
-						</div>
+							</div>
 					</CollapsibleSection>
 
 					<!-- 模型管理 -->

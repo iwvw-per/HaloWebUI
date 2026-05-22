@@ -287,6 +287,72 @@ def test_generate_via_openai_images_endpoint_uses_configured_size(monkeypatch):
     assert captured["json_body"]["size"] == "1024x1024"
 
 
+def test_generate_via_openai_images_endpoint_retries_api_key_pool(monkeypatch):
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "status": 429,
+                "headers": {"content-type": "application/json"},
+                "response_body": json.dumps({"error": {"message": "rate limit"}}),
+            }
+        return {
+            "status": 200,
+            "headers": {"content-type": "application/json"},
+            "response_body": json.dumps(
+                {
+                    "data": [
+                        {
+                            "b64_json": base64.b64encode(b"generated" * 32).decode("utf-8")
+                        }
+                    ]
+                }
+            ),
+        }
+
+    monkeypatch.setattr(images_router, "_send_openai_image_request", fake_send)
+    monkeypatch.setattr(
+        images_router,
+        "upload_image",
+        lambda request, payload, image_data, content_type, user: "/images/generated.png",
+    )
+
+    result = asyncio.run(
+        images_router._generate_via_openai_images_endpoint(
+            request=SimpleNamespace(),
+            user=_make_user(),
+            model_id="gpt-image-2",
+            prompt="生成一张图",
+            n=1,
+            size=None,
+            background=None,
+            source={
+                "provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "key": "sk-a",
+                "api_config": {
+                    "api_key_pool": {
+                        "keys": [
+                            {"id": "a", "label": "A", "key": "sk-a", "enabled": True},
+                            {"id": "b", "label": "B", "key": "sk-b", "enabled": True},
+                        ],
+                        "mode": "priority",
+                        "retry": {"enabled": True},
+                    }
+                },
+                "connection_index": 0,
+            },
+        )
+    )
+
+    assert result == [{"url": "/images/generated.png"}]
+    assert len(calls) == 2
+    assert calls[0]["headers"]["Authorization"] == "Bearer sk-a"
+    assert calls[1]["headers"]["Authorization"] == "Bearer sk-b"
+
+
 def test_generate_via_openai_images_endpoint_splits_batch_into_single_requests(monkeypatch):
     calls = []
 

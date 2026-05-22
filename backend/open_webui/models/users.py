@@ -3,6 +3,9 @@ import time
 from typing import Any, Optional
 
 from open_webui.internal.db import Base, JSONField, get_db
+from open_webui.utils.user_default_settings import (
+    build_new_user_settings_from_template,
+)
 
 
 from open_webui.models.chats import Chats
@@ -154,8 +157,19 @@ class UsersTable:
         profile_image_url: str = "/user.png",
         role: str = "pending",
         oauth_sub: Optional[str] = None,
+        settings: Optional[dict] = None,
     ) -> Optional[UserModel]:
         with get_db() as db:
+            if settings is None:
+                from open_webui.config import NEW_USER_DEFAULT_SETTINGS
+
+            initial_settings = (
+                settings
+                if settings is not None
+                else build_new_user_settings_from_template(
+                    NEW_USER_DEFAULT_SETTINGS.value, role
+                )
+            )
             user = UserModel(
                 **{
                     "id": id,
@@ -167,6 +181,7 @@ class UsersTable:
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
                     "oauth_sub": oauth_sub,
+                    "settings": initial_settings,
                 }
             )
             result = User(**user.model_dump())

@@ -64,11 +64,11 @@ class _FakeSession:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    def get(self, url, headers=None):
+    def get(self, url, headers=None, **kwargs):
         self._requests_log.append(("GET", url, headers, None))
         return self._planned_responses.pop(0)
 
-    def post(self, url, headers=None, data=None):
+    def post(self, url, headers=None, data=None, **kwargs):
         self._requests_log.append(("POST", url, headers, data))
         return self._planned_responses.pop(0)
 
@@ -207,3 +207,41 @@ def test_health_check_surfaces_upstream_error(monkeypatch):
 
     assert exc_info.value.status_code == 401
     assert "invalid_api_key" in str(exc_info.value.detail)
+
+
+def test_health_check_retries_next_api_key_on_rate_limit(monkeypatch):
+    requests_log = []
+    _install_fake_session(
+        monkeypatch,
+        [
+            _FakeResponse(429, {"error": {"message": "rate limit"}}),
+            _FakeResponse(200, {"id": "chatcmpl_789", "choices": [{"message": {"content": "ok"}}]}),
+        ],
+        requests_log,
+    )
+
+    result = asyncio.run(
+        openai_router.health_check_connection(
+            openai_router.HealthCheckForm(
+                url="https://api.openai.com/v1",
+                key="sk-a",
+                config={
+                    "api_key_pool": {
+                        "keys": [
+                            {"id": "a", "label": "A", "key": "sk-a", "enabled": True},
+                            {"id": "b", "label": "B", "key": "sk-b", "enabled": True},
+                        ],
+                        "mode": "priority",
+                        "retry": {"enabled": True},
+                    }
+                },
+                model="gpt-4o-mini",
+            ),
+            user=_make_user(),
+        )
+    )
+
+    assert result["ok"] is True
+    assert len(requests_log) == 2
+    assert requests_log[0][2]["Authorization"] == "Bearer sk-a"
+    assert requests_log[1][2]["Authorization"] == "Bearer sk-b"

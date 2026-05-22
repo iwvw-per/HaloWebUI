@@ -59,6 +59,7 @@
 	let currentPath = '';
 	let activeLinks = {
 		general: false,
+		userDefaults: false,
 		interface: false,
 		connections: false,
 		tools: false,
@@ -81,6 +82,7 @@
 		const path = currentPath || '';
 		activeLinks = {
 			general: path === '/settings',
+			userDefaults: path.startsWith('/settings/user-defaults'),
 			interface: path.startsWith('/settings/interface'),
 			connections: path.startsWith('/settings/connections'),
 			tools: path.startsWith('/settings/tools'),
@@ -145,8 +147,11 @@
 					class="flex flex-row overflow-x-auto gap-2.5 max-w-full lg:gap-1 lg:flex-col lg:flex-none lg:w-44 dark:text-gray-200 text-sm font-medium text-left scrollbar-none"
 				>
 					{#if isAdmin}
-					<a class={navLinkClass(activeLinks.general)} href="/settings">{$i18n.t('General')}</a>
-				{/if}
+						<a class={navLinkClass(activeLinks.general)} href="/settings">{$i18n.t('General')}</a>
+						<a class={navLinkClass(activeLinks.userDefaults)} href="/settings/user-defaults">
+							新用户默认偏好
+						</a>
+					{/if}
 					<a class={navLinkClass(activeLinks.interface)} href="/settings/interface"
 						>{$i18n.t('Interface')}</a
 					>

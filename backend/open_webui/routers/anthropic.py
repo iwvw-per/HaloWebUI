@@ -21,6 +21,7 @@ import asyncio
 import base64
 import codecs
 import contextlib
+import copy
 import hashlib
 import json
 import logging
@@ -68,6 +69,12 @@ from open_webui.utils.model_identity import (
     get_base_model_ref_from_model_info,
     get_model_ref_from_model,
     resolve_provider_connection_by_model_id,
+)
+from open_webui.utils.api_key_pool import (
+    get_api_key_attempts,
+    normalize_api_key_pool_config,
+    normalize_indexed_api_key_pools,
+    should_retry_api_key,
 )
 
 log = logging.getLogger(__name__)
@@ -129,6 +136,31 @@ def _get_anthropic_user_config(connection_user: Optional[UserModel]) -> tuple[li
             keys = keys + [""] * (len(base_urls) - len(keys))
 
     return base_urls, keys, configs
+
+
+def _get_anthropic_connection_key(api_config: Optional[dict], url_idx: Optional[int] = None) -> str:
+    cfg = api_config or {}
+    prefix = str(cfg.get("_resolved_prefix_id") or cfg.get("prefix_id") or "").strip()
+    if prefix:
+        return prefix
+    if url_idx is not None:
+        return f"idx:{url_idx}"
+    return str(cfg.get("name") or cfg.get("remark") or "").strip()
+
+
+def _normalize_anthropic_connection_key(
+    key: str,
+    api_config: Optional[dict],
+    *,
+    url_idx: Optional[int] = None,
+) -> tuple[str, dict]:
+    cfg, primary_key = normalize_api_key_pool_config(
+        api_config or {},
+        key or "",
+        provider="anthropic",
+        connection_key=_get_anthropic_connection_key(api_config, url_idx),
+    )
+    return primary_key, cfg
 
 # Official beta header required for Files API.
 ANTHROPIC_BETA_FILES_API = "files-api-2025-04-14"
@@ -970,29 +1002,82 @@ async def _post_preserve_method(
 
 async def send_get_request(url: str, key: str = None, api_config: dict = None) -> dict:
     timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
+    key, api_config = _normalize_anthropic_connection_key(key or "", api_config or {})
+    key_attempts = get_api_key_attempts(
+        provider="anthropic",
+        connection_key=_get_anthropic_connection_key(api_config),
+        api_config=api_config,
+        fallback_key=key,
+    )
     async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-        headers = _build_anthropic_headers(
-            key or "",
-            api_config,
-            accept="application/json",
-        )
-        log.info(f"[ANTHROPIC] GET {url}")
-        async with session.get(url, headers=headers) as response:
+        for attempt_idx, attempt in enumerate(key_attempts):
             try:
-                data = await response.json(content_type=None)
-            except Exception:
-                text = await response.text()
-                raise HTTPException(status_code=response.status, detail=text[:500])
+                headers = _build_anthropic_headers(
+                    attempt.key,
+                    api_config,
+                    accept="application/json",
+                )
+                log.info(f"[ANTHROPIC] GET {url}")
+                async with session.get(url, headers=headers) as response:
+                    try:
+                        data = await response.json(content_type=None)
+                    except Exception:
+                        text = await response.text()
+                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=response.status,
+                            body=text,
+                        ):
+                            log.warning(
+                                "[ANTHROPIC KEY RETRY] models status=%s key_label=%s next=%s/%s",
+                                response.status,
+                                attempt.safe_label,
+                                attempt_idx + 2,
+                                len(key_attempts),
+                            )
+                            continue
+                        raise HTTPException(status_code=response.status, detail=text[:500])
 
-            if response.status >= 400:
-                err = data.get("error") if isinstance(data, dict) else None
-                if isinstance(err, dict) and err.get("message"):
-                    raise HTTPException(
-                        status_code=response.status, detail=str(err.get("message"))
+                    if response.status >= 400:
+                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=response.status,
+                            body=data,
+                        ):
+                            log.warning(
+                                "[ANTHROPIC KEY RETRY] models status=%s key_label=%s next=%s/%s",
+                                response.status,
+                                attempt.safe_label,
+                                attempt_idx + 2,
+                                len(key_attempts),
+                            )
+                            continue
+                        err = data.get("error") if isinstance(data, dict) else None
+                        if isinstance(err, dict) and err.get("message"):
+                            raise HTTPException(
+                                status_code=response.status, detail=str(err.get("message"))
+                            )
+                        raise HTTPException(status_code=response.status, detail=str(data)[:500])
+
+                    return data
+            except HTTPException:
+                raise
+            except Exception as e:
+                if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                    api_config,
+                    exception=e,
+                ):
+                    log.warning(
+                        "[ANTHROPIC KEY RETRY] models exception=%s key_label=%s next=%s/%s",
+                        e.__class__.__name__,
+                        attempt.safe_label,
+                        attempt_idx + 2,
+                        len(key_attempts),
                     )
-                raise HTTPException(status_code=response.status, detail=str(data)[:500])
+                    continue
+                raise
 
-            return data
+    return {}
 
 
 class AnthropicConfigForm(BaseModel):
@@ -1114,6 +1199,14 @@ async def update_config(
         normalized_configs[idx_str] = normalized_cfg
 
     request.app.state.config.ANTHROPIC_API_CONFIGS = normalized_configs
+    request.app.state.config.ANTHROPIC_API_KEYS, request.app.state.config.ANTHROPIC_API_CONFIGS = (
+        normalize_indexed_api_key_pools(
+            provider="anthropic",
+            urls=request.app.state.config.ANTHROPIC_API_BASE_URLS,
+            keys=request.app.state.config.ANTHROPIC_API_KEYS,
+            configs=request.app.state.config.ANTHROPIC_API_CONFIGS,
+        )
+    )
 
     # Clear model cache when config changes
     from open_webui.utils.models import invalidate_base_model_cache
@@ -1144,8 +1237,10 @@ async def verify_connection(
     request: Request, form_data: ConnectionVerificationForm, user=Depends(get_verified_user)
 ):
     url = form_data.url
-    key = form_data.key
-    cfg = form_data.config or {}
+    key, cfg = _normalize_anthropic_connection_key(
+        form_data.key,
+        form_data.config or {},
+    )
 
     try:
         return await send_get_request(f"{url}/models", key, cfg)
@@ -1167,8 +1262,10 @@ async def health_check_connection(
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
 
-    key = form_data.key or ""
-    cfg = form_data.config or {}
+    key, cfg = _normalize_anthropic_connection_key(
+        form_data.key or "",
+        form_data.config or {},
+    )
 
     chosen_model = form_data.model
     if not chosen_model:
@@ -1195,56 +1292,93 @@ async def health_check_connection(
     }
     payload = _merge_extra_body_into_payload(payload, cfg.get("anthropic_extra_body"))
 
-    headers = _build_anthropic_headers(
-        key,
-        cfg,
-        accept="application/json",
-        content_type="application/json",
-    )
     request_url = f"{url}/messages"
     timeout = aiohttp.ClientTimeout(total=15)
     started_at = time.monotonic()
+    key_attempts = get_api_key_attempts(
+        provider="anthropic",
+        connection_key=_get_anthropic_connection_key(cfg),
+        api_config=cfg,
+        fallback_key=key,
+    )
 
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            async with _post_preserve_method(
-                session, request_url, json_data=payload, headers=headers
-            ) as response:
+            for attempt_idx, attempt in enumerate(key_attempts):
                 try:
-                    body = await response.json(content_type=None)
-                except Exception:
-                    body = await response.text()
+                    headers = _build_anthropic_headers(
+                        attempt.key,
+                        cfg,
+                        accept="application/json",
+                        content_type="application/json",
+                    )
+                    async with _post_preserve_method(
+                        session, request_url, json_data=payload, headers=headers
+                    ) as response:
+                        try:
+                            body = await response.json(content_type=None)
+                        except Exception:
+                            body = await response.text()
 
-                if response.status >= 400:
-                    if isinstance(body, dict):
-                        error = body.get("error")
-                        if isinstance(error, dict) and error.get("message"):
+                        if response.status >= 400:
+                            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                                cfg,
+                                status_code=response.status,
+                                body=body,
+                            ):
+                                log.warning(
+                                    "[ANTHROPIC KEY RETRY] health status=%s key_label=%s next=%s/%s",
+                                    response.status,
+                                    attempt.safe_label,
+                                    attempt_idx + 2,
+                                    len(key_attempts),
+                                )
+                                continue
+                            if isinstance(body, dict):
+                                error = body.get("error")
+                                if isinstance(error, dict) and error.get("message"):
+                                    raise HTTPException(
+                                        status_code=response.status,
+                                        detail=str(error.get("message")),
+                                    )
                             raise HTTPException(
                                 status_code=response.status,
-                                detail=str(error.get("message")),
+                                detail=_format_anthropic_upstream_error(
+                                    request_url=request_url,
+                                    status=response.status,
+                                    body=body,
+                                ),
                             )
-                    raise HTTPException(
-                        status_code=response.status,
-                        detail=_format_anthropic_upstream_error(
-                            request_url=request_url,
-                            status=response.status,
-                            body=body,
-                        ),
-                    )
 
-                if not isinstance(body, dict):
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Invalid response from Anthropic model health check",
-                    )
+                        if not isinstance(body, dict):
+                            raise HTTPException(
+                                status_code=502,
+                                detail="Invalid response from Anthropic model health check",
+                            )
 
-                return {
-                    "ok": True,
-                    "model": chosen_model,
-                    "response_time_ms": max(
-                        1, int((time.monotonic() - started_at) * 1000)
-                    ),
-                }
+                        return {
+                            "ok": True,
+                            "model": chosen_model,
+                            "response_time_ms": max(
+                                1, int((time.monotonic() - started_at) * 1000)
+                            ),
+                        }
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                        cfg,
+                        exception=e,
+                    ):
+                        log.warning(
+                            "[ANTHROPIC KEY RETRY] health exception=%s key_label=%s next=%s/%s",
+                            e.__class__.__name__,
+                            attempt.safe_label,
+                            attempt_idx + 2,
+                            len(key_attempts),
+                        )
+                        continue
+                    raise
     except HTTPException:
         raise
     except Exception as e:
@@ -1334,6 +1468,12 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
     request_tasks = []
     for idx, url in enumerate(base_urls):
         api_config = cfgs.get(str(idx), cfgs.get(url, {})) or {}
+        selected_key, api_config = _normalize_anthropic_connection_key(
+            keys[idx] if idx < len(keys) else "",
+            api_config,
+            url_idx=idx,
+        )
+        cfgs[str(idx)] = api_config
         enable = api_config.get("enable", True)
         model_ids = api_config.get("model_ids", []) or []
         prefix_id = (api_config.get("prefix_id") or "").strip() or None
@@ -1373,7 +1513,7 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
         request_tasks.append(
             send_get_request(
                 f"{url.rstrip('/')}/models",
-                keys[idx] if idx < len(keys) else "",
+                selected_key,
                 api_config,
             )
         )
@@ -1521,6 +1661,11 @@ async def get_models(
         url = base_urls[url_idx]
         key = keys[url_idx] if url_idx < len(keys) else ""
         api_config = cfgs.get(str(url_idx), cfgs.get(url, {})) or {}
+        key, api_config = _normalize_anthropic_connection_key(
+            key,
+            api_config,
+            url_idx=url_idx,
+        )
 
         response = await send_get_request(f"{url.rstrip('/')}/models", key, api_config)
         if response and isinstance(response, dict) and "data" in response:
@@ -2128,6 +2273,17 @@ async def generate_chat_completion(
     if not base_url:
         raise HTTPException(status_code=500, detail="Anthropic base URL not configured")
 
+    key, api_config = _normalize_anthropic_connection_key(
+        key or "", api_config or {}, url_idx=url_idx
+    )
+    key_attempts = get_api_key_attempts(
+        provider="anthropic",
+        connection_key=_get_anthropic_connection_key(api_config, url_idx),
+        api_config=api_config,
+        fallback_key=key,
+    )
+    key = key_attempts[0].key if key_attempts else key
+
     stream = bool(payload.get("stream", False))
 
     # Build system blocks and messages for Anthropic.
@@ -2339,216 +2495,232 @@ async def generate_chat_completion(
                     trust_env=True,
                     skip_auto_headers={"Accept-Encoding"},
                 ) as session:
-                    headers = _build_anthropic_headers(
-                        key,
-                        api_config,
-                        accept="application/json",
-                        content_type="application/json",
-                        extra_beta=required_betas,
-                    )
-                    # Keep x-api-key but strip Authorization for messages endpoint.
-                    if "x-api-key" in headers:
-                        headers.pop("Authorization", None)
+                    for key_attempt_idx, key_attempt in enumerate(key_attempts):
+                        headers = _build_anthropic_headers(
+                            key_attempt.key,
+                            api_config,
+                            accept="application/json",
+                            content_type="application/json",
+                            extra_beta=required_betas,
+                        )
+                        # Keep x-api-key but strip Authorization for messages endpoint.
+                        if "x-api-key" in headers:
+                            headers.pop("Authorization", None)
 
-                    # Apply CC request format for anyrouter proxy validation
-                    actual_url = messages_url
-                    cc_tool_reverse: dict[str, str] = {}
-                    if _needs_cc_format(upstream_model_id, base_url):
-                        actual_url = _apply_cc_format(headers, anthropic_payload, messages_url)
-                        cc_tool_reverse = _apply_cc_tool_names(anthropic_payload)
+                        # Apply CC request format for anyrouter proxy validation.
+                        actual_url = messages_url
+                        attempt_payload = copy.deepcopy(anthropic_payload)
+                        cc_tool_reverse: dict[str, str] = {}
+                        if _needs_cc_format(upstream_model_id, base_url):
+                            actual_url = _apply_cc_format(headers, attempt_payload, messages_url)
+                            cc_tool_reverse = _apply_cc_tool_names(attempt_payload)
 
-                    # DEBUG: log outgoing headers and payload keys
-                    _safe_hdrs = {}
-                    for k, v in headers.items():
-                        kl = k.lower()
-                        if kl == "x-api-key":
-                            _safe_hdrs[k] = v[:20] + "..."
-                        else:
-                            _safe_hdrs[k] = v
-                    log.info(f"[ANTHROPIC DEBUG] POST {actual_url} headers={_safe_hdrs}")
-                    # Dump full payload body (redact long message content)
-                    _dump = dict(anthropic_payload)
-                    _dump_msgs = []
-                    for _m in _dump.get("messages", []):
-                        _mc = _m.get("content")
-                        if isinstance(_mc, str) and len(_mc) > 200:
-                            _mc = _mc[:200] + "...(truncated)"
-                        elif isinstance(_mc, list):
-                            _mc = [
-                                {**b, "text": b["text"][:200] + "...(truncated)"} if isinstance(b, dict) and isinstance(b.get("text"), str) and len(b.get("text", "")) > 200 else b
-                                for b in _mc
-                            ]
-                        _dump_msgs.append({**_m, "content": _mc})
-                    _dump["messages"] = _dump_msgs
-                    log.info(f"[ANTHROPIC DEBUG] FULL BODY: {json.dumps(_dump, ensure_ascii=False, default=str)}")
+                        # DEBUG: log outgoing headers and payload keys
+                        _safe_hdrs = {}
+                        for k, v in headers.items():
+                            kl = k.lower()
+                            if kl in {"x-api-key", "authorization", "api-key"}:
+                                _safe_hdrs[k] = "***"
+                            else:
+                                _safe_hdrs[k] = v
+                        log.info(f"[ANTHROPIC DEBUG] POST {actual_url} headers={_safe_hdrs}")
+                        # Dump full payload body (redact long message content)
+                        _dump = dict(attempt_payload)
+                        _dump_msgs = []
+                        for _m in _dump.get("messages", []):
+                            _mc = _m.get("content")
+                            if isinstance(_mc, str) and len(_mc) > 200:
+                                _mc = _mc[:200] + "...(truncated)"
+                            elif isinstance(_mc, list):
+                                _mc = [
+                                    {**b, "text": b["text"][:200] + "...(truncated)"} if isinstance(b, dict) and isinstance(b.get("text"), str) and len(b.get("text", "")) > 200 else b
+                                    for b in _mc
+                                ]
+                            _dump_msgs.append({**_m, "content": _mc})
+                        _dump["messages"] = _dump_msgs
+                        log.info(f"[ANTHROPIC DEBUG] FULL BODY: {json.dumps(_dump, ensure_ascii=False, default=str)}")
 
-                    async with _post_preserve_method(session, actual_url, json_data=anthropic_payload, headers=headers) as response:
-                        log.info(f"[ANTHROPIC DEBUG] response status={response.status}")
-                        if response.status >= 400:
-                            err_text = await response.text()
-                            log.warning(f"[ANTHROPIC DEBUG] ERROR {response.status}: {err_text[:500]}")
-                            error_chunk = {
-                                "error": {
-                                    "message": _format_anthropic_upstream_error(
-                                        request_url=actual_url,
-                                        status=response.status,
-                                        body=err_text,
-                                    ),
-                                    "type": "api_error",
-                                    "code": f"http_{response.status}",
+                        async with _post_preserve_method(session, actual_url, json_data=attempt_payload, headers=headers) as response:
+                            log.info(f"[ANTHROPIC DEBUG] response status={response.status}")
+                            if response.status >= 400:
+                                err_text = await response.text()
+                                log.warning(f"[ANTHROPIC DEBUG] ERROR {response.status}: {err_text[:500]}")
+                                if key_attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                                    api_config,
+                                    status_code=response.status,
+                                    body=err_text,
+                                ):
+                                    log.warning(
+                                        "[ANTHROPIC KEY RETRY] chat stream status=%s key_label=%s next=%s/%s",
+                                        response.status,
+                                        key_attempt.safe_label,
+                                        key_attempt_idx + 2,
+                                        len(key_attempts),
+                                    )
+                                    continue
+                                error_chunk = {
+                                    "error": {
+                                        "message": _format_anthropic_upstream_error(
+                                            request_url=actual_url,
+                                            status=response.status,
+                                            body=err_text,
+                                        ),
+                                        "type": "api_error",
+                                        "code": f"http_{response.status}",
+                                    }
                                 }
-                            }
-                            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
-                            yield "data: [DONE]\n\n"
-                            return
+                                yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+                                yield "data: [DONE]\n\n"
+                                return
 
-                        # Send role first (OpenAI-style)
-                        yield f"data: {json.dumps(_openai_chunk(stream_id, model_for_openai, {'role': 'assistant'}), ensure_ascii=False)}\n\n"
+                            # Send role first (OpenAI-style). After this point we do not switch keys.
+                            yield f"data: {json.dumps(_openai_chunk(stream_id, model_for_openai, {'role': 'assistant'}), ensure_ascii=False)}\n\n"
 
-                        _first_chunk_logged = False
-                        async for raw in response.content.iter_any():
-                            if not raw:
-                                continue
-                            chunk_str = decoder.decode(raw, False)
-                            if not chunk_str:
-                                continue
-                            if not _first_chunk_logged:
-                                log.info(f"[ANTHROPIC DEBUG] first chunk: {chunk_str[:500]}")
-                                _first_chunk_logged = True
-                            buf += chunk_str
-
-                            while "\n\n" in buf:
-                                event_str, buf = buf.split("\n\n", 1)
-                                if not event_str.strip():
+                            _first_chunk_logged = False
+                            async for raw in response.content.iter_any():
+                                if not raw:
                                     continue
-
-                                data_lines = []
-                                for line in event_str.splitlines():
-                                    line = line.rstrip("\r")
-                                    if line.startswith("data:"):
-                                        data_lines.append(line[5:].lstrip())
-                                if not data_lines:
+                                chunk_str = decoder.decode(raw, False)
+                                if not chunk_str:
                                     continue
+                                if not _first_chunk_logged:
+                                    log.info(f"[ANTHROPIC DEBUG] first chunk: {chunk_str[:500]}")
+                                    _first_chunk_logged = True
+                                buf += chunk_str
 
-                                data_str = "\n".join(data_lines).strip()
-                                if not data_str:
-                                    continue
-
-                                try:
-                                    ev = json.loads(data_str)
-                                except json.JSONDecodeError:
-                                    continue
-
-                                if not isinstance(ev, dict):
-                                    continue
-
-                                ev_type = ev.get("type")
-                                if ev_type == "ping":
-                                    continue
-
-                                if ev_type == "message_start":
-                                    msg = ev.get("message") or {}
-                                    usage = msg.get("usage") if isinstance(msg, dict) else {}
-                                    if isinstance(usage, dict) and usage.get("input_tokens") is not None:
-                                        prompt_tokens = int(usage.get("input_tokens") or 0)
-                                    continue
-
-                                if ev_type == "content_block_start":
-                                    idx = ev.get("index")
-                                    cb = ev.get("content_block") or {}
-                                    if isinstance(idx, int) and isinstance(cb, dict) and cb.get("type") == "tool_use":
-                                        tool_name = cb.get("name") or ""
-                                        # Reverse-map CC spec name back to original
-                                        if cc_tool_reverse and tool_name in cc_tool_reverse:
-                                            tool_name = cc_tool_reverse[tool_name]
-                                        tool_call = {
-                                            "index": next_tool_call_index,
-                                            "id": cb.get("id") or f"toolu_{uuid.uuid4().hex}",
-                                            "type": "function",
-                                            "function": {
-                                                "name": tool_name,
-                                                "arguments": "",
-                                            },
-                                        }
-                                        tool_block_index_to_call[idx] = tool_call
-                                        next_tool_call_index += 1
-                                        tool_chunk = _openai_chunk(stream_id, model_for_openai, {"tool_calls": [tool_call]})
-                                        yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
-                                    continue
-
-                                if ev_type == "content_block_delta":
-                                    idx = ev.get("index")
-                                    delta = ev.get("delta") or {}
-                                    if not isinstance(delta, dict):
+                                while "\n\n" in buf:
+                                    event_str, buf = buf.split("\n\n", 1)
+                                    if not event_str.strip():
                                         continue
 
-                                    d_type = delta.get("type")
-                                    if d_type == "text_delta":
-                                        text = delta.get("text") or ""
-                                        if text:
-                                            for content_chunk in _yield_content_chunks(str(text), stream_id, model_for_openai):
-                                                yield content_chunk
+                                    data_lines = []
+                                    for line in event_str.splitlines():
+                                        line = line.rstrip("\r")
+                                        if line.startswith("data:"):
+                                            data_lines.append(line[5:].lstrip())
+                                    if not data_lines:
                                         continue
 
-                                    if d_type == "thinking_delta":
-                                        thinking = delta.get("thinking") or ""
-                                        if thinking:
-                                            thinking_chunk = _openai_chunk(
-                                                stream_id,
-                                                model_for_openai,
-                                                {"reasoning_content": str(thinking)},
-                                            )
-                                            yield f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n"
+                                    data_str = "\n".join(data_lines).strip()
+                                    if not data_str:
                                         continue
 
-                                    if d_type == "input_json_delta":
-                                        partial = delta.get("partial_json") or ""
-                                        if isinstance(idx, int) and idx in tool_block_index_to_call and partial:
-                                            tool_call = tool_block_index_to_call[idx]
-                                            delta_call = {
-                                                "index": tool_call.get("index"),
-                                                "id": tool_call.get("id"),
+                                    try:
+                                        ev = json.loads(data_str)
+                                    except json.JSONDecodeError:
+                                        continue
+
+                                    if not isinstance(ev, dict):
+                                        continue
+
+                                    ev_type = ev.get("type")
+                                    if ev_type == "ping":
+                                        continue
+
+                                    if ev_type == "message_start":
+                                        msg = ev.get("message") or {}
+                                        usage = msg.get("usage") if isinstance(msg, dict) else {}
+                                        if isinstance(usage, dict) and usage.get("input_tokens") is not None:
+                                            prompt_tokens = int(usage.get("input_tokens") or 0)
+                                        continue
+
+                                    if ev_type == "content_block_start":
+                                        idx = ev.get("index")
+                                        cb = ev.get("content_block") or {}
+                                        if isinstance(idx, int) and isinstance(cb, dict) and cb.get("type") == "tool_use":
+                                            tool_name = cb.get("name") or ""
+                                            # Reverse-map CC spec name back to original
+                                            if cc_tool_reverse and tool_name in cc_tool_reverse:
+                                                tool_name = cc_tool_reverse[tool_name]
+                                            tool_call = {
+                                                "index": next_tool_call_index,
+                                                "id": cb.get("id") or f"toolu_{uuid.uuid4().hex}",
                                                 "type": "function",
-                                                "function": {"arguments": str(partial)},
+                                                "function": {
+                                                    "name": tool_name,
+                                                    "arguments": "",
+                                                },
                                             }
-                                            tool_chunk = _openai_chunk(stream_id, model_for_openai, {"tool_calls": [delta_call]})
+                                            tool_block_index_to_call[idx] = tool_call
+                                            next_tool_call_index += 1
+                                            tool_chunk = _openai_chunk(stream_id, model_for_openai, {"tool_calls": [tool_call]})
                                             yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
                                         continue
 
-                                    continue
+                                    if ev_type == "content_block_delta":
+                                        idx = ev.get("index")
+                                        delta = ev.get("delta") or {}
+                                        if not isinstance(delta, dict):
+                                            continue
 
-                                if ev_type == "message_delta":
-                                    delta = ev.get("delta") or {}
-                                    stop_reason = (delta.get("stop_reason") if isinstance(delta, dict) else None) or None
+                                        d_type = delta.get("type")
+                                        if d_type == "text_delta":
+                                            text = delta.get("text") or ""
+                                            if text:
+                                                for content_chunk in _yield_content_chunks(str(text), stream_id, model_for_openai):
+                                                    yield content_chunk
+                                            continue
 
-                                    usage = ev.get("usage") or {}
-                                    if isinstance(usage, dict) and usage.get("output_tokens") is not None:
-                                        completion_tokens = int(usage.get("output_tokens") or 0)
+                                        if d_type == "thinking_delta":
+                                            thinking = delta.get("thinking") or ""
+                                            if thinking:
+                                                thinking_chunk = _openai_chunk(
+                                                    stream_id,
+                                                    model_for_openai,
+                                                    {"reasoning_content": str(thinking)},
+                                                )
+                                                yield f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n"
+                                            continue
 
-                                    if stop_reason:
-                                        finish = "stop"
-                                        if stop_reason == "tool_use":
-                                            finish = "tool_calls"
-                                        elif stop_reason == "max_tokens":
-                                            finish = "length"
+                                        if d_type == "input_json_delta":
+                                            partial = delta.get("partial_json") or ""
+                                            if isinstance(idx, int) and idx in tool_block_index_to_call and partial:
+                                                tool_call = tool_block_index_to_call[idx]
+                                                delta_call = {
+                                                    "index": tool_call.get("index"),
+                                                    "id": tool_call.get("id"),
+                                                    "type": "function",
+                                                    "function": {"arguments": str(partial)},
+                                                }
+                                                tool_chunk = _openai_chunk(stream_id, model_for_openai, {"tool_calls": [delta_call]})
+                                                yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
+                                            continue
 
-                                        usage_obj = None
-                                        if prompt_tokens is not None and completion_tokens is not None:
-                                            usage_obj = {
-                                                "prompt_tokens": prompt_tokens,
-                                                "completion_tokens": completion_tokens,
-                                                "total_tokens": prompt_tokens + completion_tokens,
-                                            }
+                                        continue
 
-                                        fin_chunk = _openai_chunk(stream_id, model_for_openai, {}, finish_reason=finish, usage=usage_obj)
-                                        yield f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n"
-                                    continue
+                                    if ev_type == "message_delta":
+                                        delta = ev.get("delta") or {}
+                                        stop_reason = (delta.get("stop_reason") if isinstance(delta, dict) else None) or None
 
-                                if ev_type == "message_stop":
-                                    yield "data: [DONE]\n\n"
-                                    return
+                                        usage = ev.get("usage") or {}
+                                        if isinstance(usage, dict) and usage.get("output_tokens") is not None:
+                                            completion_tokens = int(usage.get("output_tokens") or 0)
 
-                        yield "data: [DONE]\n\n"
+                                        if stop_reason:
+                                            finish = "stop"
+                                            if stop_reason == "tool_use":
+                                                finish = "tool_calls"
+                                            elif stop_reason == "max_tokens":
+                                                finish = "length"
+
+                                            usage_obj = None
+                                            if prompt_tokens is not None and completion_tokens is not None:
+                                                usage_obj = {
+                                                    "prompt_tokens": prompt_tokens,
+                                                    "completion_tokens": completion_tokens,
+                                                    "total_tokens": prompt_tokens + completion_tokens,
+                                                }
+
+                                            fin_chunk = _openai_chunk(stream_id, model_for_openai, {}, finish_reason=finish, usage=usage_obj)
+                                            yield f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n"
+                                        continue
+
+                                    if ev_type == "message_stop":
+                                        yield "data: [DONE]\n\n"
+                                        return
+
+                            yield "data: [DONE]\n\n"
+                            return
 
             except Exception as e:
                 log.exception(f"Error in Anthropic stream generator: {e}")
@@ -2571,44 +2743,59 @@ async def generate_chat_completion(
         trust_env=True,
         skip_auto_headers={"Accept-Encoding"},
     ) as session:
-        headers = _build_anthropic_headers(
-            key,
-            api_config,
-            accept="application/json",
-            content_type="application/json",
-            extra_beta=required_betas,
-        )
-        if "x-api-key" in headers:
-            headers.pop("Authorization", None)
-
-        # Apply CC request format for anyrouter proxy validation
-        actual_url_ns = messages_url
-        cc_tool_reverse_ns: dict[str, str] = {}
-        if _needs_cc_format(upstream_model_id, base_url):
-            actual_url_ns = _apply_cc_format(headers, anthropic_payload, messages_url)
-            cc_tool_reverse_ns = _apply_cc_tool_names(anthropic_payload)
-
-        log.info(
-            "[ANTHROPIC DEBUG] cfg stream=false max_tokens=%s thinking_budget=%s betas=%s",
-            max_tokens,
-            thinking_budget,
-            _clean_beta_list(headers.get("anthropic-beta")),
-        )
-
-        async with _post_preserve_method(session, actual_url_ns, json_data=anthropic_payload, headers=headers) as response:
-            data = await response.json(content_type=None)
-            if response.status >= 400:
-                raise HTTPException(
-                    status_code=response.status,
-                    detail=_format_anthropic_upstream_error(
-                        request_url=actual_url_ns,
-                        status=response.status,
-                        body=data,
-                    ),
-                )
-
-            return _anthropic_message_to_openai(
-                data,
-                payload.get("model") or upstream_model_id,
-                tool_reverse_map=cc_tool_reverse_ns,
+        for key_attempt_idx, key_attempt in enumerate(key_attempts):
+            headers = _build_anthropic_headers(
+                key_attempt.key,
+                api_config,
+                accept="application/json",
+                content_type="application/json",
+                extra_beta=required_betas,
             )
+            if "x-api-key" in headers:
+                headers.pop("Authorization", None)
+
+            # Apply CC request format for anyrouter proxy validation.
+            actual_url_ns = messages_url
+            attempt_payload = copy.deepcopy(anthropic_payload)
+            cc_tool_reverse_ns: dict[str, str] = {}
+            if _needs_cc_format(upstream_model_id, base_url):
+                actual_url_ns = _apply_cc_format(headers, attempt_payload, messages_url)
+                cc_tool_reverse_ns = _apply_cc_tool_names(attempt_payload)
+
+            log.info(
+                "[ANTHROPIC DEBUG] cfg stream=false max_tokens=%s thinking_budget=%s betas=%s",
+                max_tokens,
+                thinking_budget,
+                _clean_beta_list(headers.get("anthropic-beta")),
+            )
+
+            async with _post_preserve_method(session, actual_url_ns, json_data=attempt_payload, headers=headers) as response:
+                data = await response.json(content_type=None)
+                if response.status >= 400:
+                    if key_attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                        api_config,
+                        status_code=response.status,
+                        body=data,
+                    ):
+                        log.warning(
+                            "[ANTHROPIC KEY RETRY] chat status=%s key_label=%s next=%s/%s",
+                            response.status,
+                            key_attempt.safe_label,
+                            key_attempt_idx + 2,
+                            len(key_attempts),
+                        )
+                        continue
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=_format_anthropic_upstream_error(
+                            request_url=actual_url_ns,
+                            status=response.status,
+                            body=data,
+                        ),
+                    )
+
+                return _anthropic_message_to_openai(
+                    data,
+                    payload.get("model") or upstream_model_id,
+                    tool_reverse_map=cc_tool_reverse_ns,
+                )

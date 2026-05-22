@@ -1,4 +1,8 @@
 <script lang="ts">
+	import { createEventDispatcher } from 'svelte';
+
+	const dispatch = createEventDispatcher();
+
 	export let value: string = '';
 	export let placeholder = '';
 	export let required = true;
@@ -20,6 +24,7 @@
 		disabled={readOnly}
 		autocomplete="off"
 		type="text"
+		on:input={(event) => dispatch('input', event)}
 	/>
 	<button
 		class={showButtonClassName}
