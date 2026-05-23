@@ -214,13 +214,6 @@
 		draft = normalized;
 	};
 
-	const clearTemplate = () => {
-		draft = normalizeNewUserDefaultSettings({
-			...createEmptyNewUserDefaultSettings(),
-			configured: true
-		});
-	};
-
 	const boolRow = <Key extends string>(
 		label: string,
 		key: Key,
@@ -332,14 +325,6 @@
 										<div class="text-base font-semibold text-gray-800 dark:text-gray-100">
 											{pageMeta.title}
 										</div>
-										<button
-											type="button"
-											class="inline-flex h-9 items-center whitespace-nowrap rounded-xl border border-red-200 bg-white px-3.5 text-xs font-medium leading-none text-red-600 transition-all hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/50 dark:bg-gray-900 dark:text-red-400 dark:hover:bg-red-950/30"
-											disabled={saving}
-											on:click={clearTemplate}
-										>
-											{tr('清空预设', 'Clear Preset')}
-										</button>
 										<InlineDirtyActions
 											{dirty}
 											{saving}
