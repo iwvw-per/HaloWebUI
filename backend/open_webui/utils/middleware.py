@@ -3888,6 +3888,7 @@ async def _build_chat_image_generation_local_response(
             form_data=GenerateImageForm(
                 **{
                     "prompt": prompt,
+                    "stream": form_data.get("stream"),
                     **{
                         key: image_generation_options.get(key)
                         for key in CHAT_IMAGE_GENERATION_OPTION_KEYS

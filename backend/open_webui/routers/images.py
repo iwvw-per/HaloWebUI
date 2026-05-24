@@ -3972,6 +3972,7 @@ class GenerateImageForm(BaseModel):
     model: Optional[str] = None
     model_ref: Optional[dict[str, Any]] = None
     prompt: str
+    stream: Optional[bool] = None
     size: Optional[str] = None
     image_size: Optional[str] = None
     aspect_ratio: Optional[str] = None
@@ -4950,6 +4951,25 @@ def _parse_openai_image_response_json(
         )
 
 
+def _parse_openai_httpx_response_json(response: Any, *, default_message: str) -> Any:
+    try:
+        return response.json()
+    except Exception as error:
+        response_text = getattr(response, "text", None)
+        raise HTTPException(
+            status_code=502,
+            detail=build_error_detail(
+                response_text,
+                error,
+                default=default_message,
+            ),
+        )
+
+
+def _openai_image_stream_enabled(stream: Optional[bool]) -> bool:
+    return stream is not False
+
+
 def _raise_openai_image_request_error(
     result: dict[str, Any], *, default_message: str
 ) -> None:
@@ -5228,6 +5248,7 @@ async def _generate_via_openai_image_edits_endpoint(
     *,
     model_id: str,
     prompt: str,
+    stream: Optional[bool] = None,
     image_url: str,
     n: int,
     size: Optional[str],
@@ -5243,6 +5264,7 @@ async def _generate_via_openai_image_edits_endpoint(
                 user,
                 model_id=model_id,
                 prompt=prompt,
+                stream=stream,
                 image_url=image_url,
                 n=1,
                 size=size,
@@ -5285,6 +5307,7 @@ async def _generate_via_openai_image_edits_endpoint(
     headers = build_attempt_headers(api_key)
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
     base_name = _model_id_basename(upstream_model_id).lower()
+    stream_enabled = _openai_image_stream_enabled(stream)
 
     resolved_image = _resolve_image_edit_input(request, user, image_url)
     if not resolved_image:
@@ -5304,8 +5327,9 @@ async def _generate_via_openai_image_edits_endpoint(
     if background:
         payload["background"] = background
     if _openai_image_model_has_default_response_format(base_name):
-        payload["stream"] = True
-        payload["partial_images"] = 1
+        if stream_enabled:
+            payload["stream"] = True
+            payload["partial_images"] = 1
     else:
         payload["response_format"] = "b64_json"
 
@@ -5433,6 +5457,7 @@ async def _generate_via_openai_images_endpoint(
     *,
     model_id: str,
     prompt: str,
+    stream: Optional[bool] = None,
     n: int,
     size: Optional[str],
     background: Optional[str],
@@ -5447,6 +5472,7 @@ async def _generate_via_openai_images_endpoint(
                 user,
                 model_id=model_id,
                 prompt=prompt,
+                stream=stream,
                 n=1,
                 size=size,
                 background=background,
@@ -5470,6 +5496,7 @@ async def _generate_via_openai_images_endpoint(
 
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
     base_name = _model_id_basename(upstream_model_id).lower()
+    stream_enabled = _openai_image_stream_enabled(stream)
 
     payload: dict[str, Any] = {
         "model": upstream_model_id,
@@ -5479,8 +5506,9 @@ async def _generate_via_openai_images_endpoint(
     if size:
         payload["size"] = size
     if _openai_image_model_has_default_response_format(base_name):
-        payload["stream"] = True
-        payload["partial_images"] = 1
+        if stream_enabled:
+            payload["stream"] = True
+            payload["partial_images"] = 1
     else:
         payload["response_format"] = "b64_json"
 
@@ -5671,6 +5699,7 @@ async def _generate_via_openai_chat_image(
     model_id: str,
     prompt: str,
     source: dict[str, Any],
+    stream: Optional[bool] = None,
     image_url: Optional[str] = None,
     prefer_responses: bool = False,
     n: int = 1,
@@ -5698,6 +5727,7 @@ async def _generate_via_openai_chat_image(
                 model_id=model_id,
                 prompt=prompt,
                 source=source,
+                stream=stream,
                 image_url=image_url,
                 prefer_responses=prefer_responses,
                 n=1,
@@ -5735,20 +5765,24 @@ async def _generate_via_openai_chat_image(
     if not responses_content:
         responses_content.append({"type": "input_text", "text": prompt_text})
 
+    stream_enabled = _openai_image_stream_enabled(stream)
     if use_responses_api:
         request_url = _get_openai_responses_url(base_url)
+        image_generation_tool: dict[str, Any] = {"type": "image_generation"}
+        if stream_enabled:
+            image_generation_tool["partial_images"] = 1
         payload: dict[str, Any] = {
             "model": upstream_model_id,
             "input": [{"role": "user", "content": responses_content}],
-            "tools": [{"type": "image_generation", "partial_images": 1}],
-            "stream": True,
+            "tools": [image_generation_tool],
+            "stream": stream_enabled,
         }
     else:
         request_url = chat_url
         payload = {
             "model": upstream_model_id,
             "messages": [{"role": "user", "content": chat_content}],
-            "stream": True,
+            "stream": stream_enabled,
         }
     upload_metadata: dict[str, Any] = {
         "model": upstream_model_id,
@@ -5796,7 +5830,7 @@ async def _generate_via_openai_chat_image(
                 headers = _build_openai_image_headers(
                     base_url, attempt.key, api_config, user
                 )
-                if use_responses_api:
+                if use_responses_api and stream_enabled:
                     async with client.stream(
                         "POST",
                         request_url,
@@ -5888,7 +5922,76 @@ async def _generate_via_openai_chat_image(
                         except Exception:
                             pass
                         break
-                else:
+                elif use_responses_api:
+                    response = await client.post(
+                        request_url,
+                        headers=headers,
+                        json=payload,
+                    )
+                    if response.status_code >= 400:
+                        error_body = response.text
+                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=response.status_code,
+                            body=error_body,
+                        ):
+                            _log_image_key_retry(
+                                "openai",
+                                "responses",
+                                attempt,
+                                next_attempt=attempt_idx + 2,
+                                total=len(key_attempts),
+                                status_code=response.status_code,
+                            )
+                            continue
+                        raise HTTPException(
+                            status_code=response.status_code,
+                            detail=_build_openai_image_upstream_error_detail(
+                                response.status_code,
+                                error_body,
+                                default="Failed to generate image via upstream /responses",
+                                route_label="responses",
+                            ),
+                        )
+
+                    response_body = _parse_openai_httpx_response_json(
+                        response,
+                        default_message="Invalid JSON response from upstream /responses",
+                    )
+                    if isinstance(response_body, dict):
+                        if isinstance(response_body.get("usage"), dict):
+                            usage = response_body["usage"]
+                        response_obj = response_body.get("response")
+                        if isinstance(response_obj, dict) and isinstance(
+                            response_obj.get("usage"), dict
+                        ):
+                            usage = response_obj["usage"]
+                    _append_unique_generated_images(
+                        images,
+                        _extract_generated_images_from_openai_response(
+                            response_body,
+                            headers=headers,
+                            allowed_base_urls=[base_url],
+                        ),
+                        seen_images,
+                    )
+                    try:
+                        log.info(
+                            "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
+                            response.status_code,
+                            int((time.monotonic() - started_at) * 1000),
+                            len(images),
+                            "yes",
+                            json.dumps(
+                                _redact_upstream_headers(dict(response.headers)),
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    break
+                elif stream_enabled:
                     async with client.stream(
                         "POST",
                         request_url,
@@ -5978,6 +6081,71 @@ async def _generate_via_openai_chat_image(
                         except Exception:
                             pass
                         break
+                else:
+                    response = await client.post(
+                        request_url,
+                        headers=headers,
+                        json=payload,
+                    )
+                    if response.status_code >= 400:
+                        error_body = response.text
+                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=response.status_code,
+                            body=error_body,
+                        ):
+                            _log_image_key_retry(
+                                "openai",
+                                "chat",
+                                attempt,
+                                next_attempt=attempt_idx + 2,
+                                total=len(key_attempts),
+                                status_code=response.status_code,
+                            )
+                            continue
+                        raise HTTPException(
+                            status_code=response.status_code,
+                            detail=_build_openai_image_upstream_error_detail(
+                                response.status_code,
+                                error_body,
+                                default="Failed to generate image via upstream chat/completions",
+                                route_label="chat",
+                            ),
+                        )
+
+                    response_body = _parse_openai_httpx_response_json(
+                        response,
+                        default_message="Invalid JSON response from upstream chat/completions",
+                    )
+                    if isinstance(response_body, dict) and isinstance(
+                        response_body.get("usage"), dict
+                    ):
+                        usage = response_body["usage"]
+                    _append_unique_generated_images(
+                        images,
+                        _extract_generated_images_from_openai_response(
+                            response_body,
+                            headers=headers,
+                            allowed_base_urls=[base_url],
+                        ),
+                        seen_images,
+                    )
+                    try:
+                        log.info(
+                            "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
+                            response.status_code,
+                            int((time.monotonic() - started_at) * 1000),
+                            len(images),
+                            "no",
+                            json.dumps(
+                                _redact_upstream_headers(dict(response.headers)),
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    break
     except (HTTPException, OpenAIImagePartialBatchError):
         raise
     except Exception as error:
@@ -6513,6 +6681,7 @@ async def image_generations(
                     model_id=selected_model,
                     prompt=form_data.prompt,
                     source=source,
+                    stream=form_data.stream,
                     image_url=form_data.image_url,
                     prefer_responses=openai_image_route == OPENAI_IMAGE_ROUTE_RESPONSES,
                     n=requested_n,
@@ -6529,6 +6698,7 @@ async def image_generations(
                     user,
                     model_id=selected_model,
                     prompt=form_data.prompt,
+                    stream=form_data.stream,
                     image_url=form_data.image_url,
                     n=requested_n,
                     size=openai_request_size,
@@ -6541,6 +6711,7 @@ async def image_generations(
                 user,
                 model_id=selected_model,
                 prompt=form_data.prompt,
+                stream=form_data.stream,
                 n=requested_n,
                 size=openai_request_size,
                 background=background,

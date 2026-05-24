@@ -307,6 +307,56 @@ def test_generate_via_openai_images_endpoint_uses_native_request(monkeypatch):
     assert result == [{"url": "/images/generated.png"}]
 
 
+def test_generate_via_openai_images_endpoint_honors_non_stream_request(monkeypatch):
+    captured = {}
+
+    async def fake_send(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": 200,
+            "headers": {"content-type": "application/json"},
+            "response_body": json.dumps(
+                {
+                    "data": [
+                        {
+                            "b64_json": base64.b64encode(b"generated" * 32).decode("utf-8")
+                        }
+                    ]
+                }
+            ),
+        }
+
+    monkeypatch.setattr(images_router, "_send_openai_image_request", fake_send)
+    monkeypatch.setattr(
+        images_router,
+        "upload_image",
+        lambda request, payload, image_data, content_type, user: "/images/generated.png",
+    )
+
+    result = asyncio.run(
+        images_router._generate_via_openai_images_endpoint(
+            request=SimpleNamespace(),
+            user=_make_user(),
+            model_id="gpt-image-2",
+            prompt="生成一张图",
+            stream=False,
+            n=1,
+            size=None,
+            background=None,
+            source={
+                "base_url": "https://api.openai.com/v1",
+                "key": "sk-test",
+                "api_config": {},
+            },
+        )
+    )
+
+    assert "stream" not in captured["json_body"]
+    assert "partial_images" not in captured["json_body"]
+    assert "response_format" not in captured["json_body"]
+    assert result == [{"url": "/images/generated.png"}]
+
+
 def test_generate_via_openai_images_endpoint_uses_configured_size(monkeypatch):
     captured = {}
 

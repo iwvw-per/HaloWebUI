@@ -66,7 +66,10 @@ def test_chat_image_generation_handler_keeps_explicit_size_before_generate_form(
     asyncio.run(
         middleware.chat_image_generation_handler(
             request=SimpleNamespace(),
-            form_data={"messages": [{"role": "user", "content": "生成一张图"}]},
+            form_data={
+                "messages": [{"role": "user", "content": "生成一张图"}],
+                "stream": False,
+            },
             extra_params={
                 "__event_emitter__": fake_event_emitter,
                 "__metadata__": metadata,
@@ -77,6 +80,7 @@ def test_chat_image_generation_handler_keeps_explicit_size_before_generate_form(
 
     form_data = captured["form_data"]
     assert form_data.model == "gpt-image-2"
+    assert form_data.stream is False
     assert form_data.size == "900x1600"
     assert form_data.image_size == "1K"
     assert form_data.aspect_ratio == "16:9"
@@ -1661,6 +1665,78 @@ def test_openai_chat_image_uses_responses_api_when_enabled(monkeypatch):
     ]
 
 
+def test_openai_chat_image_honors_non_stream_request(monkeypatch):
+    request = SimpleNamespace()
+    user = SimpleNamespace(id="user-1")
+    captured = {}
+
+    monkeypatch.setattr(
+        images_router, "_build_openai_image_headers", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        images_router,
+        "upload_image",
+        lambda *_args, **_kwargs: "/api/v1/files/generated",
+    )
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = ""
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "![generated](data:image/png;base64,YWJj)"
+                        }
+                    }
+                ],
+                "usage": {"output_tokens": 1},
+            }
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            captured["post_args"] = _args
+            captured["post_kwargs"] = _kwargs
+            return FakeResponse()
+
+        def stream(self, *_args, **_kwargs):
+            raise AssertionError("non-stream chat image generation must use post")
+
+    monkeypatch.setattr(images_router.httpx, "AsyncClient", FakeClient)
+
+    result = asyncio.run(
+        images_router._generate_via_openai_chat_image(
+            request,
+            user,
+            model_id="relay-image-preview",
+            prompt="draw a dog",
+            stream=False,
+            source={
+                "base_url": "https://openrouter.ai/api/v1",
+                "key": "relay-key",
+                "api_config": {},
+            },
+        )
+    )
+
+    assert result[0]["url"] == "/api/v1/files/generated"
+    assert result[0]["usage"]["output_tokens"] == 1
+    assert captured["post_args"][0] == "https://openrouter.ai/api/v1/chat/completions"
+    assert captured["post_kwargs"]["json"]["stream"] is False
+
+
 def test_chat_openai_model_with_chat_only_endpoint_uses_chat_image_path(monkeypatch):
     same_base_url = "https://relay.example.com/v1"
     cfg = SimpleNamespace(
@@ -1924,6 +2000,7 @@ def test_chat_openai_image_path_receives_requested_batch_size(monkeypatch):
             images_router.GenerateImageForm(
                 prompt="draw a dog",
                 model=selected_model,
+                stream=False,
                 image_url="/api/v1/files/source/content",
                 image_route_mode="chat",
                 n=4,
@@ -1936,6 +2013,7 @@ def test_chat_openai_image_path_receives_requested_batch_size(monkeypatch):
     assert result == [{"url": "/api/v1/files/generated"}]
     assert captured["model_id"] == "gpt-image-2"
     assert captured["n"] == 4
+    assert captured["stream"] is False
 
 
 def test_chat_openai_dedicated_image_with_reference_defaults_to_edit_route(monkeypatch):
