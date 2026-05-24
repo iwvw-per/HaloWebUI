@@ -69,6 +69,20 @@
 
 	$: setTextScale($settings?.textScale ?? TEXT_SCALE_DEFAULT);
 
+	const hasAuthenticatedConfig = (backendConfig) =>
+		backendConfig?.default_prompt_suggestions !== undefined;
+
+	const applyBackendConfig = async (backendConfig) => {
+		if (!backendConfig) {
+			return;
+		}
+
+		// Branding: treat APP_NAME as source of truth for frontend identity.
+		// Backend config name may still be the upstream default ("Open WebUI"), which causes title flicker.
+		await config.set({ ...backendConfig, name: APP_NAME });
+		await WEBUI_NAME.set(APP_NAME);
+	};
+
 	const formatError = (error) =>
 		localizeCommonError(error, (key, options) => $i18n.t(key, options));
 
@@ -569,7 +583,7 @@
 
 		let backendConfig = null;
 		try {
-			backendConfig = await getBackendConfig();
+			backendConfig = await getBackendConfig(localStorage.token);
 			console.log('Backend config:', backendConfig);
 		} catch (error) {
 			console.error('Error loading backend config:', error);
@@ -583,7 +597,7 @@
 			const browserLanguages = navigator.languages
 				? navigator.languages
 				: [navigator.language || navigator.userLanguage];
-			const lang = backendConfig.default_locale
+			const lang = backendConfig?.default_locale
 				? backendConfig.default_locale
 				: bestMatchingLanguage(languages, browserLanguages, 'en-US');
 			await changeLanguage(lang);
@@ -591,10 +605,7 @@
 
 		if (backendConfig) {
 			// Save Backend Status to Store
-			// Branding: treat APP_NAME as source of truth for frontend identity.
-			// Backend config name may still be the upstream default ("Open WebUI"), which causes title flicker.
-			await config.set({ ...backendConfig, name: APP_NAME });
-			await WEBUI_NAME.set(APP_NAME);
+			await applyBackendConfig(backendConfig);
 
 			if ($config) {
 				await setupSocket($config.features?.enable_websocket ?? true);
@@ -611,6 +622,20 @@
 
 					if (sessionUser) {
 						// Save Session User to Store
+						if (sessionUser.token) {
+							localStorage.token = sessionUser.token;
+						}
+
+						if (!hasAuthenticatedConfig($config)) {
+							const authenticatedBackendConfig = await getBackendConfig(
+								sessionUser.token ?? localStorage.token
+							).catch((error) => {
+								console.error('Error loading authenticated backend config:', error);
+								return null;
+							});
+							await applyBackendConfig(authenticatedBackendConfig);
+						}
+
 						$socket.emit('user-join', { auth: { token: sessionUser.token } });
 
 						await user.set(sessionUser);

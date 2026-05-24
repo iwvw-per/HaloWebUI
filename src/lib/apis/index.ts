@@ -751,14 +751,15 @@ export const generateMoACompletion = async (
 	return [res, controller];
 };
 
-export const getBackendConfig = async () => {
+export const getBackendConfig = async (token: string = '') => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_BASE_URL}/api/config`, {
 		method: 'GET',
 		credentials: 'include',
 		headers: {
-			'Content-Type': 'application/json'
+			'Content-Type': 'application/json',
+			...(token && { authorization: `Bearer ${token}` })
 		}
 	})
 		.then(parseJsonResponse)

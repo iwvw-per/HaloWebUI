@@ -1966,21 +1966,35 @@ def _get_user_tool_calling_mode(request: Request, user) -> str:
     return app.state.config.TOOL_CALLING_MODE
 
 
-@app.get("/api/config")
-async def get_app_config(request: Request):
-    user = None
+def _get_config_user(request: Request):
+    auth_token = getattr(request.state, "token", None)
+    token_candidates = []
+
+    if auth_token is None:
+        auth_token = get_http_authorization_cred(request.headers.get("Authorization"))
+
+    if auth_token is not None and auth_token.scheme.lower() == "bearer":
+        token_candidates.append(auth_token.credentials)
+
     if "token" in request.cookies:
-        token = request.cookies.get("token")
-        try:
-            data = decode_token(token)
-        except Exception as e:
-            log.debug(e)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
-            )
+        token_candidates.append(request.cookies.get("token"))
+
+    for token in token_candidates:
+        if not token:
+            continue
+
+        data = decode_token(token)
         if data is not None and "id" in data:
             user = Users.get_user_by_id(data["id"])
+            if user is not None:
+                return user
+
+    return None
+
+
+@app.get("/api/config")
+async def get_app_config(request: Request):
+    user = _get_config_user(request)
 
     user_count = Users.get_num_users()
     onboarding = False
