@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import json
 import logging
 import os
@@ -67,6 +68,28 @@ log.setLevel(SRC_LOG_LEVELS["AUDIO"])
 
 SPEECH_CACHE_DIR = CACHE_DIR / "audio" / "speech"
 SPEECH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+MIMO_TTS_API_URL = "https://api.xiaomimimo.com/v1/chat/completions"
+MIMO_TTS_DEFAULT_MODEL = "mimo-v2.5-tts"
+MIMO_TTS_DEFAULT_VOICE = "mimo_default"
+MIMO_TTS_MODELS = [
+    {"id": "mimo-v2.5-tts", "name": "MiMo-V2.5-TTS"},
+    {"id": "mimo-v2-tts", "name": "MiMo-V2-TTS"},
+]
+MIMO_TTS_MODEL_IDS = {model["id"] for model in MIMO_TTS_MODELS}
+MIMO_TTS_VOICES = {
+    "mimo_default": "MiMo Default",
+    "default_zh": "MiMo V2 Chinese Female",
+    "default_en": "MiMo V2 English Female",
+    "\u51b0\u7cd6": "Bingtang (Chinese Female)",
+    "\u8309\u8389": "Moli (Chinese Female)",
+    "\u82cf\u6253": "Soda (Chinese Male)",
+    "\u767d\u6866": "Baihua (Chinese Male)",
+    "Mia": "Mia (English Female)",
+    "Chloe": "Chloe (English Female)",
+    "Milo": "Milo (English Male)",
+    "Dean": "Dean (English Male)",
+}
 
 
 ##########################################
@@ -153,6 +176,53 @@ async def _read_audio_aiohttp_error_detail(response=None, error=None, prefix: st
 def _read_audio_requests_error_detail(response=None, error=None, prefix: str | None = None) -> str:
     payload = read_requests_error_payload(response)
     return build_error_detail(payload, error, prefix=prefix)
+
+
+def _resolve_mimo_tts_model(model: str | None) -> str:
+    return model if model in MIMO_TTS_MODEL_IDS else MIMO_TTS_DEFAULT_MODEL
+
+
+def _resolve_mimo_tts_voice(*voices: str | None) -> str:
+    for voice in voices:
+        if voice in MIMO_TTS_VOICES:
+            return voice
+    return MIMO_TTS_DEFAULT_VOICE
+
+
+def _build_mimo_tts_payload(payload: dict, model: str, voice: str) -> dict:
+    text = str(payload.get("input") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided for speech synthesis")
+
+    selected_model = _resolve_mimo_tts_model(model)
+    selected_voice = _resolve_mimo_tts_voice(payload.get("voice"), voice)
+
+    return {
+        "model": selected_model,
+        "messages": [{"role": "assistant", "content": text}],
+        "audio": {
+            "format": "wav",
+            "voice": selected_voice,
+        },
+    }
+
+
+def _extract_mimo_tts_audio_bytes(data: dict) -> bytes:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("MiMo TTS response did not include choices")
+
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    audio = message.get("audio") if isinstance(message, dict) else None
+    audio_data = audio.get("data") if isinstance(audio, dict) else None
+
+    if not isinstance(audio_data, str) or not audio_data.strip():
+        raise ValueError("MiMo TTS response did not include audio data")
+
+    try:
+        return base64.b64decode(audio_data)
+    except Exception as exc:
+        raise ValueError("MiMo TTS response included invalid audio data") from exc
 
 
 ##########################################
@@ -294,25 +364,42 @@ def load_speech_pipeline(request):
 @router.post("/speech")
 async def speech(request: Request, user=Depends(get_verified_user)):
     body = await request.body()
-    name = hashlib.sha256(
-        body
-        + str(request.app.state.config.TTS_ENGINE).encode("utf-8")
-        + str(request.app.state.config.TTS_MODEL).encode("utf-8")
-    ).hexdigest()
-
-    file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.mp3")
-    file_body_path = SPEECH_CACHE_DIR.joinpath(f"{name}.json")
-
-    # Check if the file already exists in the cache
-    if file_path.is_file():
-        return FileResponse(file_path)
-
     payload = None
     try:
         payload = json.loads(body.decode("utf-8"))
     except Exception as e:
         log.exception(e)
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    if request.app.state.config.TTS_ENGINE == "mimo":
+        cache_key_parts = [
+            body,
+            str(request.app.state.config.TTS_ENGINE).encode("utf-8"),
+            _resolve_mimo_tts_model(request.app.state.config.TTS_MODEL).encode("utf-8"),
+            _resolve_mimo_tts_voice(
+                payload.get("voice"), request.app.state.config.TTS_VOICE
+            ).encode("utf-8"),
+        ]
+    else:
+        cache_key_parts = [
+            body,
+            str(request.app.state.config.TTS_ENGINE).encode("utf-8"),
+            str(request.app.state.config.TTS_MODEL).encode("utf-8"),
+        ]
+
+    name = hashlib.sha256(
+        b"".join(cache_key_parts)
+    ).hexdigest()
+
+    file_extension = "wav" if request.app.state.config.TTS_ENGINE == "mimo" else "mp3"
+    file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.{file_extension}")
+    file_body_path = SPEECH_CACHE_DIR.joinpath(f"{name}.json")
+
+    # Check if the file already exists in the cache
+    if file_path.is_file():
+        if request.app.state.config.TTS_ENGINE == "mimo":
+            return FileResponse(file_path, media_type="audio/wav")
+        return FileResponse(file_path)
 
     if request.app.state.config.TTS_ENGINE == "openai":
         payload["model"] = request.app.state.config.TTS_MODEL
@@ -367,6 +454,68 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             raise HTTPException(
                 status_code=getattr(r, "status", 500) if r else 500,
                 detail=await _read_audio_aiohttp_error_detail(r, e),
+            )
+
+    elif request.app.state.config.TTS_ENGINE == "mimo":
+        r = None
+        try:
+            if not request.app.state.config.TTS_API_KEY:
+                raise HTTPException(
+                    status_code=400,
+                    detail="MiMo TTS API key is not configured",
+                )
+
+            mimo_payload = _build_mimo_tts_payload(
+                payload,
+                request.app.state.config.TTS_MODEL,
+                request.app.state.config.TTS_VOICE,
+            )
+            timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
+            async with aiohttp.ClientSession(
+                timeout=timeout, trust_env=True
+            ) as session:
+                async with session.post(
+                    url=MIMO_TTS_API_URL,
+                    json=mimo_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "api-key": request.app.state.config.TTS_API_KEY,
+                        **(
+                            {
+                                "X-OpenWebUI-User-Name": user.name,
+                                "X-OpenWebUI-User-Id": user.id,
+                                "X-OpenWebUI-User-Email": user.email,
+                                "X-OpenWebUI-User-Role": user.role,
+                            }
+                            if ENABLE_FORWARD_USER_INFO_HEADERS
+                            else {}
+                        ),
+                    },
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                ) as r:
+                    r.raise_for_status()
+                    response_data = await r.json(content_type=None)
+                    audio_bytes = _extract_mimo_tts_audio_bytes(response_data)
+
+                    async with aiofiles.open(file_path, "wb") as f:
+                        await f.write(audio_bytes)
+
+                    async with aiofiles.open(file_body_path, "w") as f:
+                        await f.write(json.dumps(mimo_payload))
+
+            return FileResponse(file_path, media_type="audio/wav")
+
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise e
+
+            log.exception(e)
+            status_code = getattr(r, "status", 500) if r else 500
+            if status_code < 400:
+                status_code = 500
+            raise HTTPException(
+                status_code=status_code,
+                detail=await _read_audio_aiohttp_error_detail(r, e, prefix="MiMo TTS"),
             )
 
     elif request.app.state.config.TTS_ENGINE == "elevenlabs":
@@ -917,6 +1066,8 @@ def get_available_models(request: Request) -> list[dict]:
             ]
         except requests.RequestException as e:
             log.error(f"Error fetching voices: {str(e)}")
+    elif request.app.state.config.TTS_ENGINE == "mimo":
+        available_models = MIMO_TTS_MODELS
     return available_models
 
 
@@ -991,6 +1142,8 @@ def get_available_voices(request) -> dict:
                 )
         except requests.RequestException as e:
             log.error(f"Error fetching voices: {str(e)}")
+    elif request.app.state.config.TTS_ENGINE == "mimo":
+        available_voices = MIMO_TTS_VOICES
 
     return available_voices
 
