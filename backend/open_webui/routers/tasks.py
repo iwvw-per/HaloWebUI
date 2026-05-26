@@ -157,13 +157,6 @@ async def update_task_config(
 async def generate_title(
     request: Request, form_data: dict, user=Depends(get_verified_user)
 ):
-
-    if not request.app.state.config.ENABLE_TITLE_GENERATION:
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={"detail": "Title generation is disabled"},
-        )
-
     models = await _get_request_models(request, user)
     model_id = _resolve_task_model_id(request, models, form_data["model"])
 
@@ -237,13 +230,6 @@ async def generate_title(
 async def generate_chat_tags(
     request: Request, form_data: dict, user=Depends(get_verified_user)
 ):
-
-    if not request.app.state.config.ENABLE_TAGS_GENERATION:
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={"detail": "Tags generation is disabled"},
-        )
-
     models = await _get_request_models(request, user)
     model_id = _resolve_task_model_id(request, models, form_data["model"])
 

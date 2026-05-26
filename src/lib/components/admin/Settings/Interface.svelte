@@ -9,7 +9,6 @@
 	import { revealExpandedSection } from '$lib/utils/expanded-section-scroll';
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import Switch from '$lib/components/common/Switch.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
@@ -59,6 +58,19 @@
 		TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE: '',
 		CODE_INTERPRETER_PROMPT_TEMPLATE: ''
 	};
+	const editableTaskConfigFields = [
+		'TASK_MODEL_EXTERNAL',
+		'TITLE_GENERATION_PROMPT_TEMPLATE',
+		'TAGS_GENERATION_PROMPT_TEMPLATE',
+		'QUERY_GENERATION_PROMPT_TEMPLATE',
+		'IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE',
+		'TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE',
+		'CODE_INTERPRETER_PROMPT_TEMPLATE'
+	] as const;
+
+	// Keep toggles owned by their dedicated settings page instead of resaving them here.
+	const getEditableTaskConfig = () =>
+		Object.fromEntries(editableTaskConfigFields.map((field) => [field, taskConfig[field]]));
 
 	let loading = true;
 	let saving = false;
@@ -68,7 +80,7 @@
 	const BASELINE_SYNC_WINDOW_MS = 400;
 
 	const buildSnapshot = () => ({
-		taskConfig: cloneSettingsSnapshot(taskConfig)
+		taskConfig: cloneSettingsSnapshot(getEditableTaskConfig())
 	});
 
 	let snapshot: ReturnType<typeof buildSnapshot> | null = null;
@@ -127,7 +139,7 @@
 	const updateInterfaceHandler = async () => {
 		saving = true;
 		try {
-			taskConfig = await updateTaskConfig(localStorage.token, taskConfig);
+			taskConfig = await updateTaskConfig(localStorage.token, getEditableTaskConfig());
 			await config.set(await getBackendConfig());
 			await tick();
 			startBaselineSync();
@@ -139,7 +151,7 @@
 
 	const resetTasksChanges = () => {
 		if (!initialSnapshot) return;
-		taskConfig = cloneSettingsSnapshot(initialSnapshot.taskConfig);
+		taskConfig = { ...taskConfig, ...cloneSettingsSnapshot(initialSnapshot.taskConfig) };
 	};
 
 	onMount(async () => {
@@ -207,8 +219,9 @@
 					<div class="space-y-3">
 						<!-- Task Model -->
 						<div class="glass-item p-4">
-							<div class="flex items-center justify-between mb-3">
-								<div class="text-sm font-medium">{$i18n.t('Set Task Model')}</div>
+							<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+								<div class="flex items-center gap-1.5">
+									<div class="text-sm font-medium">{$i18n.t('Set Task Model')}</div>
 								<Tooltip
 									content={$i18n.t(
 										'A task model is used when performing tasks such as generating titles for chats and web search queries'
@@ -220,7 +233,7 @@
 										viewBox="0 0 24 24"
 										stroke-width="1.5"
 										stroke="currentColor"
-										class="size-3.5"
+										class="size-3.5 text-gray-400 dark:text-gray-500"
 									>
 										<path
 											stroke-linecap="round"
@@ -229,57 +242,51 @@
 										/>
 									</svg>
 								</Tooltip>
+								</div>
+								<HaloSelect
+									bind:value={taskConfig.TASK_MODEL_EXTERNAL}
+									options={[
+										{ value: '', label: $i18n.t('Current Model') },
+										...$models.map((model) => ({
+											value: getModelSelectionId(model),
+											label: getModelChatDisplayName(model)
+										}))
+									]}
+									placeholder={$i18n.t('Select a model')}
+									searchEnabled={true}
+									searchPlaceholder={$i18n.t('Search a model')}
+									noResultsText={$i18n.t('No results found')}
+									className="w-full sm:w-72 sm:shrink-0"
+								/>
 							</div>
-							<HaloSelect
-								bind:value={taskConfig.TASK_MODEL_EXTERNAL}
-								options={[
-									{ value: '', label: $i18n.t('Current Model') },
-									...$models.map((model) => ({
-										value: getModelSelectionId(model),
-										label: getModelChatDisplayName(model)
-									}))
-								]}
-								placeholder={$i18n.t('Select a model')}
-								className="w-full"
-							/>
 						</div>
 
 						<!-- Title Generation -->
 						<div class="glass-item p-4">
-							<div class="flex items-center justify-between mb-3">
-								<div class="text-sm font-medium">{$i18n.t('Title Generation')}</div>
-								<Switch bind:state={taskConfig.ENABLE_TITLE_GENERATION} />
+							<div class="text-sm font-medium mb-3">{$i18n.t('Title Generation')}</div>
+							<div>
+								<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('Title Generation Prompt')}</div>
+								<Textarea
+									bind:value={taskConfig.TITLE_GENERATION_PROMPT_TEMPLATE}
+									placeholder={$i18n.t(
+										'Leave empty to use the default prompt, or enter a custom prompt'
+									)}
+								/>
 							</div>
-							{#if taskConfig.ENABLE_TITLE_GENERATION}
-								<div>
-									<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('Title Generation Prompt')}</div>
-									<Textarea
-										bind:value={taskConfig.TITLE_GENERATION_PROMPT_TEMPLATE}
-										placeholder={$i18n.t(
-											'Leave empty to use the default prompt, or enter a custom prompt'
-										)}
-									/>
-								</div>
-							{/if}
 						</div>
 
 						<!-- Tags Generation -->
 						<div class="glass-item p-4">
-							<div class="flex items-center justify-between mb-3">
-								<div class="text-sm font-medium">{$i18n.t('Tags Generation')}</div>
-								<Switch bind:state={taskConfig.ENABLE_TAGS_GENERATION} />
+							<div class="text-sm font-medium mb-3">{$i18n.t('Tags Generation')}</div>
+							<div>
+								<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('Tags Generation Prompt')}</div>
+								<Textarea
+									bind:value={taskConfig.TAGS_GENERATION_PROMPT_TEMPLATE}
+									placeholder={$i18n.t(
+										'Leave empty to use the default prompt, or enter a custom prompt'
+									)}
+								/>
 							</div>
-							{#if taskConfig.ENABLE_TAGS_GENERATION}
-								<div>
-									<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('Tags Generation Prompt')}</div>
-									<Textarea
-										bind:value={taskConfig.TAGS_GENERATION_PROMPT_TEMPLATE}
-										placeholder={$i18n.t(
-											'Leave empty to use the default prompt, or enter a custom prompt'
-										)}
-									/>
-								</div>
-							{/if}
 						</div>
 
 						<!-- Query Generation -->

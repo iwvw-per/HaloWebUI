@@ -79,10 +79,12 @@
 
 	let statusCodesText = DEFAULT_STATUS_CODES.join(', ');
 	let errorKeywordsText = DEFAULT_ERROR_KEYWORDS.join('\n');
+	let bulkAddOpen = false;
+	let bulkKeysText = '';
+	let bulkKeyParseResult = { keys: [] as string[], duplicates: 0 };
 	let syncedPoolRef: ApiKeyPool | null = null;
 
-	const newId = () =>
-		`k_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+	const newId = () => `k_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
 	const normalizeMode = (value: any): ApiKeyPoolMode =>
 		['round_robin', 'random', 'priority'].includes(value) ? value : 'round_robin';
@@ -126,7 +128,10 @@
 		const parsed = value
 			.split(/[,\s]+/)
 			.map((item) => Number.parseInt(item.trim(), 10))
-			.filter((code, idx, arr) => Number.isInteger(code) && code >= 100 && code <= 599 && arr.indexOf(code) === idx);
+			.filter(
+				(code, idx, arr) =>
+					Number.isInteger(code) && code >= 100 && code <= 599 && arr.indexOf(code) === idx
+			);
 		return parsed.length ? parsed : [...DEFAULT_STATUS_CODES];
 	};
 
@@ -138,14 +143,37 @@
 		return parsed.length ? parsed : [...DEFAULT_ERROR_KEYWORDS];
 	};
 
+	const cleanBulkKey = (value: string) => value.trim().replace(/^["'`]+|["'`]+$/g, '');
+
+	const parseBulkKeys = (value: string, existingKeys: ApiKeyPoolEntry[] = []) => {
+		const knownKeys = new Set(
+			existingKeys.map((entry) => (entry?.key || '').toString().trim()).filter(Boolean)
+		);
+		const seenKeys = new Set<string>();
+		let duplicates = 0;
+		const keys = value
+			.split(/[\s,;，；、\/\\|]+/)
+			.map(cleanBulkKey)
+			.filter(Boolean)
+			.filter((key) => {
+				if (knownKeys.has(key) || seenKeys.has(key)) {
+					duplicates += 1;
+					return false;
+				}
+
+				seenKeys.add(key);
+				return true;
+			});
+
+		return { keys, duplicates };
+	};
+
 	const refreshTextFields = () => {
-		statusCodesText = (pool?.retry?.status_codes?.length
-			? pool.retry.status_codes
-			: DEFAULT_STATUS_CODES
+		statusCodesText = (
+			pool?.retry?.status_codes?.length ? pool.retry.status_codes : DEFAULT_STATUS_CODES
 		).join(', ');
-		errorKeywordsText = (pool?.retry?.error_keywords?.length
-			? pool.retry.error_keywords
-			: DEFAULT_ERROR_KEYWORDS
+		errorKeywordsText = (
+			pool?.retry?.error_keywords?.length ? pool.retry.error_keywords : DEFAULT_ERROR_KEYWORDS
 		).join('\n');
 	};
 
@@ -182,6 +210,24 @@
 				}
 			]
 		};
+	};
+
+	const importBulkKeys = () => {
+		const { keys } = parseBulkKeys(bulkKeysText, pool.keys);
+		if (!keys.length) return;
+
+		const existingFilledKeys = pool.keys.filter((entry) => (entry.key || '').toString().trim());
+		const startIndex = existingFilledKeys.length + 1;
+		const importedKeys = keys.map((key, idx) => ({
+			id: newId(),
+			label: defaultKeyLabel(startIndex + idx),
+			key,
+			enabled: true
+		}));
+
+		pool = { ...pool, keys: [...existingFilledKeys, ...importedKeys] };
+		bulkKeysText = '';
+		bulkAddOpen = false;
 	};
 
 	const removeKey = (id: string) => {
@@ -227,6 +273,8 @@
 		syncedPoolRef = pool;
 		refreshTextFields();
 	}
+
+	$: bulkKeyParseResult = parseBulkKeys(bulkKeysText, pool?.keys || []);
 </script>
 
 <Modal size="lg" bind:show dismissible={false}>
@@ -237,7 +285,9 @@
 					{$i18n.t('Manage API Keys')}
 				</div>
 				<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-					{$i18n.t('Keys are stored in this connection and only the first enabled key is mirrored to the legacy field.')}
+					{$i18n.t(
+						'Keys are stored in this connection and only the first enabled key is mirrored to the legacy field.'
+					)}
 				</div>
 			</div>
 			<button
@@ -255,7 +305,9 @@
 
 		<div class="flex-1 overflow-y-auto px-5 pb-4">
 			<div class="flex flex-col gap-4">
-				<div class="inline-grid w-full grid-cols-3 rounded-lg bg-gray-100 p-1 text-sm dark:bg-gray-800">
+				<div
+					class="inline-grid w-full grid-cols-3 rounded-lg bg-gray-100 p-1 text-sm dark:bg-gray-800"
+				>
 					{#each MODE_OPTIONS as option}
 						<button
 							type="button"
@@ -271,7 +323,9 @@
 
 				<div class="space-y-2">
 					{#each pool.keys as entry, idx (entry.id)}
-						<div class="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900">
+						<div
+							class="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900"
+						>
 							<div class="grid grid-cols-[minmax(7rem,0.5fr)_minmax(12rem,1fr)_auto] gap-2">
 								<input
 									class="min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none dark:border-gray-800 dark:bg-gray-950"
@@ -335,14 +389,103 @@
 							</div>
 						</div>
 					{/each}
-					<button
-						type="button"
-						class="inline-flex items-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-900"
-						on:click={addKey}
-					>
-						<Plus className="size-4" />
-						{$i18n.t('Add key')}
-					</button>
+
+					<div class="flex flex-wrap gap-2">
+						<button
+							type="button"
+							class="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200 dark:hover:bg-gray-900"
+							on:click={addKey}
+						>
+							<Plus className="size-4" />
+							{$i18n.t('Add key')}
+						</button>
+						<button
+							type="button"
+							class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900 {bulkAddOpen
+								? 'bg-gray-50 dark:bg-gray-900'
+								: 'bg-white dark:bg-gray-950'}"
+							on:click={() => (bulkAddOpen = !bulkAddOpen)}
+						>
+							<Plus className="size-4" />
+							{$i18n.t('Add multiple keys')}
+						</button>
+					</div>
+
+					{#if bulkAddOpen}
+						<div
+							class="rounded-xl border border-dashed border-gray-300 bg-white p-3 shadow-sm dark:border-gray-700 dark:bg-gray-950"
+						>
+							<div class="flex items-start justify-between gap-3">
+								<div>
+									<div class="text-sm font-medium text-gray-800 dark:text-gray-100">
+										{$i18n.t('Add multiple keys')}
+									</div>
+									<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+										{$i18n.t(
+											'Paste API keys separated by new lines, commas, semicolons or slashes. Duplicates are skipped.'
+										)}
+									</div>
+								</div>
+								<button
+									type="button"
+									class="rounded-lg p-1 text-gray-500 transition hover:bg-gray-100 dark:hover:bg-gray-800"
+									aria-label={$i18n.t('Close modal')}
+									on:click={() => (bulkAddOpen = false)}
+								>
+									<XMark className="size-4" />
+								</button>
+							</div>
+
+							<textarea
+								class="mt-3 h-28 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none transition focus:border-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:focus:border-gray-700"
+								bind:value={bulkKeysText}
+								placeholder={$i18n.t('Paste keys here')}
+							/>
+
+							<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+								<div class="min-h-5 text-xs text-gray-500 dark:text-gray-400">
+									{#if bulkKeyParseResult.keys.length}
+										<span class="font-medium text-gray-700 dark:text-gray-200">
+											{$i18n.t('{{count}} new keys ready', {
+												count: bulkKeyParseResult.keys.length
+											})}
+										</span>
+										{#if bulkKeyParseResult.duplicates}
+											<span>
+												· {$i18n.t('{{count}} duplicates skipped', {
+													count: bulkKeyParseResult.duplicates
+												})}
+											</span>
+										{/if}
+									{:else if bulkKeysText.trim()}
+										{$i18n.t('No new keys detected')}
+									{:else}
+										{$i18n.t('New keys will be appended below the existing list.')}
+									{/if}
+								</div>
+
+								<div class="flex gap-2">
+									{#if bulkKeysText.trim()}
+										<button
+											type="button"
+											class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+											on:click={() => (bulkKeysText = '')}
+										>
+											{$i18n.t('Clear')}
+										</button>
+									{/if}
+									<button
+										type="button"
+										class="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-black dark:hover:bg-gray-100"
+										disabled={!bulkKeyParseResult.keys.length}
+										on:click={importBulkKeys}
+									>
+										{$i18n.t('Import keys')}
+									</button>
+								</div>
+							</div>
+						</div>
+					{/if}
 				</div>
 
 				<div class="rounded-lg border border-gray-200 p-3 dark:border-gray-800">
@@ -352,13 +495,18 @@
 								{$i18n.t('Auto Retry With Next Key')}
 							</div>
 							<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-								{$i18n.t('Default rules cover rate limits, quota, timeout and temporary 5xx errors.')}
+								{$i18n.t(
+									'Default rules cover rate limits, quota, timeout and temporary 5xx errors.'
+								)}
 							</div>
 						</div>
 						<Switch
 							state={pool.retry.enabled}
 							on:change={(event) => {
-								pool = { ...pool, retry: { ...pool.retry, enabled: event.detail, preset: RETRY_PRESET } };
+								pool = {
+									...pool,
+									retry: { ...pool.retry, enabled: event.detail, preset: RETRY_PRESET }
+								};
 							}}
 						/>
 					</div>
@@ -366,7 +514,10 @@
 					{#if pool.retry.enabled}
 						<div class="mt-3 grid gap-3 md:grid-cols-[minmax(10rem,0.35fr)_minmax(14rem,1fr)]">
 							<div>
-								<label for="api-key-pool-retry-status-codes" class="mb-1 block text-xs text-gray-500">
+								<label
+									for="api-key-pool-retry-status-codes"
+									class="mb-1 block text-xs text-gray-500"
+								>
 									{$i18n.t('Retry Status Codes')}
 								</label>
 								<input
@@ -378,7 +529,10 @@
 								/>
 							</div>
 							<div>
-								<label for="api-key-pool-retry-error-keywords" class="mb-1 block text-xs text-gray-500">
+								<label
+									for="api-key-pool-retry-error-keywords"
+									class="mb-1 block text-xs text-gray-500"
+								>
 									{$i18n.t('Retry Error Keywords')}
 								</label>
 								<textarea
