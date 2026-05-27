@@ -342,21 +342,71 @@ def _last_user_prompt(messages: list[dict]) -> str:
     return ""
 
 
+def _successful_turns(rounds: list[dict]) -> list[dict]:
+    turns = []
+    for round_item in rounds:
+        round_index = round_item.get("index")
+        for turn in round_item.get("turns", []):
+            if turn.get("status") != "completed" or turn.get("error"):
+                continue
+            content = str(turn.get("content") or "").strip()
+            if not content:
+                continue
+            turns.append({**turn, "round": turn.get("round") or round_index})
+    return turns
+
+
+def _collect_failed_turns(rounds: list[dict]) -> list[dict]:
+    failures = []
+    for round_item in rounds:
+        round_index = round_item.get("index")
+        for turn in round_item.get("turns", []):
+            error = str(turn.get("error") or "").strip()
+            if turn.get("status") != "error" and not error:
+                continue
+            failures.append(
+                {
+                    "round": turn.get("round") or round_index,
+                    "model": turn.get("model"),
+                    "modelName": turn.get("modelName") or turn.get("model") or "Model",
+                    "error": error,
+                }
+            )
+    return failures
+
+
 def _format_transcript(rounds: list[dict]) -> str:
     lines = []
     for round_item in rounds:
         index = round_item.get("index")
-        lines.append(f"Round {index}")
-        for turn in round_item.get("turns", []):
+        round_lines = []
+        for turn in _successful_turns([round_item]):
             name = turn.get("modelName") or turn.get("model") or "Model"
             content = str(turn.get("content") or "").strip()
-            error = turn.get("error")
-            if error:
-                lines.append(f"- {name}: [failed] {error}")
-            elif content:
-                lines.append(f"- {name}: {content}")
-        lines.append("")
+            round_lines.append(f"- {name}: {content}")
+
+        if round_lines:
+            lines.append(f"Round {index}")
+            lines.extend(round_lines)
+            lines.append("")
     return "\n".join(lines).strip()
+
+
+def _format_failure_summary(failures: list[dict]) -> str:
+    lines = []
+    for failure in failures:
+        name = failure.get("modelName") or failure.get("model") or "Model"
+        round_index = failure.get("round") or "?"
+        lines.append(f"- Round {round_index} - {name}: failed")
+    return "\n".join(lines).strip()
+
+
+def _refresh_discussion_counts(discussion_state: dict) -> None:
+    rounds = discussion_state.get("rounds", [])
+    failures = _collect_failed_turns(rounds)
+    discussion_state["successCount"] = len(_successful_turns(rounds))
+    discussion_state["failureCount"] = len(failures)
+    discussion_state["failures"] = failures
 
 
 def _build_participant_prompt(
@@ -373,20 +423,38 @@ def _build_participant_prompt(
             f"User question:\n{user_prompt}"
         )
 
+    if not transcript:
+        return (
+            f"You are {participant_name}, one participant in round {round_index} of a multi-model discussion.\n"
+            "No previous successful viewpoints are available yet. Continue from the user's question directly, "
+            "and do not infer anything from failed or empty turns.\n\n"
+            f"User question:\n{user_prompt}"
+        )
+
     return (
         f"You are {participant_name}, one participant in round {round_index} of a multi-model discussion.\n"
-        "Read the previous viewpoints, then add missing points, correct mistakes, or challenge weak reasoning. Do not repeat what is already sufficient.\n\n"
+        "Read the previous viewpoints, then add missing points, correct mistakes, or challenge weak reasoning. Do not repeat what is already sufficient.\n"
+        "The transcript below includes only successful turns; failed or empty turns are omitted and must not be treated as evidence.\n\n"
         f"User question:\n{user_prompt}\n\n"
         f"Previous discussion:\n{transcript}"
     )
 
 
-def _build_final_prompt(user_prompt: str, transcript: str) -> str:
+def _build_final_prompt(
+    user_prompt: str,
+    transcript: str,
+    failure_summary: str = "",
+) -> str:
+    successful_context = transcript or "No successful participant turns are available."
+    failed_context = failure_summary or "No failed participant turns were reported."
     return (
-        "Several models have discussed the user's question. Produce the final answer for the user.\n"
-        "Use the strongest points, mention important disagreements only when they affect the answer, and be direct.\n\n"
+        "Several models were asked to discuss the user's question. Produce the final answer for the user.\n"
+        "Use only the successful discussion transcript as source material. Failed turns are operational failures, not viewpoints or evidence.\n"
+        "If failed turns are listed, briefly disclose that the final answer is based on the successful contributions only. "
+        "If no successful participant turns are available, answer directly from the user's question and state that the discussion could not be synthesized from participant viewpoints.\n\n"
         f"User question:\n{user_prompt}\n\n"
-        f"Discussion transcript:\n{transcript}"
+        f"Discussion transcript:\n{successful_context}\n\n"
+        f"Failed discussion turns (not evidence):\n{failed_context}"
     )
 
 
@@ -461,6 +529,9 @@ async def generate_multi_model_discussion_completion(
         "rounds": [],
         "finalModel": {"id": final_model["id"], "name": final_model["name"]},
         "strategy": settings["strategy"],
+        "successCount": 0,
+        "failureCount": 0,
+        "failures": [],
         "updatedAt": int(time.time()),
     }
 
@@ -526,17 +597,23 @@ async def generate_multi_model_discussion_completion(
                         turn["usage"] = result.get("usage") or {}
                         turn["status"] = "completed"
                         usage_items.append(deepcopy(turn))
+                        _refresh_discussion_counts(discussion_state)
                         await emit_discussion("turn_done", **turn)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
                         turn["status"] = "error"
                         turn["error"] = str(exc)
+                        _refresh_discussion_counts(discussion_state)
                         await emit_discussion("turn_error", **turn)
 
+                _refresh_discussion_counts(discussion_state)
                 await emit_discussion("round_done", round=round_index, status="running")
 
             transcript = _format_transcript(discussion_state["rounds"])
+            failures = _collect_failed_turns(discussion_state["rounds"])
+            failure_summary = _format_failure_summary(failures)
+            _refresh_discussion_counts(discussion_state)
             discussion_state["status"] = "summarizing"
             await emit_discussion(
                 "final_start",
@@ -549,7 +626,17 @@ async def generate_multi_model_discussion_completion(
                 form_data,
                 user,
                 final_model["request_id"],
-                [*base_messages, {"role": "user", "content": _build_final_prompt(user_prompt, transcript)}],
+                [
+                    *base_messages,
+                    {
+                        "role": "user",
+                        "content": _build_final_prompt(
+                            user_prompt,
+                            transcript,
+                            failure_summary,
+                        ),
+                    },
+                ],
             )
             final_content = final_result.get("content", "")
             final_usage_item = {
