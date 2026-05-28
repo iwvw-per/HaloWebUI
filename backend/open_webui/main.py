@@ -108,6 +108,7 @@ from open_webui.utils.user_tools import (
     TOOL_CALLING_MODE_OFF,
     TOOL_CALLING_MODE_NATIVE,
     get_user_native_tools_config,
+    get_user_native_tools_config_override,
     normalize_tool_calling_mode,
 )
 from open_webui.utils.mcp import MCPStdioProcessManager
@@ -1613,31 +1614,42 @@ async def chat_completion(
             if str(requested_function_calling).lower() != "native":
                 strip_non_native_function_calling = True
                 form_data["params"].pop("function_calling", None)
+
+        account_native_cfg = get_user_native_tools_config_override(user)
+        account_tool_calling_mode = (
+            normalize_tool_calling_mode(
+                account_native_cfg.get(TOOL_CALLING_MODE_KEY),
+            )
+            if TOOL_CALLING_MODE_KEY in account_native_cfg
+            else None
+        )
+        global_native_cfg = get_user_native_tools_config(request, None)
+        global_tool_calling_mode = normalize_tool_calling_mode(
+            (global_native_cfg or {}).get(TOOL_CALLING_MODE_KEY),
+        )
+
         model_function_calling = (
             model_info.params.model_dump().get("function_calling")
             if model_info
             else None
         )
 
-        # Resolve function calling mode with explicit overrides:
-        # - If the request sets params.function_calling, it wins.
-        # - Else if the model sets function_calling, it wins.
-        # - Else fall back to the global default (TOOL_CALLING_MODE).
+        # Resolve tool calling with user intent first. The right-side account
+        # control is an explicit user choice and must not be overridden by a
+        # model-level default.
         effective_tool_calling_mode = None
         if requested_function_calling is not None:
             effective_tool_calling_mode = normalize_tool_calling_mode(
                 requested_function_calling,
             )
+        elif account_tool_calling_mode is not None:
+            effective_tool_calling_mode = account_tool_calling_mode
         elif model_function_calling is not None:
             effective_tool_calling_mode = normalize_tool_calling_mode(
                 model_function_calling,
             )
         else:
-            # Per-account default (admins and users). Global config remains the fallback default.
-            native_cfg = get_user_native_tools_config(request, user)
-            effective_tool_calling_mode = normalize_tool_calling_mode(
-                (native_cfg or {}).get(TOOL_CALLING_MODE_KEY),
-            )
+            effective_tool_calling_mode = global_tool_calling_mode
         function_calling_native = effective_tool_calling_mode == TOOL_CALLING_MODE_NATIVE
         tool_calling_disabled = effective_tool_calling_mode == TOOL_CALLING_MODE_OFF
         preview_tool_compat = (

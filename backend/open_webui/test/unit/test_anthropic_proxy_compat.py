@@ -8,6 +8,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from open_webui.routers import anthropic
+from open_webui.utils.payload import normalize_openai_compatible_reasoning_controls
 
 
 def _profile(model_id: str) -> dict:
@@ -30,6 +31,50 @@ def test_resolve_thinking_payload_requires_explicit_opt_in():
     assert output_config is None
     assert budget == 8192
     assert enabled is True
+
+
+def test_mimo_off_is_normalized_before_anthropic_conversion():
+    payload = normalize_openai_compatible_reasoning_controls(
+        {
+            "model": "mimo-v2.5-pro",
+            "messages": [],
+            "reasoning_effort": "none",
+        },
+        model_id="mimo-v2.5-pro",
+    )
+
+    assert payload["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in payload
+
+    thinking, output_config, budget, enabled = anthropic._resolve_thinking_payload(
+        payload, model_profile=_profile("mimo-v2.5-pro")
+    )
+    assert thinking == {"type": "disabled"}
+    assert output_config is None
+    assert budget is None
+    assert enabled is False
+
+
+def test_mimo_default_removes_reasoning_controls_for_anthropic_conversion():
+    payload = normalize_openai_compatible_reasoning_controls(
+        {
+            "model": "mimo-v2.5-pro",
+            "messages": [],
+            "reasoning_effort": "default",
+        },
+        model_id="mimo-v2.5-pro",
+    )
+
+    assert "thinking" not in payload
+    assert "reasoning_effort" not in payload
+
+    thinking, output_config, budget, enabled = anthropic._resolve_thinking_payload(
+        payload, model_profile=_profile("mimo-v2.5-pro")
+    )
+    assert thinking is None
+    assert output_config is None
+    assert budget is None
+    assert enabled is False
 
 
 def test_resolve_thinking_payload_uses_effort_for_46_models():

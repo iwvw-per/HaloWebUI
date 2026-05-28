@@ -106,6 +106,18 @@ def _get_tools_settings(user: Optional[UserModel]) -> dict:
     return _as_dict(settings.get(TOOLS_KEY))
 
 
+def get_user_native_tools_config_override(user: Optional[UserModel]) -> dict:
+    """
+    Return only the native tool config explicitly stored on the account.
+
+    This intentionally does not merge global defaults. Callers that need to
+    resolve priority must be able to tell "the user chose default" apart from
+    "the user never chose anything".
+    """
+    tools = _get_tools_settings(user)
+    return _as_dict(tools.get(NATIVE_TOOLS_KEY))
+
+
 def _with_settings(user: UserModel, settings_dict: dict) -> UserModel:
     settings_model = UserSettings.model_validate(settings_dict)
     return user.model_copy(update={"settings": settings_model})

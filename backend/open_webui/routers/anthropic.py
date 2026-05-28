@@ -60,6 +60,7 @@ from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_model_system_prompt_to_body,
     merge_additive_payload_fields,
+    normalize_openai_compatible_reasoning_controls,
 )
 from open_webui.utils.chat_image_refs import resolve_chat_image_url_to_bytes
 from open_webui.utils.error_handling import build_error_detail
@@ -2263,6 +2264,10 @@ async def generate_chat_completion(
     payload["model"] = upstream_model_id
     # Preserve proxy model ids as-is unless a proxy has an explicit compatibility override.
     upstream_model_id = _resolve_proxy_model_alias(upstream_model_id, base_url)
+    payload = normalize_openai_compatible_reasoning_controls(
+        payload,
+        model_id=upstream_model_id,
+    )
     model_profile = _build_anthropic_model_profile(
         upstream_model_id,
         (request_model_entry or {}).get("anthropic")

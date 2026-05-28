@@ -3047,10 +3047,13 @@ async def generate_chat_completion(
     _msg_count = len(payload_dict.get("messages", [])) if isinstance(payload_dict, dict) else "?"
     _tools_count = len(payload_dict.get("tools", [])) if isinstance(payload_dict, dict) and payload_dict.get("tools") else 0
     _reasoning_info = payload_dict.get("reasoning") if isinstance(payload_dict, dict) else None
+    _reasoning_effort_info = payload_dict.get("reasoning_effort") if isinstance(payload_dict, dict) else None
+    _thinking_info = payload_dict.get("thinking") if isinstance(payload_dict, dict) else None
+    _max_thinking_tokens_info = payload_dict.get("max_thinking_tokens") if isinstance(payload_dict, dict) else None
     _store_info = payload_dict.get("store") if isinstance(payload_dict, dict) else None
     _include_info = payload_dict.get("include") if isinstance(payload_dict, dict) else None
     log.info(
-        "[UPSTREAM REQUEST] POST %s | model=%s | payload_keys=%s | messages=%s | tools=%s | size=%d | reasoning=%s | store=%s | include=%s | native_file_inputs=%s | responses=%s",
+        "[UPSTREAM REQUEST] POST %s | model=%s | payload_keys=%s | messages=%s | tools=%s | size=%d | reasoning=%s | reasoning_effort=%s | thinking=%s | max_thinking_tokens=%s | store=%s | include=%s | native_file_inputs=%s | responses=%s",
         request_url,
         payload_dict.get("model", "?") if isinstance(payload_dict, dict) else "?",
         _diag_keys,
@@ -3058,6 +3061,9 @@ async def generate_chat_completion(
         _tools_count,
         len(payload_json),
         _reasoning_info or "none",
+        _reasoning_effort_info or "none",
+        _thinking_info or "none",
+        _max_thinking_tokens_info or "none",
         _store_info,
         _include_info,
         native_file_inputs,
