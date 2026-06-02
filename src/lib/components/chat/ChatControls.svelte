@@ -20,23 +20,23 @@
 	import Artifacts from './Artifacts.svelte';
 
 	export let history;
-	export let models = [];
+	export let models: any[] = [];
 
 	export let chatId = null;
 
-	export let chatFiles = [];
-	export let params = {};
+	export let chatFiles: any[] = [];
+	export let params: Record<string, any> = {};
 
 	export let eventTarget: EventTarget;
 	export let submitPrompt: Function;
 	export let stopResponse: Function;
 	export let showMessage: Function;
-	export let files;
-	export let modelId;
+	export let files: any[] = [];
+	export let modelId: string | string[] | null = null;
 	export let imageGenerationEnabled = false;
 	export let currentValvesContext = null;
 
-	export let pane;
+	export let pane: any;
 
 	type ViewportMode = 'mobile' | 'tablet' | 'desktop';
 	type DesktopPaneMode = 'standard' | 'immersive';
@@ -233,11 +233,11 @@
 		ignoreNextPaneCollapse = false;
 	};
 
-	const onMouseDown = (event) => {
+	const onMouseDown = (_event: MouseEvent) => {
 		dragged = true;
 	};
 
-	const onMouseUp = (event) => {
+	const onMouseUp = (_event: MouseEvent) => {
 		dragged = false;
 	};
 
@@ -389,6 +389,7 @@
 								showControls.set(false);
 							}}
 							{models}
+							{modelId}
 							{currentValvesContext}
 							bind:chatFiles
 							bind:params
@@ -484,6 +485,7 @@
 										showControls.set(false);
 									}}
 									{models}
+									{modelId}
 									{currentValvesContext}
 									bind:chatFiles
 									bind:params

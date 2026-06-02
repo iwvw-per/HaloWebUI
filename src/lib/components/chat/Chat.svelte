@@ -1047,20 +1047,29 @@
 			.map((str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"')));
 	};
 
+	const getEffectiveChatSystemPrompt = () => {
+		const chatSystem =
+			typeof params?.system === 'string' && params.system.trim() ? params.system : null;
+		const globalSystem =
+			typeof $settings?.system === 'string' && $settings.system.trim() ? $settings.system : null;
+
+		return chatSystem ?? globalSystem;
+	};
+
 	const buildFloatingRequestMessages = async (messages) => {
-		const systemPrompt =
-			params?.system || $settings?.system
-				? promptTemplate(
-						params?.system ?? $settings?.system ?? '',
-						$user?.name,
-						$settings?.userLocation
-							? await getAndUpdateUserLocation(localStorage.token).catch((err) => {
-									console.error(err);
-									return undefined;
-								})
-							: undefined
-					)
-				: null;
+		const effectiveSystemPrompt = getEffectiveChatSystemPrompt();
+		const systemPrompt = effectiveSystemPrompt
+			? promptTemplate(
+					effectiveSystemPrompt,
+					$user?.name,
+					$settings?.userLocation
+						? await getAndUpdateUserLocation(localStorage.token).catch((err) => {
+								console.error(err);
+								return undefined;
+							})
+						: undefined
+				)
+			: null;
 
 		return [
 			systemPrompt
@@ -5017,24 +5026,32 @@
 			$settings?.params?.stream_response ??
 			true;
 
+		const effectiveSystemPrompt = getEffectiveChatSystemPrompt();
+		const userContext = responseMessage?.userContext ?? null;
+		const templatedSystemPrompt = effectiveSystemPrompt
+			? promptTemplate(
+					effectiveSystemPrompt,
+					$user?.name,
+					$settings?.userLocation
+						? await getAndUpdateUserLocation(localStorage.token).catch((err) => {
+								console.error(err);
+								return undefined;
+							})
+						: undefined
+				)
+			: '';
+		const systemMessageContent = [
+			templatedSystemPrompt,
+			userContext ? `User Context:\n${userContext}` : ''
+		]
+			.filter((content) => content.trim())
+			.join('\n\n');
+
 		let messages = [
-			params?.system || $settings.system || (responseMessage?.userContext ?? null)
+			systemMessageContent
 				? {
 						role: 'system',
-						content: `${promptTemplate(
-							params?.system ?? $settings?.system ?? '',
-							$user?.name,
-							$settings?.userLocation
-								? await getAndUpdateUserLocation(localStorage.token).catch((err) => {
-										console.error(err);
-										return undefined;
-									})
-								: undefined
-						)}${
-							(responseMessage?.userContext ?? null)
-								? `\n\nUser Context:\n${responseMessage?.userContext ?? ''}`
-								: ''
-						}`
+						content: systemMessageContent
 					}
 				: undefined,
 			...createMessagesList(_history, responseMessageId).map((message) => ({

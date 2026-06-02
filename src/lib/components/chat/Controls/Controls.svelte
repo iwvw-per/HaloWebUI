@@ -22,8 +22,9 @@
 		getAnthropicEffortSteps,
 		getAnthropicThinkingProfile
 	} from '$lib/utils/anthropic-thinking';
-	export let models = [];
-	export let chatFiles = [];
+	export let models: any[] = [];
+	export let modelId: string | string[] | null | undefined = null;
+	export let chatFiles: any[] = [];
 	export let params: Record<string, any> = {};
 	export let currentValvesContext: { tab: 'tools' | 'functions'; id: string } | null = null;
 
@@ -108,6 +109,33 @@
 		return value.trim() ? value : null;
 	};
 
+	const getModelIds = (value: string | string[] | null | undefined) =>
+		(Array.isArray(value) ? value : [value])
+			.map((id) => String(id ?? '').trim())
+			.filter(Boolean);
+
+	const getModelSystemPrompt = (model: any): string => {
+		const system =
+			model?.params?.system ?? model?.info?.params?.system ?? model?.model_info?.params?.system;
+
+		return typeof system === 'string' && system.trim() ? system : '';
+	};
+
+	const matchesModelId = (model: any, id: string) =>
+		[model?.id, model?.model, model?.name].some((value) => String(value ?? '') === id);
+
+	const getSelectedModel = (
+		modelList: any[] = [],
+		currentModelId: string | string[] | null | undefined = null
+	) => {
+		const ids = getModelIds(currentModelId);
+		if (!ids.length) {
+			return null;
+		}
+
+		return modelList.find((model) => ids.some((id) => matchesModelId(model, id))) ?? null;
+	};
+
 	const normalizeAdvancedValue = (key: (typeof ADVANCED_PARAM_KEYS)[number], value: unknown) => {
 		if (key === 'stop' || key === 'logit_bias' || key === 'template') {
 			if (typeof value !== 'string') {
@@ -122,7 +150,7 @@
 
 	const getDisplayedToolCallingMode = (): ToolCallingMode =>
 		normalizeToolCallingMode(params?.function_calling) ??
-		normalizeToolCallingMode($config?.tools?.calling_mode ?? null) ??
+		normalizeToolCallingMode(($config as any)?.tools?.calling_mode ?? null) ??
 		'default';
 
 	const buildAdvancedSnapshot = (): AdvancedSnapshot => ({
@@ -195,16 +223,16 @@
 	};
 
 	const updateGlobalToolCallingMode = async (newMode: ToolCallingMode) => {
-		config.update((c) => ({ ...c, tools: { ...c?.tools, calling_mode: newMode } }));
+		config.update((c: any) => ({ ...c, tools: { ...c?.tools, calling_mode: newMode } }));
 		try {
-			const current = await getNativeToolsConfig(localStorage.token);
+			const current: any = await getNativeToolsConfig(localStorage.token);
 			if (!current) return;
 			current.TOOL_CALLING_MODE = newMode;
 			await setNativeToolsConfig(localStorage.token, current);
 		} catch (err) {
 			console.error('Failed to update global tool calling mode', err);
 			const backendConfig = await getBackendConfig().catch(() => null);
-			if (backendConfig) config.set(backendConfig);
+			if (backendConfig) config.set(backendConfig as any);
 		}
 	};
 
@@ -236,10 +264,15 @@
 		params = { ...params, system: null };
 	};
 
+	const customizeSystemPromptForChat = () => {
+		markInteraction('system');
+		params = { ...params, system: hasGlobalSystemPrompt ? globalSystemPrompt : currentChatSystemPrompt };
+	};
+
 	const resetThinking = () => {
 		if (!initialSectionSnapshot) return;
 		markInteraction('thinking');
-		const restored = { ...params };
+		const restored: Record<string, any> = { ...params };
 		for (const key of THINKING_KEYS) {
 			restored[key] = initialSectionSnapshot.thinking[key];
 		}
@@ -250,7 +283,7 @@
 	const resetAdvanced = async () => {
 		if (!initialSectionSnapshot) return;
 		markInteraction('advanced');
-		const restored = { ...params };
+		const restored: Record<string, any> = { ...params };
 		for (const key of ADVANCED_PARAM_KEYS) {
 			restored[key] = initialSectionSnapshot.advanced[key];
 		}
@@ -268,7 +301,7 @@
 		markInteraction('system');
 		markInteraction('thinking');
 		markInteraction('advanced');
-		const restored = { ...params, system: initialSectionSnapshot.system };
+		const restored: Record<string, any> = { ...params, system: initialSectionSnapshot.system };
 		for (const key of THINKING_KEYS) {
 			restored[key] = initialSectionSnapshot.thinking[key];
 		}
@@ -404,10 +437,20 @@
 
 	$: currentChatSystemPrompt = typeof params?.system === 'string' ? params.system : '';
 	$: globalSystemPrompt = typeof $settings?.system === 'string' ? $settings.system : '';
+	$: displayedGlobalToolCallingMode = ($config as any)?.tools?.calling_mode ?? null;
+	$: selectedModel = getSelectedModel(models, modelId);
+	$: modelSystemPrompt = getModelSystemPrompt(selectedModel);
 	$: hasCurrentChatSystemPromptOverride = normalizeSystemValue(params?.system) !== null;
 	$: hasGlobalSystemPrompt = normalizeSystemValue($settings?.system) !== null;
-	// 系统提示词有内容时自动展开
-	$: systemPromptHasContent = !!currentChatSystemPrompt.trim();
+	$: hasModelSystemPrompt = normalizeSystemValue(modelSystemPrompt) !== null;
+	$: hasAnyEffectiveSystemPrompt =
+		hasModelSystemPrompt || hasCurrentChatSystemPromptOverride || hasGlobalSystemPrompt;
+	$: inheritedSystemPrompt = hasGlobalSystemPrompt ? globalSystemPrompt : '';
+	$: visibleChatSystemPrompt = hasCurrentChatSystemPromptOverride
+		? currentChatSystemPrompt
+		: inheritedSystemPrompt;
+	// 有任何会发送给模型的系统提示词时自动展开，避免继承内容看起来“消失”。
+	$: systemPromptHasContent = hasAnyEffectiveSystemPrompt;
 
 	const handleUpdateGlobalToolCallingMode = async (e: CustomEvent<ToolCallingMode>) => {
 		await updateGlobalToolCallingMode(e.detail);
@@ -512,7 +555,7 @@
 				</Collapsible>
 			</div>
 
-		{#if $user?.role === 'admin' || $user?.permissions.chat?.controls}
+		{#if $user?.role === 'admin' || $user?.permissions?.chat?.controls}
 			<!-- svelte-ignore a11y-no-static-element-interactions -->
 			<div
 				class="rounded-xl border bg-gray-50/40 dark:bg-white/[0.02] transition-all duration-300 relative
@@ -578,53 +621,75 @@
 
 					<div class="px-3 pb-3" slot="content">
 						<div class="space-y-3">
-							{#if !hasCurrentChatSystemPromptOverride}
-								<div class="rounded-xl border border-sky-200/80 bg-sky-50/70 p-3 dark:border-sky-800/60 dark:bg-sky-950/20">
-									<div class="flex items-center gap-2 text-[11px] font-medium text-sky-700 dark:text-sky-300">
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 20 20"
-											fill="currentColor"
-											class="size-3.5 shrink-0"
-										>
-											<path
-												fill-rule="evenodd"
-												d="M18 10A8 8 0 1 1 2 10a8 8 0 0 1 16 0Zm-7.25-3a.75.75 0 0 0-1.5 0v3.25c0 .414.336.75.75.75h2a.75.75 0 0 0 0-1.5h-1.25V7Z"
-												clip-rule="evenodd"
-											/>
-										</svg>
-										{$i18n.t('Current effective content comes from the global default system prompt.')}
-									</div>
-									{#if hasGlobalSystemPrompt}
-										<div class="mt-2 max-h-44 overflow-y-auto rounded-lg border border-sky-200/80 bg-white/90 px-3 py-2 text-xs leading-5 whitespace-pre-wrap text-gray-700 dark:border-sky-800/60 dark:bg-gray-900/70 dark:text-gray-200">
-											{globalSystemPrompt}
-										</div>
-									{:else}
-										<div class="mt-2 rounded-lg border border-dashed border-sky-200/80 bg-white/70 px-3 py-2 text-xs leading-5 text-sky-700/90 dark:border-sky-800/60 dark:bg-gray-900/50 dark:text-sky-300/90">
-											{$i18n.t('No global default system prompt is set yet.')}
-										</div>
-									{/if}
-								</div>
-							{/if}
-
 							<div class="space-y-2">
 								<div class="flex items-center justify-between gap-2">
-									<div class="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500 dark:text-gray-400">
-										{$i18n.t('Override for This Chat')}
+									<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+										{$i18n.t('System Prompt')}
 									</div>
-									<div class="text-[11px] text-gray-400 dark:text-gray-500">
-										{$i18n.t('Only affects the current chat')}
-									</div>
+									<span
+										class="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium {hasCurrentChatSystemPromptOverride
+											? 'bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300'
+											: hasGlobalSystemPrompt
+												? 'bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-300'
+												: hasModelSystemPrompt
+													? 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+													: 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500'}"
+									>
+										{hasCurrentChatSystemPromptOverride
+											? $i18n.t('This chat')
+											: hasGlobalSystemPrompt
+												? $i18n.t('Inherits global')
+												: hasModelSystemPrompt
+													? $i18n.t('Model default')
+													: $i18n.t('Not set')}
+									</span>
 								</div>
-								<textarea
-									bind:value={params.system}
-									on:input={lockBaseline}
-									class="w-full text-xs py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700/40 rounded-xl outline-hidden resize-none focus:border-blue-300/50 dark:focus:border-blue-500/30 transition-colors duration-200 placeholder:text-gray-400 dark:placeholder:text-gray-500"
-									rows="4"
-									placeholder={$i18n.t(
-										'Leave empty to inherit the global default system prompt. Enter text here to override it only for the current chat.'
-									)}
-								/>
+
+								{#if hasCurrentChatSystemPromptOverride || !hasGlobalSystemPrompt}
+									<textarea
+										bind:value={params.system}
+										on:input={lockBaseline}
+										class="w-full text-xs py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700/40 rounded-xl outline-hidden resize-none focus:border-blue-300/50 dark:focus:border-blue-500/30 transition-colors duration-200 placeholder:text-gray-400 dark:placeholder:text-gray-500"
+										rows="5"
+										placeholder={$i18n.t('Optional: add a system prompt for this chat')}
+									/>
+								{:else}
+									<textarea
+										value={visibleChatSystemPrompt}
+										readonly
+										class="w-full text-xs py-2.5 px-3 bg-gray-50/70 dark:bg-gray-800/40 border border-gray-200/60 dark:border-gray-700/40 rounded-xl outline-hidden resize-none text-gray-500 dark:text-gray-400"
+										rows="5"
+									/>
+								{/if}
+
+								<div class="flex items-center justify-between gap-2 text-[11px] text-gray-400 dark:text-gray-500">
+									<div>
+										{hasCurrentChatSystemPromptOverride
+											? $i18n.t('Only applies to this chat')
+											: hasGlobalSystemPrompt
+												? $i18n.t('Using your global prompt')
+												: hasModelSystemPrompt
+													? $i18n.t('This model has its own prompt')
+													: $i18n.t('No system prompt')}
+									</div>
+									{#if hasCurrentChatSystemPromptOverride && hasGlobalSystemPrompt}
+										<button
+											type="button"
+											class="shrink-0 text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
+											on:click={restoreSystemInheritance}
+										>
+											{$i18n.t('Use global')}
+										</button>
+									{:else if !hasCurrentChatSystemPromptOverride && hasGlobalSystemPrompt}
+										<button
+											type="button"
+											class="shrink-0 text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
+											on:click={customizeSystemPromptForChat}
+										>
+											{$i18n.t('Edit for this chat')}
+										</button>
+									{/if}
+								</div>
 							</div>
 						</div>
 					</div>
@@ -853,7 +918,7 @@
 					<div class="text-sm px-3 pb-3" slot="content">
 						<AdvancedParams
 							admin={$user?.role === 'admin'}
-							globalToolCallingMode={$config?.tools?.calling_mode ?? null}
+							globalToolCallingMode={displayedGlobalToolCallingMode}
 							followGlobalToolCallingMode={FOLLOW_GLOBAL_TOOL_CALLING_MODE}
 							enableCustomParams={true}
 							bind:params
