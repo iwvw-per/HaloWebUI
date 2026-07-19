@@ -20,7 +20,8 @@ WORKDIR /src
 COPY backend-go/go.mod backend-go/go.sum ./
 RUN go mod download
 COPY backend-go ./
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/halowebui ./cmd/halowebui
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/halowebui ./cmd/halowebui \
+    && mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot
 ARG BUILD_HASH=dev
@@ -36,6 +37,7 @@ ENV PORT=8080 \
 WORKDIR /app
 COPY --from=backend-build /out/halowebui /app/halowebui
 COPY --from=frontend-build /app/build /app/build
+COPY --chown=65532:65532 --from=backend-build /out/data /app/data
 VOLUME ["/app/data"]
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=2s --start-period=10s --retries=3 CMD ["/app/halowebui", "healthcheck"]
