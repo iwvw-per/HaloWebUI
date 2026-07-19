@@ -124,3 +124,8 @@ func (s *Store) DeleteFile(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+func (s *Store) DeleteAllFiles(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM file WHERE user_id = ?`, userID)
+	return err
+}

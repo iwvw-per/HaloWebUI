@@ -80,6 +80,7 @@ func (a *App) handleAddUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "failed to create user")
 		return
 	}
+	a.applyNewUserDefaults(r, user)
 	writeJSON(w, http.StatusOK, user)
 }
 

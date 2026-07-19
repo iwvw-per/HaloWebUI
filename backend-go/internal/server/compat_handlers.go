@@ -116,6 +116,7 @@ func (a *App) handleCompatibilitySetting(w http.ResponseWriter, r *http.Request,
 }
 
 func (a *App) handleCompatibilityResource(w http.ResponseWriter, r *http.Request, user store.User, domain string, rest []string) {
+	kind := compatibilityKind(domain)
 	if domain == "users" && len(rest) > 0 {
 		if r.Method == http.MethodGet {
 			writeJSON(w, http.StatusOK, []any{})
@@ -144,6 +145,29 @@ func (a *App) handleCompatibilityResource(w http.ResponseWriter, r *http.Request
 		a.handleCompatibilityByID(w, r, user, domain, rest[1:])
 		return
 	}
+	if len(rest) > 1 && (rest[0] == "command" || rest[0] == "name") {
+		resource, err := a.store.ResourceByKey(r.Context(), kind, rest[1])
+		if errors.Is(err, store.ErrResourceNotFound) && r.Method == http.MethodPost && len(rest) > 2 {
+			var body map[string]any
+			if !decodeJSON(w, r, &body) {
+				return
+			}
+			body["command"] = rest[1]
+			body["id"], body["user_id"] = auth.RandomIDForInternalUse(), user.ID
+			encoded, _ := json.Marshal(body)
+			created, createErr := a.store.PutResource(r.Context(), store.Resource{Kind: kind, ID: stringField(body, "id"), UserID: user.ID, Key: rest[1], Body: encoded, Active: true})
+			if createErr != nil {
+				writeError(w, http.StatusBadRequest, "failed to create resource")
+				return
+			}
+			writeRawJSON(w, http.StatusOK, resourceResponse(created))
+			return
+		}
+		if err == nil {
+			a.handleCompatibilityResourceByRecord(w, r, user, domain, resource, rest[2:])
+			return
+		}
+	}
 	if len(rest) > 0 {
 		a.handleCompatibilityByID(w, r, user, domain, rest)
 		return
@@ -155,8 +179,49 @@ func (a *App) handleCompatibilityResource(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"status": true})
 }
 
+func (a *App) handleCompatibilityResourceByRecord(w http.ResponseWriter, r *http.Request, user store.User, domain string, resource store.Resource, operations []string) {
+	if resource.UserID != user.ID && user.Role != "admin" {
+		writeError(w, http.StatusForbidden, "Access prohibited")
+		return
+	}
+	if r.Method == http.MethodGet && len(operations) == 0 {
+		writeRawJSON(w, http.StatusOK, resourceResponse(resource))
+		return
+	}
+	if r.Method == http.MethodDelete || (len(operations) > 0 && operations[len(operations)-1] == "delete") {
+		_ = a.store.DeleteResource(r.Context(), resource.Kind, resource.ID)
+		writeJSON(w, http.StatusOK, true)
+		return
+	}
+	if len(operations) > 0 && operations[len(operations)-1] == "toggle" {
+		updated, err := a.store.ToggleResource(r.Context(), resource.Kind, resource.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to toggle resource")
+			return
+		}
+		writeRawJSON(w, http.StatusOK, resourceResponse(updated))
+		return
+	}
+	var patch map[string]any
+	if !decodeJSON(w, r, &patch) {
+		return
+	}
+	var body map[string]any
+	_ = json.Unmarshal(resource.Body, &body)
+	for key, value := range patch {
+		body[key] = value
+	}
+	resource.Body, _ = json.Marshal(body)
+	updated, err := a.store.PutResource(r.Context(), resource)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update resource")
+		return
+	}
+	writeRawJSON(w, http.StatusOK, resourceResponse(updated))
+}
+
 func (a *App) writeCompatibilityList(w http.ResponseWriter, r *http.Request, domain string) {
-	resources, err := a.store.ListResources(r.Context(), domain, false)
+	resources, err := a.store.ListResources(r.Context(), compatibilityKind(domain), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list "+domain)
 		return
@@ -182,7 +247,7 @@ func (a *App) writeCompatibilityCreate(w http.ResponseWriter, r *http.Request, u
 	}
 	body["id"], body["user_id"] = id, user.ID
 	encoded, _ := json.Marshal(body)
-	resource, err := a.store.PutResource(r.Context(), store.Resource{Kind: domain, ID: id, UserID: user.ID, Key: resourceKey(domain, body, id), Body: encoded, Active: true})
+	resource, err := a.store.PutResource(r.Context(), store.Resource{Kind: compatibilityKind(domain), ID: id, UserID: user.ID, Key: resourceKey(domain, body, id), Body: encoded, Active: true})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create "+domain)
 		return
@@ -200,7 +265,8 @@ func (a *App) handleCompatibilityByID(w http.ResponseWriter, r *http.Request, us
 		writeJSON(w, http.StatusOK, map[string]any{"status": true})
 		return
 	}
-	resource, err := a.store.ResourceByID(r.Context(), domain, id)
+	kind := compatibilityKind(domain)
+	resource, err := a.store.ResourceByID(r.Context(), kind, id)
 	if errors.Is(err, store.ErrResourceNotFound) {
 		if r.Method == http.MethodGet {
 			writeError(w, http.StatusNotFound, "resource not found")
@@ -226,12 +292,12 @@ func (a *App) handleCompatibilityByID(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	if r.Method == http.MethodDelete || strings.HasSuffix(r.URL.Path, "/delete") {
-		_ = a.store.DeleteResource(r.Context(), domain, id)
+		_ = a.store.DeleteResource(r.Context(), kind, id)
 		writeJSON(w, http.StatusOK, true)
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/toggle") {
-		resource, _ = a.store.ToggleResource(r.Context(), domain, id)
+		resource, _ = a.store.ToggleResource(r.Context(), kind, id)
 		writeRawJSON(w, http.StatusOK, resourceResponse(resource))
 		return
 	}
@@ -250,5 +316,20 @@ func (a *App) handleCompatibilityByID(w http.ResponseWriter, r *http.Request, us
 		}
 		writeRawJSON(w, http.StatusOK, resourceResponse(resource))
 		return
+	}
+}
+
+func compatibilityKind(domain string) string {
+	switch domain {
+	case "prompts":
+		return "prompt"
+	case "tools":
+		return "tool"
+	case "skills":
+		return "skill"
+	case "notes":
+		return "note"
+	default:
+		return domain
 	}
 }

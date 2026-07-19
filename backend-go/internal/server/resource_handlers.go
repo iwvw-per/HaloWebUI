@@ -12,6 +12,16 @@ import (
 
 func (a *App) handleResourceList(kind string, activeOnly bool) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
+		prefix := map[string]string{
+			"prompt": "/api/v1/prompts",
+			"tool":   "/api/v1/tools",
+			"skill":  "/api/v1/skills",
+			"note":   "/api/v1/notes",
+		}[kind]
+		if request.URL.Path != prefix+"/" && request.URL.Path != prefix+"/list" {
+			a.handleCompatibility(response, request)
+			return
+		}
 		if _, ok := a.requireUser(response, request); !ok {
 			return
 		}

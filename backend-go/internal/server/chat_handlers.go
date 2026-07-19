@@ -81,6 +81,22 @@ func (a *App) handleChatImport(response http.ResponseWriter, request *http.Reque
 }
 
 func (a *App) handleChatList(response http.ResponseWriter, request *http.Request) {
+	if strings.HasPrefix(request.URL.Path, "/api/v1/chats/folder/") && !strings.HasSuffix(request.URL.Path, "/list") {
+		a.handleChatFolderList(response, request)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, "/api/v1/chats/assistant/") {
+		a.handleChatAssistantList(response, request)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, "/api/v1/chats/list/user/") {
+		a.handleChatListByUser(response, request)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, "/api/v1/chats/share/") {
+		a.handleSharedChat(response, request)
+		return
+	}
 	user, ok := a.requireUser(response, request)
 	if !ok {
 		return
@@ -127,7 +143,7 @@ func (a *App) handleChatByID(response http.ResponseWriter, request *http.Request
 			return
 		}
 		writeJSON(response, http.StatusOK, map[string]bool{"status": true})
-	case http.MethodPut:
+	case http.MethodPut, http.MethodPost:
 		a.updateChat(response, request, chat)
 	default:
 		http.NotFound(response, request)
@@ -181,11 +197,16 @@ func (a *App) handleChatField(response http.ResponseWriter, request *http.Reques
 	var value any
 	switch {
 	case strings.HasSuffix(request.URL.Path, "/archive"):
-		field, value = "archived", true
+		field, value = "archived", !chat.Archived
 	case strings.HasSuffix(request.URL.Path, "/pin"):
-		field, value = "pinned", true
+		field, value = "pinned", !chat.Pinned
 	case strings.HasSuffix(request.URL.Path, "/share"):
-		field, value = "share_id", auth.RandomIDForInternalUse()
+		field = "share_id"
+		if chat.ShareID != nil && *chat.ShareID != "" {
+			value = *chat.ShareID
+		} else {
+			value = auth.RandomIDForInternalUse()
+		}
 	case strings.HasSuffix(request.URL.Path, "/folder"):
 		var form struct {
 			FolderID *string `json:"folder_id"`

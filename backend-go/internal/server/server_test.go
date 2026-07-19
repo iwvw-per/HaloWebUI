@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +35,7 @@ func testApp(t *testing.T) *App {
 		EnableSignup:    true,
 		EnableLoginForm: true,
 		EnableAPIKey:    true,
+		DefaultUserRole: "pending",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -175,6 +177,79 @@ func TestAuthenticatedChatLifecycle(t *testing.T) {
 	}
 }
 
+func TestExtendedChatLifecycle(t *testing.T) {
+	app := testApp(t)
+	token := signupToken(t, app)
+	created := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/new", `{"chat":{"title":"Roadmap","messages":[]}}`)
+	chatID, _ := created["id"].(string)
+	if chatID == "" {
+		t.Fatalf("chat id missing: %#v", created)
+	}
+
+	search := authenticatedRequest(t, app, token, http.MethodGet, "/api/v1/chats/search?text=road", "")
+	var searchResults []map[string]any
+	if err := json.NewDecoder(search.Body).Decode(&searchResults); err != nil {
+		t.Fatal(err)
+	}
+	if search.Code != http.StatusOK || len(searchResults) != 1 {
+		t.Fatalf("unexpected search response: %d %s", search.Code, search.Body.String())
+	}
+
+	pinned := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/"+chatID+"/pin", "")
+	if pinned["pinned"] != true {
+		t.Fatalf("chat was not pinned: %#v", pinned)
+	}
+
+	tags := authenticatedRequest(t, app, token, http.MethodPost, "/api/v1/chats/"+chatID+"/tags", `{"name":"Release Plan"}`)
+	var tagList []map[string]any
+	if err := json.NewDecoder(tags.Body).Decode(&tagList); err != nil {
+		t.Fatal(err)
+	}
+	if tags.Code != http.StatusOK || len(tagList) != 1 || tagList[0]["id"] != "release_plan" {
+		t.Fatalf("unexpected tag response: %d %s", tags.Code, tags.Body.String())
+	}
+
+	shared := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/"+chatID+"/share", "")
+	shareID, _ := shared["share_id"].(string)
+	if shareID == "" {
+		t.Fatalf("share id missing: %#v", shared)
+	}
+	shareResponse := authenticatedRequest(t, app, token, http.MethodGet, "/api/v1/chats/share/"+shareID, "")
+	if shareResponse.Code != http.StatusOK {
+		t.Fatalf("shared chat lookup failed: %d %s", shareResponse.Code, shareResponse.Body.String())
+	}
+
+	cloned := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/"+chatID+"/clone", `{"title":"Roadmap copy"}`)
+	if cloned["id"] == chatID || cloned["title"] != "Roadmap copy" {
+		t.Fatalf("unexpected clone response: %#v", cloned)
+	}
+}
+
+func authenticatedJSON(t *testing.T, app *App, token, method, path, body string) map[string]any {
+	t.Helper()
+	response := authenticatedRequest(t, app, token, method, path, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("%s %s failed: %d %s", method, path, response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func authenticatedRequest(t *testing.T, app *App, token, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	return response
+}
+
 func TestAPIKeyAuthentication(t *testing.T) {
 	app := testApp(t)
 	token := signupToken(t, app)
@@ -231,6 +306,81 @@ func TestCompatibilityResourcePersists(t *testing.T) {
 	}
 }
 
+func TestAdminDefaultSettingsPersist(t *testing.T) {
+	app := testApp(t)
+	adminToken := signupToken(t, app)
+
+	defaults := authenticatedRequest(t, app, adminToken, http.MethodGet, "/api/v1/users/default/permissions", "")
+	if defaults.Code != http.StatusOK || !strings.Contains(defaults.Body.String(), `"temporary_enforced":false`) {
+		t.Fatalf("unexpected default permissions: %d %s", defaults.Code, defaults.Body.String())
+	}
+
+	updated := authenticatedRequest(t, app, adminToken, http.MethodPost, "/api/v1/users/default/settings", `{"enabled":true,"roles":["admin"],"ui":{"temporaryChatByDefault":true,"connections":{"openai":{"OPENAI_API_KEYS":["secret"]}}},"tools":{"native_tools":{"TOOL_CALLING_MODE":"native"}}}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update default settings failed: %d %s", updated.Code, updated.Body.String())
+	}
+	var saved map[string]any
+	if err := json.NewDecoder(updated.Body).Decode(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved["configured"] != true || saved["enabled"] != true {
+		t.Fatalf("unexpected saved defaults: %#v", saved)
+	}
+	roles, _ := saved["roles"].([]any)
+	ui, _ := saved["ui"].(map[string]any)
+	if len(roles) != 2 || ui["connections"] != nil {
+		t.Fatalf("unsafe new-user defaults were not sanitized: %#v", saved)
+	}
+
+	loaded := authenticatedRequest(t, app, adminToken, http.MethodGet, "/api/v1/users/default/settings", "")
+	if loaded.Code != http.StatusOK || !strings.Contains(loaded.Body.String(), `"temporaryChatByDefault":true`) {
+		t.Fatalf("default settings were not persisted: %d %s", loaded.Code, loaded.Body.String())
+	}
+
+	nonAdminToken := signupTokenFor(t, app, "User", "user@example.com")
+	userSettings := authenticatedRequest(t, app, nonAdminToken, http.MethodGet, "/api/v1/users/user/settings", "")
+	if userSettings.Code != http.StatusOK || !strings.Contains(userSettings.Body.String(), `"temporaryChatByDefault":true`) {
+		t.Fatalf("new user did not receive defaults: %d %s", userSettings.Code, userSettings.Body.String())
+	}
+	forbidden := authenticatedRequest(t, app, nonAdminToken, http.MethodGet, "/api/v1/users/default/settings", "")
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("non-admin accessed default settings: %d %s", forbidden.Code, forbidden.Body.String())
+	}
+}
+
+func TestAdminBulkModelUpdate(t *testing.T) {
+	app := testApp(t)
+	adminToken := signupToken(t, app)
+
+	created := authenticatedRequest(t, app, adminToken, http.MethodPost, "/api/v1/models/bulk/update", `{"items":[{"id":"gpt-4o","name":"GPT-4o"},{"id":"gpt-4o"},{"id":""}],"patch":{"is_active":false,"meta":{"group":"cloud"}}}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("bulk create failed: %d %s", created.Code, created.Body.String())
+	}
+	var result map[string]int
+	if err := json.NewDecoder(created.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result["created"] != 1 || result["updated"] != 0 || result["skipped"] != 2 {
+		t.Fatalf("unexpected bulk create result: %#v", result)
+	}
+
+	updated := authenticatedRequest(t, app, adminToken, http.MethodPost, "/api/v1/models/bulk/update", `{"items":[{"id":"gpt-4o"}],"patch":{"is_active":true,"meta":{"tier":"fast"},"access_control":{"read":{"group_ids":["staff"]}}}}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("bulk update failed: %d %s", updated.Code, updated.Body.String())
+	}
+	model := authenticatedJSON(t, app, adminToken, http.MethodGet, "/api/v1/models/model?id=gpt-4o", "")
+	meta, _ := model["meta"].(map[string]any)
+	if model["is_active"] != true || meta["group"] != "cloud" || meta["tier"] != "fast" {
+		t.Fatalf("bulk patch did not preserve shallow metadata: %#v", model)
+	}
+
+	nonAdminToken := signupTokenFor(t, app, "User", "user@example.com")
+	forbidden := authenticatedRequest(t, app, nonAdminToken, http.MethodPost, "/api/v1/models/bulk/update", `{"items":[],"patch":{}}`)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("non-admin performed bulk model update: %d %s", forbidden.Code, forbidden.Body.String())
+	}
+}
+
 func TestFrontendAPIDomainsHaveGoOwners(t *testing.T) {
 	owners := map[string]bool{
 		"analytics": true, "auths": true, "channels": true, "chats": true, "configs": true,
@@ -265,6 +415,29 @@ func TestFrontendAPIDomainsHaveGoOwners(t *testing.T) {
 	}
 }
 
+func TestTerminalWorkspaceIsSandboxed(t *testing.T) {
+	app := testApp(t)
+	app.config.EnableTerminal = true
+	token := signupToken(t, app)
+
+	mkdir := authenticatedRequest(t, app, token, http.MethodPost, "/api/v1/terminal/files/mkdir", `{"path":"notes"}`)
+	if mkdir.Code != http.StatusOK {
+		t.Fatalf("mkdir failed: %d %s", mkdir.Code, mkdir.Body.String())
+	}
+	write := authenticatedRequest(t, app, token, http.MethodPost, "/api/v1/terminal/files/content", `{"path":"notes/todo.txt","content":"ship Go"}`)
+	if write.Code != http.StatusOK {
+		t.Fatalf("write failed: %d %s", write.Code, write.Body.String())
+	}
+	read := authenticatedRequest(t, app, token, http.MethodGet, "/api/v1/terminal/files/content?path=notes%2Ftodo.txt", "")
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), "ship Go") {
+		t.Fatalf("read failed: %d %s", read.Code, read.Body.String())
+	}
+	traversal := authenticatedRequest(t, app, token, http.MethodGet, "/api/v1/terminal/files/content?path=..%2Fsecret", "")
+	if traversal.Code != http.StatusForbidden {
+		t.Fatalf("path traversal was not rejected: %d %s", traversal.Code, traversal.Body.String())
+	}
+}
+
 func signupToken(t *testing.T, app *App) string {
 	t.Helper()
 	response := httptest.NewRecorder()
@@ -276,6 +449,21 @@ func signupToken(t *testing.T, app *App) string {
 			bytes.NewBufferString(`{"name":"Admin","email":"admin@example.com","password":"secret"}`),
 		),
 	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("signup failed: %d %s", response.Code, response.Body.String())
+	}
+	var session map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&session); err != nil {
+		t.Fatal(err)
+	}
+	return session["token"].(string)
+}
+
+func signupTokenFor(t *testing.T, app *App, name, email string) string {
+	t.Helper()
+	response := httptest.NewRecorder()
+	body, _ := json.Marshal(map[string]string{"name": name, "email": email, "password": "secret"})
+	app.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/auths/signup", bytes.NewReader(body)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("signup failed: %d %s", response.Code, response.Body.String())
 	}

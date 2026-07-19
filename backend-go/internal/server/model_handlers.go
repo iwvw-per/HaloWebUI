@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/iwvw-per/HaloWebUI/backend-go/internal/store"
 )
@@ -118,6 +119,111 @@ func (a *App) handleWorkspaceModelsDeleteAll(response http.ResponseWriter, reque
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]bool{"status": true})
+}
+
+func (a *App) handleWorkspaceModelsBulkUpdate(response http.ResponseWriter, request *http.Request) {
+	user, ok := a.requireUser(response, request)
+	if !ok {
+		return
+	}
+	if user.Role != "admin" {
+		writeError(response, http.StatusForbidden, "Access prohibited")
+		return
+	}
+	var form struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+		Patch struct {
+			IsActive      *bool           `json:"is_active"`
+			AccessControl json.RawMessage `json:"access_control"`
+			Meta          json.RawMessage `json:"meta"`
+		} `json:"patch"`
+	}
+	if !decodeJSON(response, request, &form) {
+		return
+	}
+	if len(form.Patch.Meta) > 0 && string(form.Patch.Meta) != "null" && !jsonObject(form.Patch.Meta) {
+		writeError(response, http.StatusBadRequest, "meta must be a JSON object")
+		return
+	}
+
+	result := map[string]int{"updated": 0, "created": 0, "skipped": 0}
+	seen := make(map[string]struct{}, len(form.Items))
+	for _, item := range form.Items {
+		item.ID = strings.TrimSpace(item.ID)
+		if item.ID == "" {
+			result["skipped"]++
+			continue
+		}
+		if _, duplicate := seen[item.ID]; duplicate {
+			result["skipped"]++
+			continue
+		}
+		seen[item.ID] = struct{}{}
+
+		model, err := a.store.ModelByID(request.Context(), item.ID)
+		created := errors.Is(err, store.ErrModelNotFound)
+		if err != nil && !created {
+			writeError(response, http.StatusInternalServerError, "failed to load model")
+			return
+		}
+		if created {
+			name := strings.TrimSpace(item.Name)
+			if name == "" {
+				name = item.ID
+			}
+			model = store.Model{
+				ID: item.ID, UserID: user.ID, Name: name, Params: json.RawMessage(`{}`),
+				Meta: json.RawMessage(`{}`), IsActive: true,
+			}
+		} else if model.BaseModelID != nil {
+			result["skipped"]++
+			continue
+		}
+
+		if form.Patch.IsActive != nil {
+			model.IsActive = *form.Patch.IsActive
+		}
+		if len(form.Patch.AccessControl) > 0 {
+			if string(form.Patch.AccessControl) == "null" {
+				model.AccessControl = nil
+			} else {
+				model.AccessControl = append(json.RawMessage(nil), form.Patch.AccessControl...)
+			}
+		}
+		if len(form.Patch.Meta) > 0 && string(form.Patch.Meta) != "null" {
+			model.Meta = mergeJSONObject(model.Meta, form.Patch.Meta)
+		}
+		if _, err := a.store.UpsertModel(request.Context(), model); err != nil {
+			writeError(response, http.StatusInternalServerError, "failed to save model")
+			return
+		}
+		if created {
+			result["created"]++
+		} else {
+			result["updated"]++
+		}
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func jsonObject(value json.RawMessage) bool {
+	var object map[string]any
+	return json.Unmarshal(value, &object) == nil && object != nil
+}
+
+func mergeJSONObject(current, patch json.RawMessage) json.RawMessage {
+	merged := map[string]any{}
+	_ = json.Unmarshal(current, &merged)
+	var values map[string]any
+	_ = json.Unmarshal(patch, &values)
+	for key, value := range values {
+		merged[key] = value
+	}
+	encoded, _ := json.Marshal(merged)
+	return encoded
 }
 
 func applyModelPatch(model *store.Model, patch map[string]json.RawMessage) {

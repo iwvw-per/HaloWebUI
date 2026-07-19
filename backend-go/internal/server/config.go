@@ -33,6 +33,7 @@ type Config struct {
 	EnableWebSocket       bool
 	EnableAPIKey          bool
 	EnableAdminChatAccess bool
+	EnableTerminal        bool
 	DefaultUserRole       string
 	CookieSecure          bool
 	CookieSameSite        string
@@ -93,6 +94,7 @@ func LoadConfig(version string) (Config, error) {
 		EnableWebSocket:       envBool("ENABLE_WEBSOCKET_SUPPORT", false),
 		EnableAPIKey:          envBool("ENABLE_API_KEY", true),
 		EnableAdminChatAccess: envBool("ENABLE_ADMIN_CHAT_ACCESS", false),
+		EnableTerminal:        envBool("ENABLE_TERMINAL", false),
 		DefaultUserRole:       envString("DEFAULT_USER_ROLE", "pending"),
 		CookieSecure:          envBool("WEBUI_AUTH_COOKIE_SECURE", false),
 		CookieSameSite:        envString("WEBUI_AUTH_COOKIE_SAME_SITE", "lax"),

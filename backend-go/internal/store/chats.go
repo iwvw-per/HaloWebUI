@@ -105,6 +105,21 @@ func (s *Store) ChatByID(ctx context.Context, id string) (Chat, error) {
 }
 
 func (s *Store) ListChats(ctx context.Context, userID string, archived *bool, page, limit int) ([]Chat, error) {
+	return s.ListChatsWithFilter(ctx, userID, ChatFilter{Archived: archived}, page, limit)
+}
+
+// ChatFilter keeps the common chat list queries in one bounded SQL path.
+// Nil booleans mean that the corresponding field is not filtered.
+type ChatFilter struct {
+	Archived  *bool
+	Pinned    *bool
+	FolderID  *string
+	Assistant *string
+	Search    string
+	Shared    *bool
+}
+
+func (s *Store) ListChatsWithFilter(ctx context.Context, userID string, filter ChatFilter, page, limit int) ([]Chat, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 60
 	}
@@ -113,9 +128,37 @@ func (s *Store) ListChats(ctx context.Context, userID string, archived *bool, pa
 	}
 	conditions := []string{"user_id = ?"}
 	args := []any{userID}
-	if archived != nil {
+	if filter.Archived != nil {
 		conditions = append(conditions, "archived = ?")
-		args = append(args, *archived)
+		args = append(args, *filter.Archived)
+	}
+	if filter.Pinned != nil {
+		conditions = append(conditions, "pinned = ?")
+		args = append(args, *filter.Pinned)
+	}
+	if filter.FolderID != nil {
+		if *filter.FolderID == "" {
+			conditions = append(conditions, "(folder_id IS NULL OR folder_id = '')")
+		} else {
+			conditions = append(conditions, "folder_id = ?")
+			args = append(args, *filter.FolderID)
+		}
+	}
+	if filter.Assistant != nil {
+		conditions = append(conditions, "assistant_id = ?")
+		args = append(args, *filter.Assistant)
+	}
+	if filter.Search != "" {
+		pattern := "%" + strings.ToLower(strings.TrimSpace(filter.Search)) + "%"
+		conditions = append(conditions, "(lower(title) LIKE ? OR lower(chat) LIKE ?)")
+		args = append(args, pattern, pattern)
+	}
+	if filter.Shared != nil {
+		if *filter.Shared {
+			conditions = append(conditions, "share_id IS NOT NULL AND share_id <> ''")
+		} else {
+			conditions = append(conditions, "(share_id IS NULL OR share_id = '')")
+		}
 	}
 	args = append(args, limit, (page-1)*limit)
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM chat WHERE `+strings.Join(conditions, " AND ")+` ORDER BY updated_at DESC LIMIT ? OFFSET ?`, args...)
@@ -136,6 +179,52 @@ func (s *Store) ListChats(ctx context.Context, userID string, archived *bool, pa
 		chats = append(chats, chat)
 	}
 	return chats, rows.Err()
+}
+
+func (s *Store) ListSharedChats(ctx context.Context, userID string) ([]Chat, error) {
+	shared := true
+	return s.ListChatsWithFilter(ctx, userID, ChatFilter{Shared: &shared}, 1, 200)
+}
+
+func (s *Store) ListAllChats(ctx context.Context, limit int) ([]Chat, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM chat ORDER BY updated_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	chats := make([]Chat, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		chat, err := s.ChatByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		chats = append(chats, chat)
+	}
+	return chats, rows.Err()
+}
+
+func (s *Store) ChatByShareID(ctx context.Context, shareID string) (Chat, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM chat WHERE share_id = ?`, shareID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Chat{}, ErrChatNotFound
+	}
+	if err != nil {
+		return Chat{}, err
+	}
+	return s.ChatByID(ctx, id)
+}
+
+func (s *Store) DeleteAllChats(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM chat WHERE user_id = ?`, userID)
+	return err
 }
 
 func (s *Store) UpdateChat(ctx context.Context, chat Chat) (Chat, error) {
