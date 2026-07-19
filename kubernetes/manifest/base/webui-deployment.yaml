@@ -15,23 +15,25 @@ spec:
     spec:
       containers:
       - name: open-webui
-        image: ghcr.io/ztx888/halowebui:main
+        image: iwvw/halowebui:latest
         ports:
         - containerPort: 8080
         resources:
           requests:
             cpu: "500m"
-            memory: "500Mi"
+            memory: "128Mi"
           limits:
             cpu: "1000m"
-            memory: "1Gi"
+            memory: "200Mi"
         env:
         - name: OLLAMA_BASE_URL
           value: "http://ollama-service.open-webui.svc.cluster.local:11434"
+        - name: HALO_GO_MEMORY_LIMIT_MIB
+          value: "48"
         tty: true
         volumeMounts:
         - name: webui-volume
-          mountPath: /app/backend/data
+          mountPath: /app/data
       volumes:
       - name: webui-volume
         persistentVolumeClaim:

@@ -62,7 +62,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.go
+          file: Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -75,6 +75,22 @@ jobs:
           cache-to: type=gha,mode=max,scope=go-backend
       - name: Pull published image for smoke test
         run: docker pull ${{ env.IMAGE_NAME }}:git-${GITHUB_SHA::7}
+      - name: Verify slim image contents and size
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='${{ env.IMAGE_NAME }}:git-'"${GITHUB_SHA::7}"
+          image_size=$(docker image inspect --format '{{.Size}}' "$image")
+          if [ "$image_size" -ge $((100 * 1024 * 1024)) ]; then
+            echo "Go slim image is $image_size bytes, over 100 MiB"
+            exit 1
+          fi
+          forbidden=$(docker save "$image" | tar -tf - | grep -Eio '(^|/)(python|python3|pip|uvicorn|fastapi|site-packages)(/|$)' | head -n 20 || true)
+          if [ -n "$forbidden" ]; then
+            echo "Forbidden Python runtime paths found in image:"
+            echo "$forbidden"
+            exit 1
+          fi
       - name: Start image
         run: |
           docker run -d --name halowebui-go \

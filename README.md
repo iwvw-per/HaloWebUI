@@ -27,8 +27,7 @@
   <img src="https://img.shields.io/badge/Svelte_4-FF3E00?style=flat-square&logo=svelte&logoColor=white" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   <img src="https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white" />
-  <img src="https://img.shields.io/badge/Python_3.11+-3776AB?style=flat-square&logo=python&logoColor=white" />
-  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" />
+  <img src="https://img.shields.io/badge/Go_1.25-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white" />
 </div>
 
@@ -51,17 +50,17 @@
 ## 🚀 快速开始
 
 > [!IMPORTANT]
-> 必须挂载 `-v open-webui:/app/backend/data` 以持久化数据库与上传文件。
+> 必须挂载 `-v open-webui:/app/data` 以持久化数据库与上传文件。
 
 ### Docker 运行
 
 ```bash
 docker run -d -p 3000:8080 \
   --add-host=host.docker.internal:host-gateway \
-  -v open-webui:/app/backend/data \
+  -v open-webui:/app/data \
   --name halowebui \
   --restart always \
-  ghcr.io/ztx888/halowebui:main
+  iwvw/halowebui:latest
 ```
 
 ### Docker Compose（默认推荐）
@@ -143,10 +142,10 @@ location / {
 ```bash
 docker run -d -p 3000:8080 \
   --add-host=host.docker.internal:host-gateway \
-  -v open-webui:/app/backend/data \
+  -v open-webui:/app/data \
   --name halowebui \
   --restart always \
-  ghcr.io/ztx888/halowebui:slim
+  iwvw/halowebui:slim
 ```
 
 ### Docker Compose（轻量版 slim）

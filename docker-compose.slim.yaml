@@ -1,11 +1,11 @@
 services:
   open-webui:
     build:
-      dockerfile: Dockerfile.go
+      dockerfile: Dockerfile
       args:
         GO_VERSION: ${GO_VERSION-1.25}
         BUILD_HASH: ${BUILD_HASH-dev}
-    image: ghcr.io/ztx888/halowebui:${WEBUI_DOCKER_TAG-slim}
+    image: iwvw/halowebui:${WEBUI_DOCKER_TAG-slim}
     environment:
       - 'WEBUI_SECRET_KEY='
       - 'HALO_GO_MEMORY_LIMIT_MIB=48'
