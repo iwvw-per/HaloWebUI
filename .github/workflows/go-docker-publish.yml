@@ -72,7 +72,7 @@ jobs:
             BUILD_HASH=${{ github.sha }}
             GO_VERSION=1.25
           cache-from: type=gha,scope=go-backend
-          cache-to: type=gha,mode=max,scope=go-backend
+          cache-to: type=gha,mode=min,scope=go-backend
       - name: Pull published image for smoke test
         run: docker pull ${{ env.IMAGE_NAME }}:git-${GITHUB_SHA::7}
       - name: Verify slim image contents and size
@@ -85,7 +85,9 @@ jobs:
             echo "Go slim image is $image_size bytes, over 100 MiB"
             exit 1
           fi
-          forbidden=$(docker save "$image" | tar -tf - | grep -Eio '(^|/)(python|python3|pip|uvicorn|fastapi|site-packages)(/|$)' | head -n 20 || true)
+          container_id=$(docker create "$image")
+          forbidden=$(docker export "$container_id" | tar -tf - | grep -Eio '(^|/)(python|python3|pip|uvicorn|fastapi|site-packages)(/|$)' | head -n 20 || true)
+          docker rm "$container_id" >/dev/null
           if [ -n "$forbidden" ]; then
             echo "Forbidden Python runtime paths found in image:"
             echo "$forbidden"

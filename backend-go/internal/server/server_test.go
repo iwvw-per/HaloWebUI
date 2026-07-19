@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -227,6 +228,40 @@ func TestCompatibilityResourcePersists(t *testing.T) {
 	}
 	if len(folders) != 1 || folders[0]["name"] != "Work" {
 		t.Fatalf("unexpected folders: %#v", folders)
+	}
+}
+
+func TestFrontendAPIDomainsHaveGoOwners(t *testing.T) {
+	owners := map[string]bool{
+		"analytics": true, "auths": true, "channels": true, "chats": true, "configs": true,
+		"files": true, "folders": true, "functions": true, "groups": true,
+		"knowledge": true, "memories": true, "models": true, "notes": true,
+		"prompts": true, "skills": true, "terminal": true, "tools": true,
+		"users": true, "utils": true,
+	}
+	pattern := regexp.MustCompile(`WEBUI_API_BASE_URL\}/([a-zA-Z0-9_-]+)`)
+	root := filepath.Join("..", "..", "..", "src", "lib", "apis")
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".ts" {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, match := range pattern.FindAllSubmatch(content, -1) {
+			domain := string(match[1])
+			if !owners[domain] {
+				t.Errorf("frontend API domain %q in %s has no Go owner", domain, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

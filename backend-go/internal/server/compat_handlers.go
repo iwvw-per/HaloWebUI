@@ -60,7 +60,7 @@ func splitPath(path string) []string {
 
 func compatibilityDomain(domain string) bool {
 	switch domain {
-	case "folders", "groups", "functions", "channels", "memories", "knowledge", "analytics", "terminal", "retrieval", "audio", "images", "gemini", "anthropic", "grok", "configs", "auths", "webhooks", "tasks":
+	case "folders", "groups", "functions", "channels", "memories", "knowledge", "analytics", "terminal", "retrieval", "audio", "images", "gemini", "anthropic", "grok", "configs", "auths", "users", "chats", "files", "models", "prompts", "tools", "skills", "notes", "utils", "webhooks", "tasks":
 		return true
 	default:
 		return false
@@ -116,6 +116,14 @@ func (a *App) handleCompatibilitySetting(w http.ResponseWriter, r *http.Request,
 }
 
 func (a *App) handleCompatibilityResource(w http.ResponseWriter, r *http.Request, user store.User, domain string, rest []string) {
+	if domain == "users" && len(rest) > 0 {
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, []any{})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]any{"status": true})
+		}
+		return
+	}
 	// Queries and action endpoints return a stable collection/ack shape. This
 	// keeps optional settings pages usable even when no records exist.
 	if len(rest) == 0 || (len(rest) == 1 && (rest[0] == "" || rest[0] == "list" || rest[0] == "search" || rest[0] == "all")) {
