@@ -9,6 +9,40 @@ import (
 	"time"
 )
 
+func (s *Store) UpdatePassword(ctx context.Context, id, passwordHash string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE auth SET password = ? WHERE id = ?`, passwordHash, id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+func (s *Store) SetAPIKey(ctx context.Context, id string, apiKey *string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE user SET api_key = ?, updated_at = ? WHERE id = ?`, apiKey, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+func (s *Store) UserByAPIKey(ctx context.Context, apiKey string) (User, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM user WHERE api_key = ?`, apiKey).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	if err != nil {
+		return User{}, err
+	}
+	return s.UserByID(ctx, id)
+}
+
 func (s *Store) ListUsers(ctx context.Context, query string, limit int) ([]User, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200

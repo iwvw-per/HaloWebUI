@@ -174,6 +174,62 @@ func TestAuthenticatedChatLifecycle(t *testing.T) {
 	}
 }
 
+func TestAPIKeyAuthentication(t *testing.T) {
+	app := testApp(t)
+	token := signupToken(t, app)
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auths/api_key", nil)
+	createRequest.Header.Set("Authorization", "Bearer "+token)
+	created := httptest.NewRecorder()
+	app.ServeHTTP(created, createRequest)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create API key failed: %d %s", created.Code, created.Body.String())
+	}
+	var payload map[string]string
+	if err := json.NewDecoder(created.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["api_key"] == "" {
+		t.Fatal("API key is empty")
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/auths/", nil)
+	request.Header.Set("Authorization", "Bearer "+payload["api_key"])
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("API key session failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCompatibilityResourcePersists(t *testing.T) {
+	app := testApp(t)
+	token := signupToken(t, app)
+	createRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/folders/",
+		bytes.NewBufferString(`{"name":"Work"}`),
+	)
+	createRequest.Header.Set("Authorization", "Bearer "+token)
+	created := httptest.NewRecorder()
+	app.ServeHTTP(created, createRequest)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create folder failed: %d %s", created.Code, created.Body.String())
+	}
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/folders/", nil)
+	listRequest.Header.Set("Authorization", "Bearer "+token)
+	listed := httptest.NewRecorder()
+	app.ServeHTTP(listed, listRequest)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list folders failed: %d %s", listed.Code, listed.Body.String())
+	}
+	var folders []map[string]any
+	if err := json.NewDecoder(listed.Body).Decode(&folders); err != nil {
+		t.Fatal(err)
+	}
+	if len(folders) != 1 || folders[0]["name"] != "Work" {
+		t.Fatalf("unexpected folders: %#v", folders)
+	}
+}
+
 func signupToken(t *testing.T, app *App) string {
 	t.Helper()
 	response := httptest.NewRecorder()

@@ -62,6 +62,21 @@ func (a *App) registerRoutes() {
 	a.mux.HandleFunc("POST /api/v1/auths/signin", a.handleSignin)
 	a.mux.HandleFunc("POST /api/v1/auths/signup", a.handleSignup)
 	a.mux.HandleFunc("GET /api/v1/auths/signout", a.handleSignout)
+	a.mux.HandleFunc("GET /api/v1/auths/admin/details", a.handleAdminDetails)
+	a.mux.HandleFunc("GET /api/v1/auths/admin/config", a.handleAdminConfig)
+	a.mux.HandleFunc("POST /api/v1/auths/admin/config", a.handleAdminConfig)
+	a.mux.HandleFunc("POST /api/v1/auths/add", a.handleAddUser)
+	a.mux.HandleFunc("POST /api/v1/auths/update/profile", a.handleProfileUpdate)
+	a.mux.HandleFunc("POST /api/v1/auths/update/password", a.handlePasswordUpdate)
+	a.mux.HandleFunc("GET /api/v1/auths/signup/enabled", a.handleSignupConfig)
+	a.mux.HandleFunc("GET /api/v1/auths/signup/enabled/toggle", a.handleSignupConfig)
+	a.mux.HandleFunc("GET /api/v1/auths/signup/user/role", a.handleSignupConfig)
+	a.mux.HandleFunc("POST /api/v1/auths/signup/user/role", a.handleSignupConfig)
+	a.mux.HandleFunc("GET /api/v1/auths/token/expires", a.handleTokenExpiry)
+	a.mux.HandleFunc("POST /api/v1/auths/token/expires/update", a.handleTokenExpiry)
+	a.mux.HandleFunc("GET /api/v1/auths/api_key", a.handleAPIKey)
+	a.mux.HandleFunc("POST /api/v1/auths/api_key", a.handleAPIKey)
+	a.mux.HandleFunc("DELETE /api/v1/auths/api_key", a.handleAPIKey)
 	a.mux.HandleFunc("POST /api/v1/chats/new", a.handleChatNew)
 	a.mux.HandleFunc("POST /api/v1/chats/import", a.handleChatImport)
 	a.mux.HandleFunc("GET /api/v1/chats/archived", a.handleChatList)
@@ -112,6 +127,10 @@ func (a *App) registerRoutes() {
 	a.mux.HandleFunc("POST /ollama/api/chat", a.handleOllamaChat)
 	a.mux.HandleFunc("GET /ollama/api/tags", a.handleOllamaTags)
 	a.mux.HandleFunc("GET /api/v1/providers/health", a.handleProviderHealth)
+	// The compatibility handler covers the remaining UI domains while their
+	// storage and provider adapters are migrated to typed Go packages. More
+	// specific patterns above always win in net/http's ServeMux.
+	a.mux.HandleFunc("/api/v1/", a.handleCompatibility)
 	a.mux.HandleFunc("/", a.handleFrontend)
 }
 
@@ -289,11 +308,18 @@ func (a *App) currentUser(request *http.Request) (store.User, bool) {
 		token = cookie.Value
 	}
 	if token == "" {
+		token = strings.TrimSpace(request.Header.Get("X-API-Key"))
+	}
+	if token == "" {
 		const prefix = "Bearer "
 		header := request.Header.Get("Authorization")
 		if strings.HasPrefix(header, prefix) {
 			token = strings.TrimSpace(strings.TrimPrefix(header, prefix))
 		}
+	}
+	if strings.HasPrefix(token, "sk-") {
+		user, err := a.store.UserByAPIKey(request.Context(), token)
+		return user, err == nil
 	}
 	claims, err := auth.ParseToken(a.secretKey(), token)
 	if err != nil {
