@@ -20,6 +20,9 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,10 +34,23 @@ jobs:
       - name: Test Go backend
         working-directory: backend
         run: go test ./...
+      - name: Vet Go backend
+        working-directory: backend
+        run: go vet ./...
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts
+      - name: Test frontend
+        run: npm run test:frontend -- --run
 
   build-and-publish:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -58,13 +74,13 @@ jobs:
             type=raw,value=go-edge,enable=${{ github.ref != 'refs/heads/main' }}
             type=raw,value=slim,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-      - name: Build and push Go-only image
+      - name: Build Go-only image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           platforms: linux/amd64
-          push: true
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
@@ -73,8 +89,6 @@ jobs:
             GO_VERSION=1.25
           cache-from: type=gha,scope=go-backend
           cache-to: type=gha,mode=min,scope=go-backend
-      - name: Pull published image for smoke test
-        run: docker pull ${{ env.IMAGE_NAME }}:git-${GITHUB_SHA::7}
       - name: Verify slim image contents and size
         shell: bash
         run: |
@@ -126,3 +140,15 @@ jobs:
       - name: Stop smoke container
         if: always()
         run: docker rm -f halowebui-go || true
+      - name: Push verified image tags
+        if: success()
+        shell: bash
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              docker push "$tag"
+            fi
+          done <<< "$IMAGE_TAGS"
