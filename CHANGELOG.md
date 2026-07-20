@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Replaced the complete production backend with Go and consolidated it under `backend/`.
+- Kept the existing Svelte frontend contracts while moving authentication, chat, providers, files, knowledge, administration, backups, Terminal and HaloClaw to Go.
+- Replaced the runtime image with a stripped Go binary and static frontend in distroless; server-side Python and its packaging/workflows were removed.
+- Added 256 MB host resource limits, image-content checks, health/memory gates and Go-only Docker publishing to `iwvw/halowebui`.
+- Updated installation, operations, security, contribution and refactor documentation for the Go-only architecture.
+
 ## [0.0.1] - 2026-03-22
 
 ### Highlights

@@ -121,7 +121,7 @@
 		updateChatComposerStateById
 	} from '$lib/apis/chats';
 	import { getModelById as getWorkspaceModelById } from '$lib/apis/models';
-	import { generateOpenAIChatCompletion } from '$lib/apis/openai';
+	import { chatCompletion, generateOpenAIChatCompletion } from '$lib/apis/openai';
 	import { processWeb, processWebSearch, processYoutubeVideo } from '$lib/apis/retrieval';
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { queryMemory } from '$lib/apis/memories';
@@ -2316,6 +2316,9 @@
 			}
 
 			if (!loaded) {
+				// A stale/deleted chat must not leave the chat pane in its loading state
+				// while the navigation falls back to a fresh conversation.
+				loading = false;
 				await goto('/');
 				return;
 			}
@@ -5151,6 +5154,56 @@
 		chats.set(await getChatList(localStorage.token, $currentChatPage));
 	};
 
+	const sendPromptHTTPFallback = async (_history, model, responseMessageId, _chatId) => {
+		const responseMessage = _history.messages[responseMessageId];
+		if (!responseMessage) return;
+
+		const messages = createMessagesList(_history, responseMessage.parentId)
+			.map((message) => ({
+				role: message.role,
+				content: processDetails(message.content)
+			}))
+			.filter((message) => message.content?.trim() || message.role === 'user');
+		try {
+			const [response] = await chatCompletion(
+				localStorage.token,
+				{ model: getModelRequestId(model), messages, stream: true },
+				`${WEBUI_BASE_URL}/api`
+			);
+			if (!response || !response.ok || !response.body) {
+				const payload = response ? await response.text() : 'Network Problem';
+				await handleOpenAIError(payload, responseMessage);
+				return;
+			}
+
+			const textStream = await createOpenAITextStream(response.body, $settings.splitLargeChunks);
+			for await (const update of textStream) {
+				if (update.error) {
+					await handleOpenAIError(update.error, responseMessage);
+					break;
+				}
+				if (update.done) break;
+				if (update.value) {
+					responseMessage.content = `${responseMessage.content ?? ''}${update.value}`;
+					history.messages[responseMessageId] = responseMessage;
+					await tick();
+					if (shouldAutoScrollOnStreaming()) scrollToBottom();
+				}
+			}
+			responseMessage.done = true;
+			history.messages[responseMessageId] = responseMessage;
+			await saveChatHandler(_chatId, history);
+		} catch (error) {
+			await handleOpenAIError(error, responseMessage);
+		} finally {
+			activeChatIds.update((ids) => {
+				ids.delete(_chatId);
+				return new Set(ids);
+			});
+			await tick();
+		}
+	};
+
 	const sendPromptSocket = async (
 		_history,
 		model,
@@ -5175,6 +5228,11 @@
 			return new Set(ids);
 		});
 		await tick();
+
+		if (!$socket) {
+			await sendPromptHTTPFallback(_history, model, responseMessageId, _chatId);
+			return;
+		}
 
 		const stream =
 			params?.stream_response ??

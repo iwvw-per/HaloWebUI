@@ -26,10 +26,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: backend-go/go.mod
-          cache-dependency-path: backend-go/go.sum
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
       - name: Test Go backend
-        working-directory: backend-go
+        working-directory: backend
         run: go test ./...
 
   build-and-publish:

@@ -74,8 +74,8 @@ const getDiagnosticKeys = (code: string): Record<string, string | null> | null =
 		case 'unsupported_archive':
 			return {
 				title: 'Archive not supported',
-				message: 'This model does not support archive files. Please extract and upload files individually.',
-				hint: null
+				message: 'Compressed archives cannot be uploaded directly.',
+				hint: 'Extract the archive and upload the supported files individually.'
 			};
 		case 'unsupported_binary_file':
 			return {

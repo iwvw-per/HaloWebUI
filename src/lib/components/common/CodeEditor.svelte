@@ -19,11 +19,8 @@
 	import { settings } from '$lib/stores';
 	import {
 		DEFAULT_HIGHLIGHTER_THEME,
-		ensureShikiHighlighter,
 		getEditorChromeTheme,
-		normalizeHighlighterTheme,
-		resolveRuntimeHighlighterThemeId,
-		resolveShikiLanguage
+		normalizeHighlighterTheme
 	} from '$lib/utils/lobehub-chat-appearance';
 
 	// GitHub Light 风格的浅色主题 (VS Code 风格优化)
@@ -331,28 +328,16 @@
 		const selectedTheme = normalizeHighlighterTheme(
 			$settings?.highlighterTheme ?? DEFAULT_HIGHLIGHTER_THEME
 		);
-		const runtimeThemeId = resolveRuntimeHighlighterThemeId(selectedTheme, darkMode);
 
 		try {
-			const [shikiModule, highlighter, resolvedLanguage, chromeTheme] = await Promise.all([
-				import('codemirror-shiki'),
-				ensureShikiHighlighter(lang, selectedTheme, darkMode),
-				resolveShikiLanguage(lang),
-				getEditorChromeTheme(selectedTheme, darkMode)
-			]);
+			const chromeTheme = await getEditorChromeTheme(selectedTheme, darkMode);
 
 			if (!codeEditor || currentRequestId !== themeApplyRequestId) return;
 
 			codeEditor.dispatch({
 				effects: [
 					editorChromeTheme.reconfigure(buildEditorChromeExtension(chromeTheme, darkMode)),
-					editorSyntaxTheme.reconfigure(
-						shikiModule.default({
-							highlighter,
-							language: resolvedLanguage,
-							theme: runtimeThemeId
-						})
-					)
+					editorSyntaxTheme.reconfigure(darkMode ? oneDark : githubLight)
 				]
 			});
 		} catch (error) {

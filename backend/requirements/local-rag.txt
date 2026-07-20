@@ -1,5 +1,0 @@
--r base.txt
--r vector-extra.txt
--r rag-local.txt
--r rerank-local.txt
--r docs-local.txt

@@ -1,5 +1,0 @@
-faster-whisper==1.1.1
-transformers
-datasets
-sentencepiece
-soundfile==0.13.1

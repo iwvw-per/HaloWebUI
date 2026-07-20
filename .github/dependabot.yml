@@ -1,17 +1,5 @@
 version: 2
 updates:
-  - package-ecosystem: uv
-    directory: '/'
-    schedule:
-      interval: monthly
-    target-branch: 'dev'
-
-  - package-ecosystem: pip
-    directory: '/backend'
-    schedule:
-      interval: monthly
-    target-branch: 'dev'
-
   - package-ecosystem: npm
     directory: '/'
     schedule:

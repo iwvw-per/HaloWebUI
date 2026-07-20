@@ -33,8 +33,8 @@ describe('extractHeadings', () => {
 `;
 
 		expect(extractHeadings(createParser().lexer(markdown), 'message-2')).toEqual([
-			{ depth: 2, text: 'Quote Heading', id: 'heading-message-2-0-0' },
-			{ depth: 3, text: 'Nested Heading', id: 'heading-message-2-1-0-1' }
+			{ depth: 2, text: 'Quote Heading', id: 'heading-message-2-1-0' },
+			{ depth: 3, text: 'Nested Heading', id: 'heading-message-2-2-0-1' }
 		]);
 	});
 
@@ -50,7 +50,7 @@ describe('extractHeadings', () => {
 
 		expect(extractHeadings(createParser().lexer(markdown), 'message-4')).toEqual([
 			{ depth: 2, text: 'SQL', id: 'heading-message-4-0' },
-			{ depth: 2, text: 'Dockerfile', id: 'heading-message-4-1' }
+			{ depth: 2, text: 'Dockerfile', id: 'heading-message-4-2' }
 		]);
 	});
 

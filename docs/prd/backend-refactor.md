@@ -2,17 +2,62 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Draft, ready for agent implementation planning |
+| Status | Implemented locally; final GitHub Actions image gate pending |
 | Owners | HaloWebUI maintainers |
 | Target branch | `codex/backend-refactor` |
 | Primary objective | Keep slim below 100 MiB and every standard web image below 200 MiB without breaking existing behavior |
 | Target host | Fly.io, 1 shared vCPU, 256 MB allocation, approximately 200 MB usable RAM, 1 GB persistent disk |
 | Required language strategy | Entire production backend in Go; no Python interpreter, package, worker, or runtime in the final image |
-| Explicitly rejected strategy | One-shot full backend rewrite |
+| Delivery strategy | Contract-compatible vertical slices, followed by removal of the migration oracle |
+
+## Implementation Status (2026-07-20)
+
+This PRD remains the normative requirement and decision record. Future-tense language below describes the intended design; the current implementation status is recorded here so agents do not treat the removed Python service as an available fallback.
+
+- The production backend is now entirely Go under `backend/`; the former FastAPI tree, Python packaging, lock files, migration scripts, disabled Python workflows and Python diagnostic scripts have been removed.
+- The Svelte frontend remains contract-compatible and is built into static output served by the Go process.
+- Go owns authentication, users, API keys, SCIM, chats, sharing, branches, tags, SSE, Provider routing, files, knowledge, retrieval, memory, prompts, tools, functions, skills, configs, channels, analytics, external gateway, Terminal, backups, tasks and HaloClaw persistence/webhooks.
+- SQLite and uploads live under `DATA_DIR`; complete `.hwbk` restores enforce a 512 MiB extraction limit, reject path traversal and symlinks, and clean temporary files.
+- The production image is a distroless image containing only the stripped Go binary and frontend build. Python, pip, uvicorn, FastAPI, Node and local heavyweight model runtimes are absent.
+- Browser Pyodide remains an optional client-side feature. It is disabled in the Docker build and is not part of the server backend or release image.
+- Local validation has covered Go tests and vet, frontend unit tests and production build, 38 static application routes, real Provider model discovery/chat, Terminal file operations, backup restore, JWT tamper rejection and HaloClaw contracts.
+- The final release gate is the GitHub Actions workflow: image under 100 MiB, no forbidden Python runtime paths, `/health` and `/api/config` smoke checks, and process RSS under 100 MiB.
+
+### Current deployment contract
+
+The supported constrained profile is one Go instance, one SQLite database, remote model/capability providers, a 48 MiB Go soft memory limit and a persistent `/app/data` volume. Multi-instance SQLite, bundled local ML inference, arbitrary server-side Python functions and unbounded MCP child processes are not supported on the 256 MB target host.
+
+### Local acceptance evidence
+
+| Gate | Result |
+| --- | --- |
+| Go tests | `go test -count=1 ./...` passed |
+| Go static analysis | `go vet ./...` passed |
+| Frontend unit tests | 29 files, 182 tests passed |
+| Frontend production build | completed successfully |
+| Browser route sweep | 38/38 static routes rendered against the latest Go process |
+| Latest local idle RSS | 11.94 MiB |
+| Linux amd64 stripped binary | 11.79 MiB |
+| Frontend build tree | 75.54 MiB |
+| Binary plus frontend | 87.32 MiB before distroless image-layer accounting |
+
+These numbers are local evidence, not a substitute for the container gate. GitHub Actions remains authoritative for the final image size, forbidden-runtime scan, health check and container RSS.
+
+### Repository result
+
+```text
+backend/                  Go backend and tests
+src/                      Svelte/TypeScript frontend
+static/                   frontend-owned static assets
+docs/                     current architecture and operating documentation
+kubernetes/manifest/      maintained Kustomize deployment
+Dockerfile                multi-stage Go-only image
+docker-compose*.yaml      base deployment and Ollama-specific overlays
+```
 
 ## Executive Summary
 
-HaloWebUI currently runs a broad AI platform inside one FastAPI process. The process assembles authentication, persistence, provider routing, streaming chat, WebSocket state, retrieval, vector storage, document extraction, audio, code execution, MCP, HaloClaw, and static delivery. Optional capabilities are partly lazy at model-construction time, but their routers, SDKs, vector adapter, and retrieval framework are still pulled into the startup import graph.
+At the start of this refactor, HaloWebUI ran a broad AI platform inside one FastAPI process. That historical process assembled authentication, persistence, provider routing, streaming chat, WebSocket state, retrieval, vector storage, document extraction, audio, code execution, MCP, HaloClaw, and static delivery. Optional capabilities were partly lazy at model-construction time, but their routers, SDKs, vector adapter, and retrieval framework were still pulled into the startup import graph.
 
 The refactor will preserve the existing frontend and all externally observable backend behavior while replacing the production backend with Go. The existing Python implementation is a temporary behavioral oracle during migration and is removed from the final runtime and image. The work is deliberately staged:
 

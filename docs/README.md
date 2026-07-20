@@ -1,3 +1,12 @@
-# Project workflow
+# HaloWebUI 文档
 
-[![](https://mermaid.ink/img/pako:eNq1k01rAjEQhv_KkFNLFe1N9iAUevFSRVl6Cci4Gd1ANtlmsmtF_O_N7iqtHxR76ClhMu87zwyZvcicIpEIpo-KbEavGjceC2lL9EFnukQbIGXygNye5y9TY7DAZTpZLsjXXVYXg3dapRM4hh9mu5A7-3hTfSXtAtJK21Tsj8dPl3USmJZkGVbebWNKD2rNOjAYl6HJHYdkNBwNpb3U9aNZvzFNYE6h8tFiSyZzBUGJG4K1dwVwTSYQrCptlLRvLt5dA5i2la5Ruk51Ux0VKQjuxPVbAwuyiuFlNgHfzJ5DoxtgqQf1813gnZRLZ5lAYcD7WT1lpGtiQKug9C4jZrrp-Fd-1-Y1bdzo4dvnZDLz7lPHyj8sOgfg4x84E7RTuEaZt8yRZqtDfgT_rwG2u3Dv_ERPFOQL1Cqu2F5aAClCTgVJkcSrojVWJkgh7SGmYhXcYmczkQRfUU9UZfQ4baRI1miYDl_QqlPg?type=png)](https://mermaid.live/edit#pako:eNq1k01rAjEQhv_KkFNLFe1N9iAUevFSRVl6Cci4Gd1ANtlmsmtF_O_N7iqtHxR76ClhMu87zwyZvcicIpEIpo-KbEavGjceC2lL9EFnukQbIGXygNye5y9TY7DAZTpZLsjXXVYXg3dapRM4hh9mu5A7-3hTfSXtAtJK21Tsj8dPl3USmJZkGVbebWNKD2rNOjAYl6HJHYdkNBwNpb3U9aNZvzFNYE6h8tFiSyZzBUGJG4K1dwVwTSYQrCptlLRvLt5dA5i2la5Ruk51Ux0VKQjuxPVbAwuyiuFlNgHfzJ5DoxtgqQf1813gnZRLZ5lAYcD7WT1lpGtiQKug9C4jZrrp-Fd-1-Y1bdzo4dvnZDLz7lPHyj8sOgfg4x84E7RTuEaZt8yRZqtDfgT_rwG2u3Dv_ERPFOQL1Cqu2F5aAClCTgVJkcSrojVWJkgh7SGmYhXcYmczkQRfUU9UZfQ4baRI1miYDl_QqlPg)
+本目录只维护与当前 Go-only 架构一致的文档：
+
+- [`backend.md`](backend.md)：Go 后端目录、配置、资源预算、验证和发布。
+- [`prd/backend-refactor.md`](prd/backend-refactor.md)：完整重构 PRD、实施状态和验收记录。
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)：本地开发、测试和提交要求。
+- [`SECURITY.md`](SECURITY.md)：支持范围和漏洞报告流程。
+- [`mobile-access.md`](mobile-access.md)：PWA 和第三方移动客户端接入。
+- [`apache.md`](apache.md)：Apache 反向代理示例。
+
+安装入口见根目录 [`INSTALLATION.md`](../INSTALLATION.md)，运行故障见 [`TROUBLESHOOTING.md`](../TROUBLESHOOTING.md)。部署工件位于根目录 Docker/Compose 文件和 `kubernetes/manifest/`，仓库不维护 Helm Chart。

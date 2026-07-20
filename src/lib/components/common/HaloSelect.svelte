@@ -47,11 +47,20 @@
 		rawClassName.replace(CONTENT_WIDTH_CLASS_RE, ' ').replace(/\s+/g, ' ').trim();
 
 	const syncTriggerWidth = () => {
-		triggerWidth = triggerEl ? Math.round(triggerEl.getBoundingClientRect().width) : 0;
+		triggerWidth =
+			typeof Element !== 'undefined' && triggerEl instanceof Element
+				? Math.round(triggerEl.getBoundingClientRect().width)
+				: 0;
 	};
 
 	const observeTriggerEl = () => {
-		if (!triggerResizeObserver || !triggerEl) return;
+		if (
+			!triggerResizeObserver ||
+			typeof Element === 'undefined' ||
+			!(triggerEl instanceof Element)
+		) {
+			return;
+		}
 		triggerResizeObserver.disconnect();
 		triggerResizeObserver.observe(triggerEl);
 	};

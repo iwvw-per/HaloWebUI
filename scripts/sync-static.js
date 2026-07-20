@@ -1,65 +1,7 @@
-import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const sourceRoot = resolve('static');
-const targetRoot = resolve('backend/open_webui/static');
-const enablePyodide = process.env.ENABLE_PYODIDE === 'true';
-
-const shouldCopyFile = async (sourcePath, targetPath) => {
-	try {
-		const [sourceStat, targetStat] = await Promise.all([stat(sourcePath), stat(targetPath)]);
-
-		if (!targetStat.isFile()) {
-			return true;
-		}
-
-		if (sourceStat.size !== targetStat.size) {
-			return true;
-		}
-
-		return sourceStat.mtimeMs > targetStat.mtimeMs + 1;
-	} catch {
-		return true;
-	}
-};
-
-const syncFile = async (sourcePath, targetPath) => {
-	if (await shouldCopyFile(sourcePath, targetPath)) {
-		await cp(sourcePath, targetPath, { force: true });
-	}
-};
-
-const syncDir = async (sourceDir, targetDir, options = {}) => {
-	const { isRoot = false, skip = new Set() } = options;
-	await mkdir(targetDir, { recursive: true });
-
-	const entries = await readdir(sourceDir, { withFileTypes: true });
-	for (const entry of entries) {
-		if (isRoot && skip.has(entry.name)) {
-			continue;
-		}
-
-		const sourcePath = resolve(sourceDir, entry.name);
-		const targetPath = resolve(targetDir, entry.name);
-
-		if (entry.isDirectory()) {
-			await syncDir(sourcePath, targetPath);
-			continue;
-		}
-
-		if (entry.isFile()) {
-			await syncFile(sourcePath, targetPath);
-		}
-	}
-};
-
-const syncStatic = async () => {
-	await syncDir(sourceRoot, targetRoot, { isRoot: true, skip: new Set(['static']) });
-	await syncDir(resolve(sourceRoot, 'static'), targetRoot);
-	if (!enablePyodide) {
-		await rm(resolve(targetRoot, 'pyodide'), { recursive: true, force: true });
-	}
-};
 
 // ── SVG color analysis helpers (shared by model-icons & connection-avatars) ──
 
@@ -151,17 +93,11 @@ const findInvertCandidates = async (dir, files) => {
 };
 
 try {
-	await syncStatic();
-
 	// Keep the model icon list in sync with the on-disk folder, so new icons work without manual TS edits.
 	// This runs as part of `npm run dev/build` via `npm run sync:static`.
 	const modelIconsDir = resolve(sourceRoot, 'static/model-icons');
 	const manifestPath = resolve('src/lib/utils/model-icons.manifest.ts');
 	try {
-		// Mirror model-icons into backend static root so runtime URL `/static/model-icons/*` works
-		// even when running without a fresh `vite build` (e.g. backend-only/static hosting scenarios).
-		await syncDir(modelIconsDir, resolve(targetRoot, 'model-icons'));
-
 		const entries = await readdir(modelIconsDir, { withFileTypes: true });
 		const files = entries
 			.filter((e) => e.isFile() && !e.name.includes(':'))
@@ -191,8 +127,6 @@ try {
 	const connAvatarsDir = resolve(sourceRoot, 'static/connection-avatars');
 	const connManifestPath = resolve('src/lib/utils/connection-avatars.manifest.ts');
 	try {
-		await syncDir(connAvatarsDir, resolve(targetRoot, 'connection-avatars'));
-
 		const entries = await readdir(connAvatarsDir, { withFileTypes: true });
 		const files = entries
 			.filter((e) => e.isFile() && !e.name.includes(':'))

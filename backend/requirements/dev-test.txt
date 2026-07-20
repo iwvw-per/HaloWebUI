@@ -1,6 +1,0 @@
-black==25.1.0
-docker~=7.1.0
-pytest~=8.3.2
-pytest-docker~=3.1.1
-gcp-storage-emulator>=2024.8.3
-moto[s3]>=5.0.26

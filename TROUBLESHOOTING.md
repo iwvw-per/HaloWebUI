@@ -1,75 +1,72 @@
-# Open WebUI Troubleshooting Guide
+# HaloWebUI 排障指南
 
-## Understanding the Open WebUI Architecture
+## 服务无法启动
 
-The Open WebUI system is designed to streamline interactions between the client (your browser) and the Ollama API. At the heart of this design is a backend reverse proxy, enhancing security and resolving CORS issues.
-
-- **How it Works**: The Open WebUI is designed to interact with the Ollama API through a specific route. When a request is made from the WebUI to Ollama, it is not directly sent to the Ollama API. Initially, the request is sent to the Open WebUI backend via `/ollama` route. From there, the backend is responsible for forwarding the request to the Ollama API. This forwarding is accomplished by using the route specified in the `OLLAMA_BASE_URL` environment variable. Therefore, a request made to `/ollama` in the WebUI is effectively the same as making a request to `OLLAMA_BASE_URL` in the backend. For instance, a request to `/ollama/api/tags` in the WebUI is equivalent to `OLLAMA_BASE_URL/api/tags` in the backend.
-
-- **Security Benefits**: This design prevents direct exposure of the Ollama API to the frontend, safeguarding against potential CORS (Cross-Origin Resource Sharing) issues and unauthorized access. Requiring authentication to access the Ollama API further enhances this security layer.
-
-## Open WebUI: Server Connection Error
-
-If you're experiencing connection issues, it’s often due to the WebUI docker container not being able to reach the Ollama server at 127.0.0.1:11434 (host.docker.internal:11434) inside the container . Use the `--network=host` flag in your docker command to resolve this. Note that the port changes from 3000 to 8080, resulting in the link: `http://localhost:8080`.
-
-**Example Docker Command**:
+先检查容器日志和健康检查：
 
 ```bash
-docker run -d --network=host -v open-webui:/app/backend/data -e OLLAMA_BASE_URL=http://127.0.0.1:11434 --name open-webui --restart always ghcr.io/ztx888/halowebui:main
+docker logs halowebui
+curl -fsS http://127.0.0.1:3000/health
 ```
 
-### Error on Slow Responses for Ollama
+常见原因：`/app/data` 不可写、端口被占用、`HALO_GO_MEMORY_LIMIT_MIB` 不在 16-160 范围、`FILE_MAX_SIZE_MB` 不在 1-250 范围。distroless 镜像没有 shell，诊断应通过日志、健康接口或挂载 volume 完成。
 
-Open WebUI has a default timeout of 5 minutes for Ollama to finish generating the response. If needed, this can be adjusted via the environment variable AIOHTTP_CLIENT_TIMEOUT, which sets the timeout in seconds.
+## 登录后失效或重启后全部退出
 
-### General Connection Errors
+生产环境必须设置稳定的 `WEBUI_SECRET_KEY`，并复用同一个 `/app/data`。如果密钥和自动生成的 secret 文件同时丢失，旧 JWT 无法继续验证。
 
-**Ensure Ollama Version is Up-to-Date**: Always start by checking that you have the latest version of Ollama. Visit [Ollama's official site](https://ollama.com/) for the latest updates.
+HTTPS 反向代理后应设置：
 
-**Troubleshooting Steps**:
+```text
+WEBUI_AUTH_COOKIE_SECURE=true
+WEBUI_AUTH_COOKIE_SAME_SITE=lax
+```
 
-1. **Verify Ollama URL Format**:
-   - When running the Web UI container, ensure the `OLLAMA_BASE_URL` is correctly set. (e.g., `http://192.168.1.1:11434` for different host setups).
-   - In the Open WebUI, navigate to "Settings" > "General".
-   - Confirm that the Ollama Server URL is correctly set to `[OLLAMA URL]` (e.g., `http://localhost:11434`).
+并正确转发 `Host`、`X-Forwarded-For` 和 `X-Forwarded-Proto`。
 
-By following these enhanced troubleshooting steps, connection issues should be effectively resolved. For further assistance or queries, feel free to reach out to us on our community Discord.
+## Provider 模型发现失败
 
-## Anthropic Proxy: Anyrouter + `claude-opus-4-6`
+在“设置 > 连接”中填写的是模型 Provider 的完整基础地址，不是 HaloWebUI 自己的地址。OpenAI 兼容端点通常以 `/v1` 结尾，例如 `https://provider.example/v1`。检查：
 
-### Symptom
+- URL 是否包含正确协议和版本路径。
+- API Key 是否属于该 Provider。
+- 容器是否能访问公网或目标内网。
+- Provider 的 `/models` 是否兼容 OpenAI 格式。
+- 密钥是否只保存在管理界面或 secret 中，而不是日志和仓库。
 
-`POST /v1/messages` returns:
+## Ollama 连接失败
 
-`invalid claude code request`
+容器中的 `127.0.0.1` 指向容器本身。宿主机 Ollama 通常应使用：
 
-### Root Cause (Observed)
+```text
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
 
-For Anyrouter, `claude-opus-4-6` may be validated with Claude Code-like request body rules.
-Using only the normal OpenAI-compatible converted payload can be rejected even when API key and headers are valid.
+Linux 需要在运行参数中加入 `--add-host=host.docker.internal:host-gateway`。使用仓库 Compose 的 Ollama 覆盖时地址会自动设为 `http://ollama:11434`。
 
-### Current Fix in This Repo
+## 聊天卡住或没有流式输出
 
-In `backend/open_webui/routers/anthropic.py`, when:
+检查浏览器网络面板中聊天请求是否持续接收 SSE 数据，再检查反向代理是否缓冲响应。Nginx 对流式路径应关闭缓冲：
 
-- base URL host contains `anyrouter`, and
-- model is exactly `claude-opus-4-6`
+```nginx
+proxy_buffering off;
+proxy_read_timeout 600s;
+```
 
-the backend now normalizes `system` blocks before sending upstream:
+如果启用了 WebSocket，还必须转发 `Upgrade` 和 `Connection` 头。默认 Go 部署使用 HTTP/SSE，不要求 WebSocket。
 
-- `system[0].text` is forced to:
-  `You are a Claude agent, built on Anthropic's Claude Agent SDK.`
-- `system[1].text` is guaranteed non-empty (fallback: `Follow the user instructions.`)
-- existing later `system` content is preserved
+## 内存或磁盘不足
 
-Also, model ids are now preserved as configured for Anthropic proxies by default.
-We do **not** rewrite `claude-opus-4-6` to a dated alias like `claude-opus-4-6-20250918`,
-because many relays only expose the short alias or their own custom suffixes.
+- 保持 `HALO_GO_MEMORY_LIMIT_MIB=48`，不要把它设置为主机全部可用内存。
+- 降低 `FILE_MAX_SIZE_MB`，限制并发大文件和长上下文请求。
+- 清理 `/app/data` 中不再需要的上传和旧备份，但不要直接删除正在使用的 SQLite 文件或 WAL。
+- 将 Ollama、OCR、语音识别、embedding 和浏览器自动化移到其他主机。
+- 用容器 RSS 或 cgroup 指标判断内存，不要用虚拟内存值。
 
-### Maintenance Note
+## 数据恢复
 
-If you refactor Anthropic payload conversion, keep this Anyrouter-specific normalization
-or you may reintroduce `invalid claude code request` for `claude-opus-4-6`.
+优先通过管理界面的备份/恢复功能处理 `.hwbk`。恢复前另存当前 `/app/data`，并确保磁盘有足够空间容纳数据库、上传文件和临时解压内容。服务会拒绝路径穿越、symlink 和超过 512 MiB 的备份内容。
 
-Users do not need to manually enable any Claude Code fingerprint settings — the system
-handles Anyrouter compatibility automatically via system signature normalization.
+## 服务器端 Python
+
+当前服务端完全由 Go 实现，镜像中没有 Python、pip、FastAPI 或 uvicorn。聊天代码块中的 Python 执行是浏览器按需下载的 Pyodide；它不会修复或影响后端问题，也不应被当作服务端扩展机制。

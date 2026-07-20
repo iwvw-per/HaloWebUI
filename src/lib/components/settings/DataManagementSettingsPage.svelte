@@ -177,7 +177,7 @@
 		supported: Boolean($config?.features?.database_restore_supported ?? false),
 		backend: String($config?.features?.database_backend ?? ''),
 		reason: $config?.features?.database_restore_reason ?? null,
-		workerCount: Number($config?.features?.uvicorn_workers ?? 1)
+		workerCount: Number($config?.features?.worker_count ?? 1)
 	};
 
 	let showArchiveConfirm = false;

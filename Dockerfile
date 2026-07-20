@@ -17,9 +17,9 @@ RUN npm run build
 
 FROM golang:${GO_VERSION}-alpine AS backend-build
 WORKDIR /src
-COPY backend-go/go.mod backend-go/go.sum ./
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
-COPY backend-go ./
+COPY backend ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/halowebui ./cmd/halowebui \
     && mkdir -p /out/data
 
@@ -33,6 +33,7 @@ ENV PORT=8080 \
     WEBUI_NAME=HaloWebUI \
     WEBUI_BUILD_VERSION=${BUILD_HASH} \
     ENABLE_WEBSOCKET_SUPPORT=false \
+    ENABLE_TERMINAL=true \
     ENABLE_LOCAL_MODEL_RUNTIME=false
 WORKDIR /app
 COPY --from=backend-build /out/halowebui /app/halowebui

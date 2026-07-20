@@ -6,13 +6,13 @@ on:
       - main
       - dev
     paths:
-      - 'backend-go/**'
+      - 'backend/**'
   pull_request:
     branches:
       - main
       - dev
     paths:
-      - 'backend-go/**'
+      - 'backend/**'
 
 jobs:
   build:
@@ -25,11 +25,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: backend-go/go.mod
+          go-version-file: backend/go.mod
       - name: Check formatting
-        working-directory: backend-go
+        working-directory: backend
         shell: bash
         run: test -z "$(gofmt -l .)"
       - name: Test
-        working-directory: backend-go
+        working-directory: backend
         run: go test ./...

@@ -195,6 +195,9 @@
 
 	const setupSocket = async (enableWebsocket) => {
 		teardownSocket(currentSocket ?? $socket);
+		if (!enableWebsocket) {
+			return;
+		}
 
 		const _socket = io(`${WEBUI_BASE_URL}` || undefined, {
 			reconnection: true,
@@ -431,7 +434,7 @@
 					});
 				}
 			}
-		} else if (data?.session_id === $socket.id) {
+		} else if ($socket && data?.session_id === $socket.id) {
 			if (type === 'execute:python') {
 				console.log('execute:python', data);
 				executePythonAsWorker(data.id, data.code, cb);
@@ -644,7 +647,7 @@
 							await applyBackendConfig(authenticatedBackendConfig);
 						}
 
-						$socket.emit('user-join', { auth: { token: sessionUser.token } });
+						$socket?.emit('user-join', { auth: { token: sessionUser.token } });
 
 						await user.set(sessionUser);
 					} else {
