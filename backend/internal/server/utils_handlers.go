@@ -14,6 +14,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/iwvw-per/HaloWebUI/backend/internal/auth"
 	"github.com/iwvw-per/HaloWebUI/backend/internal/store"
 )
@@ -107,33 +109,269 @@ func (a *App) handleCodeExecute(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.requireUser(w, r); !ok {
 		return
 	}
+	config, err := a.configResource(r, "system", "code_execution")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load code execution config")
+		return
+	}
+	enabled, _ := config["ENABLE_CODE_EXECUTION"].(bool)
+	if !enabled {
+		writeError(w, http.StatusForbidden, "code execution is disabled")
+		return
+	}
 	var form struct {
 		Code string `json:"code"`
 	}
 	if !decodeJSON(w, r, &form) {
 		return
 	}
-	endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("CODE_EXECUTION_JUPYTER_URL")), "/")
+	endpoint, _ := config["CODE_EXECUTION_JUPYTER_URL"].(string)
+	if strings.TrimSpace(endpoint) == "" {
+		endpoint = os.Getenv("CODE_EXECUTION_JUPYTER_URL")
+	}
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if endpoint == "" {
-		writeError(w, http.StatusNotImplemented, "configure CODE_EXECUTION_JUPYTER_URL for remote code execution")
+		writeError(w, http.StatusServiceUnavailable, "configure CODE_EXECUTION_JUPYTER_URL for remote code execution")
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{"code": form.Code})
-	request, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(payload))
-	request.Header.Set("Content-Type", "application/json")
-	if token := os.Getenv("CODE_EXECUTION_JUPYTER_AUTH_TOKEN"); token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
+	if authMethod, _ := config["CODE_EXECUTION_JUPYTER_AUTH"].(string); authMethod == "password" {
+		writeError(w, http.StatusBadRequest, "Jupyter password authentication is not supported; use token authentication")
+		return
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
-	response, err := client.Do(request)
+	timeout := codeExecutionTimeout(config)
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	result, err := executeJupyterCode(ctx, endpoint, config, form.Code)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "remote code execution failed: "+err.Error())
+		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	defer response.Body.Close()
-	w.Header().Set("Content-Type", response.Header.Get("Content-Type"))
-	w.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(w, io.LimitReader(response.Body, 2<<20))
+	writeJSON(w, http.StatusOK, result)
+}
+
+func codeExecutionTimeout(config map[string]any) time.Duration {
+	seconds := 60
+	switch value := config["CODE_EXECUTION_JUPYTER_TIMEOUT"].(type) {
+	case float64:
+		seconds = int(value)
+	case int:
+		seconds = value
+	case string:
+		if parsed, err := strconv.Atoi(value); err == nil {
+			seconds = parsed
+		}
+	}
+	if seconds < 1 {
+		seconds = 60
+	}
+	if seconds > 600 {
+		seconds = 600
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func jupyterRoot(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", errors.New("Jupyter URL is invalid")
+	}
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	path := strings.TrimRight(parsed.Path, "/")
+	for _, suffix := range []string{"/lab", "/tree", "/notebooks", "/api"} {
+		if strings.HasSuffix(path, suffix) {
+			path = strings.TrimSuffix(path, suffix)
+			break
+		}
+	}
+	parsed.Path = strings.TrimRight(path, "/")
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func jupyterAuth(config map[string]any) (string, string) {
+	method, _ := config["CODE_EXECUTION_JUPYTER_AUTH"].(string)
+	token, _ := config["CODE_EXECUTION_JUPYTER_AUTH_TOKEN"].(string)
+	if strings.TrimSpace(token) == "" {
+		token = os.Getenv("CODE_EXECUTION_JUPYTER_AUTH_TOKEN")
+	}
+	if method == "token" && strings.TrimSpace(token) != "" {
+		return "token " + strings.TrimSpace(token), strings.TrimSpace(token)
+	}
+	return "", ""
+}
+
+func jupyterRequest(ctx context.Context, method, target string, config map[string]any, body io.Reader) (*http.Request, error) {
+	if _, token := jupyterAuth(config); token != "" {
+		parsed, err := url.Parse(target)
+		if err != nil {
+			return nil, err
+		}
+		query := parsed.Query()
+		query.Set("token", token)
+		parsed.RawQuery = query.Encode()
+		target = parsed.String()
+	}
+	request, err := http.NewRequestWithContext(ctx, method, target, body)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "HaloWebUI-Go/1.0")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if authorization, _ := jupyterAuth(config); authorization != "" {
+		request.Header.Set("Authorization", authorization)
+	}
+	return request, nil
+}
+
+func executeJupyterCode(ctx context.Context, rawEndpoint string, config map[string]any, code string) (map[string]any, error) {
+	root, err := jupyterRoot(rawEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	httpClient := &http.Client{Timeout: 20 * time.Second}
+	kernelName := "python3"
+	createKernel := func(name string) (string, int, error) {
+		body, _ := json.Marshal(map[string]string{"name": name})
+		request, requestErr := jupyterRequest(ctx, http.MethodPost, root+"/api/kernels", config, bytes.NewReader(body))
+		if requestErr != nil {
+			return "", 0, requestErr
+		}
+		response, requestErr := httpClient.Do(request)
+		if requestErr != nil {
+			return "", 0, errors.New("failed to create Jupyter kernel")
+		}
+		defer response.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(response.Body, 512*1024))
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			return "", response.StatusCode, fmt.Errorf("Jupyter kernel creation failed (HTTP %d)", response.StatusCode)
+		}
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(data, &payload) != nil || payload.ID == "" {
+			return "", response.StatusCode, errors.New("Jupyter returned an invalid kernel")
+		}
+		return payload.ID, response.StatusCode, nil
+	}
+	kernelID, status, err := createKernel(kernelName)
+	if err != nil && status == http.StatusNotFound {
+		// Older Jupyter deployments may use a non-python3 default kernelspec.
+		request, requestErr := jupyterRequest(ctx, http.MethodGet, root+"/api/kernelspecs", config, nil)
+		if requestErr == nil {
+			if response, getErr := httpClient.Do(request); getErr == nil {
+				data, _ := io.ReadAll(io.LimitReader(response.Body, 512*1024))
+				response.Body.Close()
+				var specs struct {
+					Kernelspecs map[string]json.RawMessage `json:"kernelspecs"`
+				}
+				if json.Unmarshal(data, &specs) == nil {
+					for name := range specs.Kernelspecs {
+						kernelID, _, err = createKernel(name)
+						if err == nil {
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		request, requestErr := jupyterRequest(context.Background(), http.MethodDelete, root+"/api/kernels/"+url.PathEscape(kernelID), config, nil)
+		if requestErr == nil {
+			response, _ := httpClient.Do(request)
+			if response != nil {
+				response.Body.Close()
+			}
+		}
+	}()
+
+	_, token := jupyterAuth(config)
+	wsURL := strings.Replace(root, "https://", "wss://", 1)
+	wsURL = strings.Replace(wsURL, "http://", "ws://", 1) + "/api/kernels/" + url.PathEscape(kernelID) + "/channels"
+	if token != "" {
+		separator := "?"
+		if strings.Contains(wsURL, "?") {
+			separator = "&"
+		}
+		wsURL += separator + "token=" + url.QueryEscape(token)
+	}
+	wsHeaders := http.Header{}
+	if authorization, _ := jupyterAuth(config); authorization != "" {
+		wsHeaders.Set("Authorization", authorization)
+	}
+	connection, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, wsHeaders)
+	if err != nil {
+		return nil, errors.New("failed to connect to Jupyter kernel")
+	}
+	defer connection.Close()
+	messageID := auth.RandomIDForInternalUse()
+	message := map[string]any{
+		"header":        map[string]string{"msg_id": messageID, "username": "halowebui", "session": auth.RandomIDForInternalUse(), "msg_type": "execute_request", "version": "5.3"},
+		"parent_header": map[string]any{}, "metadata": map[string]any{}, "channel": "shell",
+		"content": map[string]any{"code": code, "silent": false, "store_history": false, "user_expressions": map[string]any{}, "allow_stdin": false, "stop_on_error": true},
+	}
+	encoded, _ := json.Marshal(message)
+	if err := connection.WriteMessage(websocket.TextMessage, encoded); err != nil {
+		return nil, errors.New("failed to submit code to Jupyter")
+	}
+	result := map[string]any{"stdout": "", "stderr": "", "result": nil, "files": []any{}}
+	for {
+		_, data, readErr := connection.ReadMessage()
+		if readErr != nil {
+			if ctx.Err() != nil {
+				return nil, errors.New("Jupyter code execution timed out")
+			}
+			return nil, errors.New("Jupyter kernel connection closed")
+		}
+		var event struct {
+			Header struct {
+				MsgType string `json:"msg_type"`
+			} `json:"header"`
+			ParentHeader struct {
+				MsgID string `json:"msg_id"`
+			} `json:"parent_header"`
+			Content map[string]any `json:"content"`
+		}
+		if json.Unmarshal(data, &event) != nil {
+			continue
+		}
+		switch event.Header.MsgType {
+		case "stream":
+			name, _ := event.Content["name"].(string)
+			text, _ := event.Content["text"].(string)
+			if name == "stderr" {
+				result["stderr"] = result["stderr"].(string) + text
+			} else {
+				result["stdout"] = result["stdout"].(string) + text
+			}
+		case "execute_result", "display_data":
+			dataMap, _ := event.Content["data"].(map[string]any)
+			if value, ok := dataMap["text/plain"]; ok {
+				result["result"] = value
+			}
+		case "error":
+			traceback, _ := event.Content["traceback"].([]any)
+			lines := make([]string, 0, len(traceback))
+			for _, line := range traceback {
+				if value, ok := line.(string); ok {
+					lines = append(lines, value)
+				}
+			}
+			result["stderr"] = strings.Join(lines, "\n")
+		case "status":
+			state, _ := event.Content["execution_state"].(string)
+			if state == "idle" && event.ParentHeader.MsgID == messageID {
+				return result, nil
+			}
+		}
+	}
 }
 
 func (a *App) handleMarkdown(w http.ResponseWriter, r *http.Request) {

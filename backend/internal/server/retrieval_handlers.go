@@ -33,6 +33,25 @@ func defaultRetrievalConfig() map[string]any {
 		"RAG_SYSTEM_CONTEXT":           "",
 		"RAG_TEMPLATE":                 "",
 		"web_loader_ssl_verification":  true,
+		"web": map[string]any{
+			"ENABLE_WEB_SEARCH": true, "ENABLE_NATIVE_WEB_SEARCH": false,
+			"DEFAULT_WEB_SEARCH_MODE": "off", "WEB_SEARCH_ENGINE": "",
+			"SEARXNG_QUERY_URL": "", "TAVILY_API_KEY": "",
+			"TAVILY_SEARCH_API_BASE_URL": "https://api.tavily.com", "TAVILY_SEARCH_API_FORCE_MODE": false,
+			"TAVILY_EXTRACT_API_BASE_URL": "https://api.tavily.com", "TAVILY_EXTRACT_API_FORCE_MODE": false,
+			"TAVILY_EXTRACT_DEPTH": "basic", "WEB_SEARCH_RESULT_COUNT": 3,
+			"WEB_SEARCH_CONCURRENT_REQUESTS": 3, "WEB_SEARCH_DOMAIN_FILTER_LIST": []any{},
+			"BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": false, "WEB_LOADER_ENGINE": "",
+			"ENABLE_WEB_LOADER_SSL_VERIFICATION": true, "YOUTUBE_LOADER_LANGUAGE": []any{"en"},
+			"YOUTUBE_LOADER_PROXY_URL": "", "YOUTUBE_LOADER_TRANSLATION": "",
+		},
+		"capabilities": map[string]any{
+			"playwright_available": false, "firecrawl_available": false,
+			"messages": map[string]string{
+				"playwright": "Playwright is not included in the Go slim image",
+				"firecrawl":  "Firecrawl is not included in the Go slim image",
+			},
+		},
 	}
 }
 
@@ -48,12 +67,8 @@ func (a *App) loadGlobalJSON(r *http.Request, key string, fallback map[string]an
 	if err := json.Unmarshal(resource.Body, &value); err != nil {
 		return nil, err
 	}
-	for k, v := range fallback {
-		if _, ok := value[k]; !ok {
-			value[k] = v
-		}
-	}
-	return value, nil
+	mergeJSONMap(fallback, value)
+	return fallback, nil
 }
 
 func (a *App) saveGlobalJSON(r *http.Request, key string, value map[string]any) error {
@@ -95,6 +110,16 @@ func (a *App) handleRetrievalConfigUpdate(w http.ResponseWriter, r *http.Request
 	}
 	for key, value := range patch {
 		config[key] = value
+	}
+	if web, ok := config["web"].(map[string]any); ok {
+		if engine, _ := web["WEB_SEARCH_ENGINE"].(string); engine != "" && engine != "tavily" && engine != "searxng" {
+			writeError(w, http.StatusBadRequest, "Go slim supports only Tavily and SearXNG web search")
+			return
+		}
+		if loader, _ := web["WEB_LOADER_ENGINE"].(string); loader != "" && loader != "builtin" {
+			writeError(w, http.StatusBadRequest, "Go slim supports the built-in web loader only")
+			return
+		}
 	}
 	if err := a.saveGlobalJSON(r, retrievalConfigKey, config); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save retrieval config")
@@ -373,13 +398,6 @@ func blockedRemoteHost(host string) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
-func (a *App) handleRetrievalProcessUnsupported(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireUser(w, r); !ok {
-		return
-	}
-	writeError(w, http.StatusNotImplemented, "remote transcript/document adapter is not configured")
-}
-
 func (a *App) retrievalQuery(w http.ResponseWriter, r *http.Request, collections []string, query string, k int) {
 	user, ok := a.retrievalCollectionForRequest(w, r, collections[0])
 	if !ok {
@@ -469,10 +487,40 @@ func (a *App) handleRetrievalVerify(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.requireUser(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"search": map[string]any{"enabled": false, "ok": nil, "message": "remote web search is not configured"},
-		"loader": map[string]any{"enabled": false, "ok": nil, "message": "built-in bounded HTTP loader is available"},
-	})
+	var payload map[string]any
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	if strings.Contains(r.URL.Path, "/playwright/") {
+		mode := "local"
+		if value, _ := payload["PLAYWRIGHT_WS_URL"].(string); strings.TrimSpace(value) != "" {
+			mode = "remote"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mode": mode, "ok": false,
+			"message": "Playwright is not included in the Go slim image; use the built-in HTTP loader",
+		})
+		return
+	}
+	search := map[string]any{"enabled": false, "ok": nil, "message": "Tavily search is not selected"}
+	loader := map[string]any{"enabled": false, "ok": nil, "message": "the built-in bounded HTTP loader is active"}
+	if engine, _ := payload["WEB_SEARCH_ENGINE"].(string); engine == "tavily" {
+		search["enabled"] = true
+		_, err := a.searchTavily(r, payload, "HaloWebUI configuration test")
+		if err != nil {
+			search["ok"] = false
+			search["message"] = err.Error()
+		} else {
+			search["ok"] = true
+			search["message"] = "Tavily search connection succeeded"
+		}
+	}
+	if engine, _ := payload["WEB_LOADER_ENGINE"].(string); engine == "tavily" {
+		loader["enabled"] = true
+		loader["ok"] = false
+		loader["message"] = "Tavily extraction is unavailable in Go slim; select the built-in loader"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"search": search, "loader": loader})
 }
 
 func (a *App) handleRetrievalBatch(w http.ResponseWriter, r *http.Request) {
@@ -498,11 +546,4 @@ func (a *App) handleRetrievalBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": true, "collection_name": form.CollectionName, "filenames": filenames})
-}
-
-func (a *App) handleRetrievalEmbeddingFunction(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireUser(w, r); !ok {
-		return
-	}
-	writeJSON(w, http.StatusNotImplemented, map[string]any{"detail": "embedding worker is not configured; use lexical retrieval or configure a remote adapter"})
 }

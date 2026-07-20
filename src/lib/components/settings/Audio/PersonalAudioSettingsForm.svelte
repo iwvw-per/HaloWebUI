@@ -468,8 +468,7 @@
 							bind:value={STTEngine}
 							placeholder={$i18n.t('Select an engine')}
 							options={[
-								{ value: '', label: $i18n.t('Default') },
-								{ value: 'web', label: $i18n.t('Web API') }
+								{ value: '', label: $i18n.t('Default') }
 							]}
 						/>
 					</div>
@@ -733,9 +732,8 @@
 											className="w-fit text-xs text-right"
 											bind:value={STTEngine}
 											placeholder={$i18n.t('Select an engine')}
-											options={[
-												{ value: '', label: $i18n.t('Default') },
-												{ value: 'web', label: $i18n.t('Web API') }
+							options={[
+								{ value: '', label: $i18n.t('Default') }
 											]}
 										/>
 									</div>

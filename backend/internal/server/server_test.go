@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -14,8 +16,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/iwvw-per/HaloWebUI/backend/internal/store"
 )
+
+type stubLDAPAuthenticator struct {
+	identity ldapIdentity
+	err      error
+	calls    int
+	config   ldapServerConfig
+	username string
+	password string
+}
+
+type stubYouTubeTranscriptLoader struct {
+	transcript string
+	language   string
+	err        error
+	videoID    string
+	config     map[string]any
+}
+
+func (s *stubYouTubeTranscriptLoader) Load(_ context.Context, videoID string, config map[string]any) (string, string, error) {
+	s.videoID = videoID
+	s.config = config
+	return s.transcript, s.language, s.err
+}
+
+func (s *stubLDAPAuthenticator) Authenticate(_ context.Context, config ldapServerConfig, username, password string) (ldapIdentity, error) {
+	s.calls++
+	s.config = config
+	s.username = username
+	s.password = password
+	return s.identity, s.err
+}
 
 func testApp(t *testing.T) *App {
 	t.Helper()
@@ -70,6 +104,226 @@ func TestVersionContract(t *testing.T) {
 	}
 	if payload["version"] != "1.2.3" {
 		t.Fatalf("unexpected version payload: %#v", payload)
+	}
+}
+
+func TestLDAPConfigurationAndSigninContract(t *testing.T) {
+	app := testApp(t)
+	adminToken := signupToken(t, app)
+	memberToken := signupTokenFor(t, app, "Member", "member@example.com")
+
+	forbidden := authenticatedRequest(t, app, memberToken, http.MethodGet, "/api/v1/auths/admin/config/ldap", "")
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("non-admin read LDAP config: %d %s", forbidden.Code, forbidden.Body.String())
+	}
+
+	serverConfig := `{
+		"label":"Corporate LDAP","host":"ldap.example.com","port":636,
+		"attribute_for_mail":"mail","attribute_for_username":"uid",
+		"app_dn":"cn=reader,dc=example,dc=com","app_dn_password":"reader-secret",
+		"search_base":"ou=people,dc=example,dc=com","search_filters":"(objectClass=person)",
+		"use_tls":true,"certificate_path":null,"ciphers":"ALL"
+	}`
+	configured := authenticatedJSON(t, app, adminToken, http.MethodPost, "/api/v1/auths/admin/config/ldap/server", serverConfig)
+	if configured["host"] != "ldap.example.com" || configured["app_dn_password"] != "reader-secret" {
+		t.Fatalf("LDAP server config did not persist: %#v", configured)
+	}
+	enabled := authenticatedJSON(t, app, adminToken, http.MethodPost, "/api/v1/auths/admin/config/ldap", `{"enable_ldap":true}`)
+	if enabled["ENABLE_LDAP"] != true {
+		t.Fatalf("LDAP was not enabled: %#v", enabled)
+	}
+
+	publicConfig := httptest.NewRecorder()
+	app.ServeHTTP(publicConfig, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if publicConfig.Code != http.StatusOK || !strings.Contains(publicConfig.Body.String(), `"enable_ldap":true`) {
+		t.Fatalf("public config did not expose LDAP state: %d %s", publicConfig.Code, publicConfig.Body.String())
+	}
+
+	stub := &stubLDAPAuthenticator{identity: ldapIdentity{Username: "alice", Email: "alice@example.com", Name: "Alice LDAP"}}
+	app.ldapAuth = stub
+	signin := httptest.NewRecorder()
+	signinRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auths/ldap", strings.NewReader(`{"user":"Alice","password":"user-secret"}`))
+	signinRequest.Header.Set("Content-Type", "application/json")
+	app.ServeHTTP(signin, signinRequest)
+	if signin.Code != http.StatusOK || !strings.Contains(signin.Body.String(), `"email":"alice@example.com"`) {
+		t.Fatalf("LDAP signin failed: %d %s", signin.Code, signin.Body.String())
+	}
+	if stub.calls != 1 || stub.username != "Alice" || stub.password != "user-secret" || stub.config.AppDNPassword != "reader-secret" {
+		t.Fatalf("LDAP adapter received the wrong contract: %#v", stub)
+	}
+	if cookie := signin.Header().Get("Set-Cookie"); !strings.Contains(cookie, "token=") || !strings.Contains(cookie, "HttpOnly") {
+		t.Fatalf("LDAP signin did not issue a secure session cookie: %q", cookie)
+	}
+	created, err := app.store.UserByEmail(t.Context(), "alice@example.com")
+	if err != nil || created.Name != "Alice LDAP" || created.Role != "pending" {
+		t.Fatalf("LDAP user was not created with the default role: %#v %v", created, err)
+	}
+
+	stub.err = errors.New("bind tcp ldap.example.com:636: secret infrastructure detail")
+	failed := httptest.NewRecorder()
+	failedRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auths/ldap", strings.NewReader(`{"user":"Alice","password":"wrong"}`))
+	failedRequest.Header.Set("Content-Type", "application/json")
+	app.ServeHTTP(failed, failedRequest)
+	if failed.Code != http.StatusBadRequest || strings.Contains(failed.Body.String(), "infrastructure") {
+		t.Fatalf("LDAP failure contract leaked details: %d %s", failed.Code, failed.Body.String())
+	}
+}
+
+func TestLDAPSigninRejectsDisabledAndInvalidConfiguration(t *testing.T) {
+	app := testApp(t)
+	stub := &stubLDAPAuthenticator{}
+	app.ldapAuth = stub
+	disabled := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auths/ldap", strings.NewReader(`{"user":"alice","password":"secret"}`))
+	request.Header.Set("Content-Type", "application/json")
+	app.ServeHTTP(disabled, request)
+	if disabled.Code != http.StatusBadRequest || stub.calls != 0 {
+		t.Fatalf("disabled LDAP reached adapter: %d calls=%d", disabled.Code, stub.calls)
+	}
+
+	token := signupToken(t, app)
+	invalid := authenticatedRequest(t, app, token, http.MethodPost, "/api/v1/auths/admin/config/ldap/server", `{"label":"LDAP","host":"localhost","attribute_for_mail":"mail)(uid=*","attribute_for_username":"uid","search_base":"dc=example,dc=com"}`)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe LDAP attribute was accepted: %d %s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestCodeExecutionUsesPersistedConfig(t *testing.T) {
+	root, err := jupyterRoot("http://jupyter.example.test:8558/lab?")
+	if err != nil || root != "http://jupyter.example.test:8558" {
+		t.Fatalf("Jupyter Lab URL normalization regressed: %q %v", root, err)
+	}
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/kernels":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"kernel-test"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/kernels/kernel-test/channels":
+			connection, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer connection.Close()
+			_, requestData, _ := connection.ReadMessage()
+			var requestEnvelope struct {
+				Header struct {
+					MsgID string `json:"msg_id"`
+				} `json:"header"`
+			}
+			_ = json.Unmarshal(requestData, &requestEnvelope)
+			_ = connection.WriteJSON(map[string]any{"header": map[string]any{"msg_type": "stream"}, "parent_header": map[string]any{}, "content": map[string]any{"name": "stdout", "text": "persisted-config-ok\n"}})
+			_ = connection.WriteJSON(map[string]any{"header": map[string]any{"msg_type": "status"}, "parent_header": map[string]any{"msg_id": requestEnvelope.Header.MsgID}, "content": map[string]any{"execution_state": "idle"}})
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/kernels/kernel-test":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	app := testApp(t)
+	token := signupToken(t, app)
+	authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/configs/code_execution", `{"ENABLE_CODE_EXECUTION":true,"CODE_EXECUTION_ENGINE":"jupyter","CODE_EXECUTION_JUPYTER_URL":"`+upstream.URL+`/lab?workspace=test","CODE_EXECUTION_JUPYTER_AUTH":"token","CODE_EXECUTION_JUPYTER_AUTH_TOKEN":"persisted-token"}`)
+
+	request := authenticatedRequest(t, app, token, http.MethodPost, "/api/v1/utils/code/execute", `{"code":"1+1"}`)
+	if request.Code != http.StatusOK || !strings.Contains(request.Body.String(), "persisted-config-ok") {
+		t.Fatalf("persisted code execution config was ignored: %d %s", request.Code, request.Body.String())
+	}
+	publicConfig := httptest.NewRecorder()
+	app.ServeHTTP(publicConfig, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if publicConfig.Code != http.StatusOK || !strings.Contains(publicConfig.Body.String(), `"enable_code_execution":true`) || !strings.Contains(publicConfig.Body.String(), `"engine":"jupyter"`) {
+		t.Fatalf("code execution state was not exposed: %d %s", publicConfig.Code, publicConfig.Body.String())
+	}
+}
+
+func TestLiveJupyterCodeExecution(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("HALO_TEST_JUPYTER_URL"))
+	token := strings.TrimSpace(os.Getenv("HALO_TEST_JUPYTER_TOKEN"))
+	if endpoint == "" || token == "" {
+		t.Skip("set HALO_TEST_JUPYTER_URL and HALO_TEST_JUPYTER_TOKEN to run the live adapter test")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	result, err := executeJupyterCode(ctx, endpoint, map[string]any{
+		"CODE_EXECUTION_JUPYTER_AUTH":       "token",
+		"CODE_EXECUTION_JUPYTER_AUTH_TOKEN": token,
+	}, `print("HALO_LIVE_JUPYTER_OK", 6 * 7)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, _ := result["stdout"].(string)
+	if !strings.Contains(stdout, "HALO_LIVE_JUPYTER_OK 42") {
+		t.Fatalf("unexpected live Jupyter output: %#v", result)
+	}
+}
+
+func TestTavilySearchIndexesResultsAndRejectsUnsupportedEngines(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected Tavily request: %s %s", r.Method, r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request["api_key"] != "test-key" || request["query"] == "" {
+			t.Fatalf("invalid Tavily request: %#v %v", request, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Go result","url":"https://example.com/go","content":"Go uses small static binaries."}]}`))
+	}))
+	defer upstream.Close()
+	app := testApp(t)
+	token := signupToken(t, app)
+	authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/retrieval/config/update", `{"web":{"WEB_SEARCH_ENGINE":"tavily","TAVILY_API_KEY":"test-key","TAVILY_SEARCH_API_BASE_URL":"`+upstream.URL+`/search","TAVILY_SEARCH_API_FORCE_MODE":true,"WEB_SEARCH_RESULT_COUNT":1}}`)
+	result := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/retrieval/process/web/search", `{"query":"golang","collection_name":"search-test"}`)
+	if result["status"] != true || result["collection_name"] != "search-test" || result["loaded_count"] != float64(1) {
+		t.Fatalf("Tavily search response contract failed: %#v", result)
+	}
+	query := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/retrieval/query/doc", `{"collection_name":"search-test","query":"static binaries","k":4}`)
+	if !strings.Contains(fmt.Sprint(query["documents"]), "small static binaries") {
+		t.Fatalf("Tavily result was not indexed for retrieval: %#v", query)
+	}
+	verified := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/retrieval/config/web/verify", `{"WEB_SEARCH_ENGINE":"tavily","TAVILY_API_KEY":"test-key","TAVILY_SEARCH_API_BASE_URL":"`+upstream.URL+`/search","TAVILY_SEARCH_API_FORCE_MODE":true,"WEB_SEARCH_RESULT_COUNT":1}`)
+	searchStatus, _ := verified["search"].(map[string]any)
+	if searchStatus["enabled"] != true || searchStatus["ok"] != true {
+		t.Fatalf("Tavily verification did not use the adapter: %#v", verified)
+	}
+	unsupported := authenticatedRequest(t, app, token, http.MethodPost, "/api/v1/retrieval/config/update", `{"web":{"WEB_SEARCH_ENGINE":"brave"}}`)
+	if unsupported.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported web search engine was accepted: %d %s", unsupported.Code, unsupported.Body.String())
+	}
+}
+
+func TestYouTubeProcessingIndexesTranscriptThroughLoader(t *testing.T) {
+	app := testApp(t)
+	token := signupToken(t, app)
+	loader := &stubYouTubeTranscriptLoader{transcript: "hello from captions", language: "en"}
+	app.youtubeLoader = loader
+	result := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/retrieval/process/youtube", `{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","collection_name":"youtube-test"}`)
+	if result["status"] != true || result["collection_name"] != "youtube-test" || !strings.Contains(fmt.Sprint(result["file"]), "hello from captions") {
+		t.Fatalf("YouTube response contract failed: %#v", result)
+	}
+	if loader.videoID != "dQw4w9WgXcQ" {
+		t.Fatalf("YouTube video ID was not normalized: %q", loader.videoID)
+	}
+	query := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/retrieval/query/doc", `{"collection_name":"youtube-test","query":"captions","k":4}`)
+	if !strings.Contains(fmt.Sprint(query["documents"]), "hello from captions") {
+		t.Fatalf("YouTube transcript was not indexed: %#v", query)
+	}
+	invalid := authenticatedRequest(t, app, token, http.MethodPost, "/api/v1/retrieval/process/youtube", `{"url":"https://example.com/watch?v=dQw4w9WgXcQ"}`)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("non-YouTube URL was accepted: %d %s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestYouTubeTranscriptParsers(t *testing.T) {
+	json3 := []byte(`{"events":[{"segs":[{"utf8":"Hello "},{"utf8":"world"}]},{"segs":[{"utf8":"!"}]}]}`)
+	parsed, err := parseYouTubeTranscript(json3)
+	if err != nil || parsed != "Hello world !" {
+		t.Fatalf("json3 transcript parser failed: %q %v", parsed, err)
+	}
+	xmlTranscript, err := parseYouTubeTranscript([]byte(`<transcript><text>Hello &amp; world</text><text>Second line</text></transcript>`))
+	if err != nil || xmlTranscript != "Hello & world Second line" {
+		t.Fatalf("XML transcript parser failed: %q %v", xmlTranscript, err)
 	}
 }
 
@@ -149,7 +403,7 @@ func TestAudioConfigContractAndPersistence(t *testing.T) {
 	config := authenticatedJSON(t, app, adminToken, http.MethodGet, "/api/v1/audio/config", "")
 	stt, _ := config["stt"].(map[string]any)
 	tts, _ := config["tts"].(map[string]any)
-	if stt["ENGINE"] != "web" || tts["ENGINE"] != "" || tts["SPLIT_ON"] != "punctuation" {
+	if stt["ENGINE"] != "openai" || tts["ENGINE"] != "" || tts["SPLIT_ON"] != "punctuation" {
 		t.Fatalf("unexpected lightweight audio defaults: %#v", config)
 	}
 
@@ -247,6 +501,50 @@ func TestUnifiedChatTranslatesHaloEnvelope(t *testing.T) {
 	}
 	if upstreamAuthorization != "Bearer pooled-user-key" {
 		t.Fatalf("chat did not use the enabled user connection key: %q", upstreamAuthorization)
+	}
+}
+
+func TestOpenAICompatibilityConfigPersistsPerUser(t *testing.T) {
+	app := testApp(t)
+	token := signupToken(t, app)
+	payload := `{"ENABLE_OPENAI_API":true,"OPENAI_API_BASE_URLS":["https://api.example.test/v1"],"OPENAI_API_KEYS":["user-key"],"OPENAI_API_CONFIGS":{"0":{"enable":true}}}`
+	saved := authenticatedRequest(t, app, token, http.MethodPost, "/openai/config/update", payload)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("OpenAI config update failed: %d %s", saved.Code, saved.Body.String())
+	}
+	loaded := authenticatedRequest(t, app, token, http.MethodGet, "/openai/config", "")
+	if loaded.Code != http.StatusOK || !strings.Contains(loaded.Body.String(), "api.example.test") || !strings.Contains(loaded.Body.String(), "user-key") {
+		t.Fatalf("OpenAI config was not persisted: %d %s", loaded.Code, loaded.Body.String())
+	}
+	urls := authenticatedRequest(t, app, token, http.MethodGet, "/openai/urls", "")
+	if urls.Code != http.StatusOK || !strings.Contains(urls.Body.String(), "api.example.test") {
+		t.Fatalf("OpenAI URLs did not reflect persisted config: %d %s", urls.Code, urls.Body.String())
+	}
+}
+
+func TestOllamaCompatibilityConfigPersistsAndUsesSelectedConnection(t *testing.T) {
+	var requestedPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		writeJSON(w, http.StatusOK, map[string]any{"models": []map[string]string{{"name": "go-ollama"}}})
+	}))
+	defer upstream.Close()
+
+	app := testApp(t)
+	app.config.OllamaBaseURL = "http://127.0.0.1:1"
+	token := signupToken(t, app)
+	payload := `{"ENABLE_OLLAMA_API":true,"OLLAMA_BASE_URLS":["http://127.0.0.1:1","` + upstream.URL + `"],"OLLAMA_API_CONFIGS":{"0":{"enable":false},"1":{"enable":true}}}`
+	saved := authenticatedRequest(t, app, token, http.MethodPost, "/ollama/config/update", payload)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("Ollama config update failed: %d %s", saved.Code, saved.Body.String())
+	}
+	loaded := authenticatedRequest(t, app, token, http.MethodGet, "/ollama/config", "")
+	if loaded.Code != http.StatusOK || !strings.Contains(loaded.Body.String(), upstream.URL) {
+		t.Fatalf("Ollama config was not persisted: %d %s", loaded.Code, loaded.Body.String())
+	}
+	models := authenticatedRequest(t, app, token, http.MethodGet, "/ollama/api/tags/1", "")
+	if models.Code != http.StatusOK || !strings.Contains(models.Body.String(), "go-ollama") || requestedPath != "/api/tags" {
+		t.Fatalf("indexed Ollama connection failed: %d %s path=%s", models.Code, models.Body.String(), requestedPath)
 	}
 }
 
@@ -809,6 +1107,223 @@ func TestFrontendAPIDomainsHaveGoOwners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+type frontendEndpoint struct {
+	Method string
+	Path   string
+	Source string
+}
+
+func TestEveryConcreteFrontendAPIEndpointHasGoOwner(t *testing.T) {
+	app := testApp(t)
+	token := signupToken(t, app)
+	endpoints := collectFrontendEndpoints(t)
+	if len(endpoints) < 200 {
+		t.Fatalf("frontend endpoint inventory is unexpectedly small: %d", len(endpoints))
+	}
+	inventory := map[string]bool{}
+	for _, endpoint := range endpoints {
+		inventory[endpoint.Method+" "+endpoint.Path] = true
+	}
+	for _, required := range []string{
+		"POST /api/v1/auths/ldap",
+		"GET /api/v1/chats/folder/test",
+		"GET /api/v1/chats/share/test",
+	} {
+		if !inventory[required] {
+			t.Errorf("frontend endpoint parser missed required contract %s", required)
+		}
+	}
+
+	for _, endpoint := range endpoints {
+		response := authenticatedRequest(t, app, token, endpoint.Method, endpoint.Path, "{}")
+		if response.Header().Get(compatibilityFallbackHeader) == "true" {
+			t.Errorf("%s %s from %s has no explicit Go route", endpoint.Method, endpoint.Path, endpoint.Source)
+		}
+	}
+}
+
+func collectFrontendEndpoints(t *testing.T) []frontendEndpoint {
+	t.Helper()
+	root := filepath.Join("..", "..", "..", "src", "lib", "apis")
+	methodPattern := regexp.MustCompile(`(?i)method\s*:\s*['\"](GET|POST|PUT|PATCH|DELETE)['\"]`)
+	seen := map[string]bool{}
+	result := make([]frontendEndpoint, 0, 256)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".ts" || strings.HasSuffix(path, ".test.ts") {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for offset := 0; ; {
+			fetchOffset := bytes.Index(content[offset:], []byte("fetch("))
+			if fetchOffset < 0 {
+				break
+			}
+			fetchOffset += offset
+			cursor := fetchOffset + len("fetch(")
+			for cursor < len(content) && (content[cursor] == ' ' || content[cursor] == '\t' || content[cursor] == '\r' || content[cursor] == '\n') {
+				cursor++
+			}
+			if cursor >= len(content) || content[cursor] != '`' {
+				offset = cursor
+				continue
+			}
+			url, end, ok := parseFrontendTemplate(content, cursor)
+			if !ok {
+				offset = cursor + 1
+				continue
+			}
+			windowEnd := min(len(content), end+1200)
+			method := http.MethodGet
+			if match := methodPattern.FindSubmatch(content[end:windowEnd]); len(match) == 2 {
+				method = strings.ToUpper(string(match[1]))
+			}
+			if query := strings.IndexByte(url, '?'); query >= 0 {
+				url = url[:query]
+			}
+			url = strings.ReplaceAll(url, "//", "/")
+			if !strings.HasPrefix(url, "/") || strings.Contains(url, "{dynamic-path}") {
+				offset = end
+				continue
+			}
+			key := method + " " + url
+			if !seen[key] {
+				seen[key] = true
+				result = append(result, frontendEndpoint{Method: method, Path: url, Source: filepath.ToSlash(path)})
+			}
+			offset = end
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoint := range []frontendEndpoint{
+		{Method: http.MethodGet, Path: "/api/v1/skills/", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodGet, Path: "/api/v1/skills/list", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodGet, Path: "/api/v1/skills/catalog", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodGet, Path: "/api/v1/skills/runtime/capabilities", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodGet, Path: "/api/v1/skills/legacy-prompts", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/legacy-prompts/migrate", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodGet, Path: "/api/v1/skills/test", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/create", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/test/update", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodDelete, Path: "/api/v1/skills/test/delete", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/test/runtime/install", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodDelete, Path: "/api/v1/skills/test/runtime/install", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/test/auto", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/import", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/import/url", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/import/github", Source: "src/lib/apis/skills/index.ts"},
+		{Method: http.MethodPost, Path: "/api/v1/skills/import/zip", Source: "src/lib/apis/skills/index.ts"},
+	} {
+		key := endpoint.Method + " " + endpoint.Path
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, endpoint)
+		}
+	}
+	return result
+}
+
+func parseFrontendTemplate(content []byte, start int) (string, int, bool) {
+	var result strings.Builder
+	for cursor := start + 1; cursor < len(content); {
+		switch {
+		case content[cursor] == '\\':
+			if cursor+1 < len(content) {
+				result.WriteByte(content[cursor+1])
+				cursor += 2
+				continue
+			}
+		case content[cursor] == '`':
+			return result.String(), cursor + 1, true
+		case content[cursor] == '$' && cursor+1 < len(content) && content[cursor+1] == '{':
+			expression, end, ok := parseFrontendExpression(content, cursor+2)
+			if !ok {
+				return "", cursor + 1, false
+			}
+			result.WriteString(frontendExpressionValue(expression))
+			cursor = end
+			continue
+		}
+		result.WriteByte(content[cursor])
+		cursor++
+	}
+	return "", len(content), false
+}
+
+func parseFrontendExpression(content []byte, start int) (string, int, bool) {
+	depth := 1
+	quote := byte(0)
+	escaped := false
+	for cursor := start; cursor < len(content); cursor++ {
+		char := content[cursor]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if char == '\\' {
+				escaped = true
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		if char == '\'' || char == '"' || char == '`' {
+			quote = char
+			continue
+		}
+		switch char {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return string(content[start:cursor]), cursor + 1, true
+			}
+		}
+	}
+	return "", len(content), false
+}
+
+func frontendExpressionValue(expression string) string {
+	expression = strings.TrimSpace(expression)
+	bases := map[string]string{
+		"WEBUI_BASE_URL":              "",
+		"WEBUI_API_BASE_URL":          "/api/v1",
+		"OLLAMA_API_BASE_URL":         "/ollama",
+		"OPENAI_API_BASE_URL":         "/openai",
+		"GEMINI_API_BASE_URL":         "/gemini",
+		"GROK_API_BASE_URL":           "/grok",
+		"ANTHROPIC_API_BASE_URL":      "/anthropic",
+		"AUDIO_API_BASE_URL":          "/api/v1/audio",
+		"IMAGES_API_BASE_URL":         "/api/v1/images",
+		"RETRIEVAL_API_BASE_URL":      "/api/v1/retrieval",
+		"HALOCLAW_API_BASE_URL":       "/api/v1/haloclaw",
+		"EXTERNAL_API_ADMIN_BASE_URL": "/api/v1/external_api",
+	}
+	if value, ok := bases[expression]; ok {
+		return value
+	}
+	lower := strings.ToLower(expression)
+	if strings.Contains(lower, "query") || strings.Contains(lower, "params") || strings.Contains(lower, "suffix") {
+		return ""
+	}
+	if expression == "path" {
+		return "{dynamic-path}"
+	}
+	return "test"
 }
 
 func TestTerminalWorkspaceIsSandboxed(t *testing.T) {

@@ -314,7 +314,7 @@ func (a *App) handleSkillRuntimeInstall(w http.ResponseWriter, r *http.Request) 
 	if _, ok := a.requireUser(w, r); !ok {
 		return
 	}
-	writeError(w, http.StatusNotImplemented, "local skill runtimes are disabled in the Go slim profile")
+	writeError(w, http.StatusConflict, "local skill runtimes are disabled in the Go slim profile")
 }
 
 func (a *App) handleLegacySkills(w http.ResponseWriter, r *http.Request) {

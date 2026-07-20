@@ -29,6 +29,8 @@ type App struct {
 	tasks           map[string]*taskEntry
 	gatewayRateMu   sync.Mutex
 	gatewayRates    map[string]gatewayRateWindow
+	ldapAuth        ldapAuthenticator
+	youtubeLoader   youtubeTranscriptLoader
 }
 
 func New(config Config) (*App, error) {
@@ -61,6 +63,8 @@ func New(config Config) (*App, error) {
 		restoreSessions: make(map[string]restoreSession),
 		tasks:           make(map[string]*taskEntry),
 		gatewayRates:    make(map[string]gatewayRateWindow),
+		ldapAuth:        goLDAPAuthenticator{},
+		youtubeLoader:   goYouTubeTranscriptLoader{},
 	}
 	app.registerRoutes()
 	return app, nil
@@ -86,15 +90,16 @@ func (a *App) registerRoutes() {
 	a.mux.HandleFunc("GET /api/community_sharing/toggle", a.handleRootCommunitySharing)
 	a.mux.HandleFunc("GET /api/v1/auths/", a.handleSession)
 	a.mux.HandleFunc("POST /api/v1/auths/signin", a.handleSignin)
+	a.mux.HandleFunc("POST /api/v1/auths/ldap", a.handleLDAPSignin)
 	a.mux.HandleFunc("POST /api/v1/auths/signup", a.handleSignup)
 	a.mux.HandleFunc("GET /api/v1/auths/signout", a.handleSignout)
 	a.mux.HandleFunc("GET /api/v1/auths/admin/details", a.handleAdminDetails)
 	a.mux.HandleFunc("GET /api/v1/auths/admin/config", a.handleAdminConfig)
 	a.mux.HandleFunc("POST /api/v1/auths/admin/config", a.handleAdminConfig)
-	a.mux.HandleFunc("GET /api/v1/auths/admin/config/ldap", a.handleAuthAdminSetting)
-	a.mux.HandleFunc("POST /api/v1/auths/admin/config/ldap", a.handleAuthAdminSetting)
-	a.mux.HandleFunc("GET /api/v1/auths/admin/config/ldap/server", a.handleAuthAdminSetting)
-	a.mux.HandleFunc("POST /api/v1/auths/admin/config/ldap/server", a.handleAuthAdminSetting)
+	a.mux.HandleFunc("GET /api/v1/auths/admin/config/ldap", a.handleLDAPConfig)
+	a.mux.HandleFunc("POST /api/v1/auths/admin/config/ldap", a.handleLDAPConfig)
+	a.mux.HandleFunc("GET /api/v1/auths/admin/config/ldap/server", a.handleLDAPServerConfig)
+	a.mux.HandleFunc("POST /api/v1/auths/admin/config/ldap/server", a.handleLDAPServerConfig)
 	a.mux.HandleFunc("POST /api/v1/auths/add", a.handleAddUser)
 	a.mux.HandleFunc("POST /api/v1/auths/update/profile", a.handleProfileUpdate)
 	a.mux.HandleFunc("POST /api/v1/auths/update/password", a.handlePasswordUpdate)
@@ -203,15 +208,14 @@ func (a *App) registerRoutes() {
 	a.mux.HandleFunc("POST /api/v1/retrieval/process/file", a.handleRetrievalProcessFile)
 	a.mux.HandleFunc("POST /api/v1/retrieval/process/text", a.handleRetrievalProcessText)
 	a.mux.HandleFunc("POST /api/v1/retrieval/process/web", a.handleRetrievalProcessWeb)
-	a.mux.HandleFunc("POST /api/v1/retrieval/process/youtube", a.handleRetrievalProcessUnsupported)
-	a.mux.HandleFunc("POST /api/v1/retrieval/process/web/search", a.handleRetrievalProcessUnsupported)
+	a.mux.HandleFunc("POST /api/v1/retrieval/process/youtube", a.handleRetrievalProcessYouTube)
+	a.mux.HandleFunc("POST /api/v1/retrieval/process/web/search", a.handleRetrievalProcessWebSearch)
 	a.mux.HandleFunc("POST /api/v1/retrieval/process/files/batch", a.handleRetrievalBatch)
 	a.mux.HandleFunc("POST /api/v1/retrieval/query/doc", a.handleRetrievalQuery)
 	a.mux.HandleFunc("POST /api/v1/retrieval/query/collection", a.handleRetrievalQuery)
 	a.mux.HandleFunc("POST /api/v1/retrieval/delete", a.handleRetrievalDelete)
 	a.mux.HandleFunc("POST /api/v1/retrieval/reset/db", a.handleRetrievalReset)
 	a.mux.HandleFunc("POST /api/v1/retrieval/reset/uploads", a.handleRetrievalReset)
-	a.mux.HandleFunc("GET /api/v1/retrieval/ef/{text}", a.handleRetrievalEmbeddingFunction)
 	a.mux.HandleFunc("GET /api/v1/tasks/config", a.handleTaskConfig)
 	a.mux.HandleFunc("POST /api/v1/tasks/config/update", a.handleTaskConfigUpdate)
 	for _, task := range []string{"title", "tags", "emoji", "queries", "auto", "moa", "image_prompt"} {
@@ -450,6 +454,11 @@ func (a *App) handleConfig(response http.ResponseWriter, request *http.Request) 
 		writeError(response, http.StatusInternalServerError, "database unavailable")
 		return
 	}
+	ldapSettings, err := a.loadLDAPSettings(request)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "failed to load authentication config")
+		return
+	}
 	payload := map[string]any{
 		"onboarding":                 userCount == 0,
 		"status":                     true,
@@ -467,6 +476,9 @@ func (a *App) handleConfig(response http.ResponseWriter, request *http.Request) 
 			"enable_api_key":                  a.config.EnableAPIKey,
 			"enable_signup":                   a.config.EnableSignup,
 			"enable_login_form":               a.config.EnableLoginForm,
+			"enable_ldap":                     ldapSettings.Enabled,
+			"enable_code_execution":           false,
+			"enable_code_interpreter":         false,
 			"enable_websocket":                a.config.EnableWebSocket,
 			"enable_web_search":               false,
 			"enable_halo_web_search":          false,
@@ -479,12 +491,30 @@ func (a *App) handleConfig(response http.ResponseWriter, request *http.Request) 
 			"enable_admin_chat_access":        a.config.EnableAdminChatAccess,
 			"enable_community_sharing":        false,
 			"enable_autocomplete_generation":  false,
+			"enable_direct_connections":       false,
+			"enable_channels":                 false,
+			"enable_user_webhooks":            false,
 			"database_restore_supported":      true,
 			"database_backend":                "sqlite",
 			"database_restore_reason":         nil,
 			"worker_count":                    1,
 		},
 	}
+	codeConfig, codeErr := a.configResource(request, "system", "code_execution")
+	if codeErr != nil {
+		writeError(response, http.StatusInternalServerError, "failed to load code execution config")
+		return
+	}
+	codeExecutionEnabled, _ := codeConfig["ENABLE_CODE_EXECUTION"].(bool)
+	codeInterpreterEnabled, _ := codeConfig["ENABLE_CODE_INTERPRETER"].(bool)
+	features := payload["features"].(map[string]any)
+	features["enable_code_execution"] = codeExecutionEnabled
+	features["enable_code_interpreter"] = codeInterpreterEnabled
+	codeEngine, _ := codeConfig["CODE_EXECUTION_ENGINE"].(string)
+	if !codeExecutionEnabled {
+		codeEngine = ""
+	}
+	payload["code"] = map[string]any{"engine": codeEngine}
 	if _, ok := a.currentUser(request); ok {
 		audio, audioErr := a.loadAudioConfig(request)
 		if audioErr != nil {

@@ -48,6 +48,17 @@ func configDefaults(name string) map[string]any {
 		return map[string]any{"banners": []any{}}
 	case "suggestions":
 		return map[string]any{"suggestions": []any{}}
+	case "ldap":
+		return map[string]any{
+			"ENABLE_LDAP": false,
+			"server": map[string]any{
+				"label": "LDAP Server", "host": "localhost", "port": 389,
+				"attribute_for_mail": "mail", "attribute_for_username": "uid",
+				"app_dn": "", "app_dn_password": "", "search_base": "",
+				"search_filters": "", "use_tls": true, "certificate_path": nil,
+				"ciphers": "ALL",
+			},
+		}
 	default:
 		return map[string]any{}
 	}

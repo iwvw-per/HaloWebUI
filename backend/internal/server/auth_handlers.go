@@ -40,19 +40,6 @@ func (a *App) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *App) handleAuthAdminSetting(w http.ResponseWriter, r *http.Request) {
-	user, ok := a.requireUser(w, r)
-	if !ok {
-		return
-	}
-	if user.Role != "admin" {
-		writeError(w, http.StatusForbidden, "Access prohibited")
-		return
-	}
-	key := strings.TrimPrefix(r.URL.Path, "/api/v1/")
-	a.handleCompatibilitySetting(w, r, user, key)
-}
-
 func (a *App) handleAddUser(w http.ResponseWriter, r *http.Request) {
 	if ok, _ := a.requireAdmin(w, r); !ok {
 		return

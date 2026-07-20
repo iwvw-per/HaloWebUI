@@ -75,28 +75,10 @@
 
 	$: activeTabMeta = tabMeta[selectedTab];
 
-	let webSearchEngines = [
-		'searxng',
-		'google_pse',
-		'brave',
-		'kagi',
-		'mojeek',
-		'bocha',
-		'serpstack',
-		'serper',
-		'serply',
-		'searchapi',
-		'serpapi',
-		'duckduckgo',
-		'tavily',
-		'jina',
-		'bing',
-		'exa',
-		'perplexity',
-		'grok',
-		'sougou'
-	];
-	let webLoaderEngines = ['playwright', 'firecrawl', 'tavily'];
+	// The Go slim backend owns these two remote search adapters. Keeping other
+	// providers out of the selector prevents settings that can never execute.
+	let webSearchEngines = ['searxng', 'tavily'];
+	let webLoaderEngines: string[] = [];
 	const WEB_SEARCH_ENGINE_LABELS: Record<string, string> = {
 		searxng: 'SearXNG',
 		google_pse: 'Google PSE',
@@ -255,7 +237,8 @@
 	};
 
 	const isLoaderUnavailable = (engine: string) =>
-		engine === 'firecrawl' && !runtimeCapabilities.firecrawl_available;
+		(engine === 'firecrawl' && !runtimeCapabilities.firecrawl_available) ||
+		(engine === 'playwright' && !runtimeCapabilities.playwright_available);
 
 	$: {
 		$i18n;

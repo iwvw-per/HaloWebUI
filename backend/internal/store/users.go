@@ -43,6 +43,18 @@ func (s *Store) UserByAPIKey(ctx context.Context, apiKey string) (User, error) {
 	return s.UserByID(ctx, id)
 }
 
+func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM user WHERE lower(email) = lower(?)`, strings.TrimSpace(email)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	if err != nil {
+		return User{}, err
+	}
+	return s.UserByID(ctx, id)
+}
+
 func (s *Store) ListUsers(ctx context.Context, query string, limit int) ([]User, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200

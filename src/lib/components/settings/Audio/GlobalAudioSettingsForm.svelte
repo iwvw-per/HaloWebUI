@@ -63,6 +63,14 @@
 	let STT_DEEPGRAM_API_KEY = '';
 
 	let STT_WHISPER_MODEL_LOADING = false;
+	$: sttEngineOptions = [
+		{ value: 'openai', label: 'OpenAI' },
+		{ value: 'web', label: $i18n.t('Web API'), disabled: true, description: $i18n.t('Browser Web API is not wired to the recorder in the Go slim profile.') }
+	];
+	$: ttsEngineOptions = [
+		{ value: '', label: $i18n.t('Web API') },
+		{ value: 'openai', label: $i18n.t('OpenAI') }
+	];
 	let isSaving = false;
 	let expandedSections = { stt: true, tts: true, advanced: true };
 	let sectionEl_stt: HTMLElement;
@@ -489,13 +497,7 @@
 				<HaloSelect
 					bind:value={STT_ENGINE}
 					placeholder="Select an engine"
-					options={[
-						{ value: '', label: $i18n.t('Whisper (Local)') },
-						{ value: 'openai', label: 'OpenAI' },
-						{ value: 'web', label: $i18n.t('Web API') },
-						{ value: 'deepgram', label: 'Deepgram' },
-						{ value: 'azure', label: 'Azure AI Speech' }
-					]}
+					options={sttEngineOptions}
 					className="w-fit"
 				/>
 			</div>
@@ -596,14 +598,7 @@
 				<HaloSelect
 					bind:value={TTS_ENGINE}
 					placeholder="Select a mode"
-					options={[
-						{ value: '', label: $i18n.t('Web API') },
-						{ value: 'transformers', label: `${$i18n.t('Transformers')} (${$i18n.t('Local')})` },
-						{ value: 'openai', label: $i18n.t('OpenAI') },
-						{ value: 'mimo', label: 'Xiaomi MiMo' },
-						{ value: 'elevenlabs', label: $i18n.t('ElevenLabs') },
-						{ value: 'azure', label: $i18n.t('Azure AI Speech') }
-					]}
+					options={ttsEngineOptions}
 					className="w-fit"
 					on:change={async (e) => {
 						await handleTTSEngineChange(e.detail.value);
@@ -795,16 +790,10 @@
 							<div class="flex w-full items-center justify-between gap-3 py-1">
 								<div class="min-w-0 pr-3 text-xs font-medium">{$i18n.t('Speech-to-Text Engine')}</div>
 								<div class="relative flex shrink-0 items-center max-w-full">
-									<HaloSelect
-										bind:value={STT_ENGINE}
-										placeholder="Select an engine"
-										options={[
-											{ value: '', label: $i18n.t('Whisper (Local)') },
-											{ value: 'openai', label: 'OpenAI' },
-											{ value: 'web', label: $i18n.t('Web API') },
-											{ value: 'deepgram', label: 'Deepgram' },
-											{ value: 'azure', label: 'Azure AI Speech' }
-										]}
+					<HaloSelect
+						bind:value={STT_ENGINE}
+						placeholder="Select an engine"
+						options={sttEngineOptions}
 										className="w-fit"
 									/>
 								</div>
@@ -890,17 +879,10 @@
 							<div class="flex w-full items-center justify-between gap-3 py-1">
 								<div class="min-w-0 pr-3 text-xs font-medium">{$i18n.t('Text-to-Speech Engine')}</div>
 								<div class="relative flex shrink-0 items-center max-w-full">
-									<HaloSelect
-										bind:value={TTS_ENGINE}
-										placeholder="Select a mode"
-										options={[
-											{ value: '', label: $i18n.t('Web API') },
-											{ value: 'transformers', label: `${$i18n.t('Transformers')} (${$i18n.t('Local')})` },
-											{ value: 'openai', label: $i18n.t('OpenAI') },
-											{ value: 'mimo', label: 'Xiaomi MiMo' },
-											{ value: 'elevenlabs', label: $i18n.t('ElevenLabs') },
-											{ value: 'azure', label: $i18n.t('Azure AI Speech') }
-										]}
+					<HaloSelect
+						bind:value={TTS_ENGINE}
+						placeholder="Select a mode"
+						options={ttsEngineOptions}
 										className="w-fit"
 										on:change={async (e) => {
 											await handleTTSEngineChange(e.detail.value);

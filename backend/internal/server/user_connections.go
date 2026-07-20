@@ -18,10 +18,17 @@ type userConnectionSettings struct {
 
 type userConnections struct {
 	OpenAI struct {
+		Enabled  *bool                               `json:"ENABLE_OPENAI_API"`
 		BaseURLs []string                            `json:"OPENAI_API_BASE_URLS"`
 		APIKeys  []string                            `json:"OPENAI_API_KEYS"`
 		Configs  map[string]openAIConnectionSettings `json:"OPENAI_API_CONFIGS"`
 	} `json:"openai"`
+	Ollama struct {
+		Enabled  *bool                               `json:"ENABLE_OLLAMA_API"`
+		BaseURLs []string                            `json:"OLLAMA_BASE_URLS"`
+		APIKeys  []string                            `json:"OLLAMA_API_KEYS"`
+		Configs  map[string]openAIConnectionSettings `json:"OLLAMA_API_CONFIGS"`
+	} `json:"ollama"`
 	Gemini    genericUserProvider `json:"gemini"`
 	Grok      genericUserProvider `json:"grok"`
 	Anthropic genericUserProvider `json:"anthropic"`
@@ -65,6 +72,9 @@ func (a *App) openAIProviderForUser(request *http.Request, user store.User) (str
 	if len(connections.OpenAI.BaseURLs) == 0 {
 		connections = settings.Connections
 	}
+	if connections.OpenAI.Enabled != nil && !*connections.OpenAI.Enabled {
+		return "", ""
+	}
 	for index, candidate := range connections.OpenAI.BaseURLs {
 		candidate = strings.TrimRight(strings.TrimSpace(candidate), "/")
 		if candidate == "" {
@@ -90,6 +100,47 @@ func (a *App) openAIProviderForUser(request *http.Request, user store.User) (str
 		return candidate, candidateKey
 	}
 	return baseURL, apiKey
+}
+
+func (a *App) ollamaProviderForUser(request *http.Request, user store.User, requestedIndex int) (string, string) {
+	fallbackURL, fallbackKey := a.config.OllamaBaseURL, a.config.OllamaAPIKey
+	raw, err := a.store.UserSettings(request.Context(), user.ID)
+	if err != nil {
+		return fallbackURL, fallbackKey
+	}
+	var settings userConnectionSettings
+	if json.Unmarshal(raw, &settings) != nil {
+		return fallbackURL, fallbackKey
+	}
+	connections := settings.UI.Connections
+	if len(connections.Ollama.BaseURLs) == 0 {
+		connections = settings.Connections
+	}
+	if len(connections.Ollama.BaseURLs) == 0 {
+		return fallbackURL, fallbackKey
+	}
+	if connections.Ollama.Enabled != nil && !*connections.Ollama.Enabled {
+		return "", ""
+	}
+	for index, candidate := range connections.Ollama.BaseURLs {
+		if requestedIndex >= 0 && index != requestedIndex {
+			continue
+		}
+		candidate = strings.TrimRight(strings.TrimSpace(candidate), "/")
+		if candidate == "" {
+			continue
+		}
+		connection := connections.Ollama.Configs[strconv.Itoa(index)]
+		if connection.Enable != nil && !*connection.Enable {
+			continue
+		}
+		key := ""
+		if index < len(connections.Ollama.APIKeys) {
+			key = strings.TrimSpace(connections.Ollama.APIKeys[index])
+		}
+		return candidate, key
+	}
+	return "", ""
 }
 
 func (a *App) accountProviderForUser(request *http.Request, user store.User, provider string) (string, string, map[string]any, bool) {

@@ -109,17 +109,21 @@ func (a *App) handleOpenAIModels(response http.ResponseWriter, request *http.Req
 }
 
 func (a *App) handleOllamaChat(response http.ResponseWriter, request *http.Request) {
-	if _, ok := a.requireUser(response, request); !ok {
+	user, ok := a.requireUser(response, request)
+	if !ok {
 		return
 	}
-	a.proxyProvider(response, request, a.config.OllamaBaseURL, a.config.OllamaAPIKey, "/api/chat")
+	baseURL, apiKey := a.ollamaProviderForUser(request, user, -1)
+	a.proxyProvider(response, request, baseURL, apiKey, "/api/chat")
 }
 
 func (a *App) handleOllamaTags(response http.ResponseWriter, request *http.Request) {
-	if _, ok := a.requireUser(response, request); !ok {
+	user, ok := a.requireUser(response, request)
+	if !ok {
 		return
 	}
-	a.proxyProvider(response, request, a.config.OllamaBaseURL, a.config.OllamaAPIKey, "/api/tags")
+	baseURL, apiKey := a.ollamaProviderForUser(request, user, -1)
+	a.proxyProvider(response, request, baseURL, apiKey, "/api/tags")
 }
 
 func (a *App) handleModels(response http.ResponseWriter, request *http.Request) {
@@ -132,7 +136,8 @@ func (a *App) handleModels(response http.ResponseWriter, request *http.Request) 
 	if payload, err := a.fetchProviderJSON(request, openAIBaseURL, openAIAPIKey, "/models"); err == nil {
 		models = append(models, decodeProviderModels(payload)...)
 	}
-	if payload, err := a.fetchProviderJSON(request, a.config.OllamaBaseURL, a.config.OllamaAPIKey, "/api/tags"); err == nil {
+	ollamaBaseURL, ollamaAPIKey := a.ollamaProviderForUser(request, user, -1)
+	if payload, err := a.fetchProviderJSON(request, ollamaBaseURL, ollamaAPIKey, "/api/tags"); err == nil {
 		for _, model := range decodeProviderModels(payload) {
 			if name, ok := model["name"].(string); ok {
 				model["id"] = name

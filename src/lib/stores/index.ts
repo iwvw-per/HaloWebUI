@@ -364,6 +364,7 @@ type Document = {
 };
 
 type Config = {
+	onboarding?: boolean;
 	status: boolean;
 	name: string;
 	version: string;
@@ -376,6 +377,10 @@ type Config = {
 		enable_api_key: boolean;
 		enable_signup: boolean;
 		enable_login_form: boolean;
+		enable_ldap?: boolean;
+		enable_code_execution?: boolean;
+		enable_code_interpreter?: boolean;
+		enable_websocket?: boolean;
 		enable_web_search?: boolean;
 		enable_halo_web_search?: boolean;
 		enable_native_web_search?: boolean;
@@ -387,6 +392,26 @@ type Config = {
 		enable_admin_chat_access: boolean;
 		enable_community_sharing: boolean;
 		enable_autocomplete_generation: boolean;
+		enable_direct_connections?: boolean;
+		enable_channels?: boolean;
+		enable_user_webhooks?: boolean;
+		database_restore_supported?: boolean;
+		database_backend?: string;
+		database_restore_reason?: string | null;
+		worker_count?: number;
+	};
+	code?: {
+		engine?: string;
+	};
+	audio?: {
+		tts?: {
+			engine?: string;
+			voice?: string;
+			split_on?: string;
+		};
+		stt?: {
+			engine?: string;
+		};
 	};
 	oauth: {
 		providers: {

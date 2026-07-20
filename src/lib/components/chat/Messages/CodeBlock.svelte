@@ -299,17 +299,14 @@
 	$: hasFiles = files.length > 0;
 	$: hasExecutionFeedback = executing || hasOutputText || hasResult || hasFiles;
 	$: sourceIsCollapsed = collapsed && needsCollapse;
-	$: codeExecutionEnabled =
-		((($config as any)?.features?.enable_code_execution as boolean | undefined) ?? true) === true;
+	$: codeExecutionEnabled = ($config?.features?.enable_code_execution ?? true) === true;
 
 	const executePython = async (code: string) => {
 		resetExecutionFeedback();
 
 		executing = true;
 
-		const currentConfig = $config as any;
-
-		if (currentConfig?.code?.engine === 'jupyter') {
+		if ($config?.code?.engine === 'jupyter') {
 			const output = await executeCode(localStorage.token, code).catch((error) => {
 				toast.error(`${error}`);
 				return null;

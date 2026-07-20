@@ -37,6 +37,15 @@ Go 服务同时提供 `/api`、Provider 代理、SSE、文件、知识库、Halo
 | `ENABLE_SCIM` / `SCIM_AUTH_BEARER_TOKEN` | `false` / 空 | SCIM 管理接口 |
 | `ENABLE_ADMIN_EXPORT` | `false` | 管理员导出接口 |
 
+代码执行配置写入管理界面的 `代码环境` 页面或 `/api/v1/configs/code_execution`：
+
+- `CODE_EXECUTION_ENGINE` 固定使用 `jupyter`；Go slim 不包含本地 Python 解释器。
+- `CODE_EXECUTION_JUPYTER_URL` 可填写 Jupyter 的根地址、`/lab`、`/lab?` 或 `/tree`，后端会规范化为 REST/WebSocket 根地址。
+- `CODE_EXECUTION_JUPYTER_AUTH=token` 时，token 通过 `CODE_EXECUTION_JUPYTER_AUTH_TOKEN` 或页面保存的配置提供；token 不得提交到仓库。
+- Jupyter 密码认证和本地 Python/Node 执行不受 Go slim 支持。
+
+联网搜索仅支持 Go 适配器 `tavily` 与 `searxng`。其他旧版搜索引擎配置会被拒绝，不会伪造成功响应。
+
 管理界面中保存的 Provider、用户连接和模型覆盖写入 SQLite，不应把密钥提交到 `.env` 或仓库。
 
 ## 资源预算
@@ -68,6 +77,6 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 
 ## 发布与回滚
 
-`.github/workflows/go-docker-publish.yml` 在 `codex/backend-refactor` 和 `main` 上运行 Go 测试、Docker 构建、镜像内容检查、健康检查和内存门禁，并推送到 `iwvw/halowebui`。重构分支产生 `go-edge` 与 `git-<sha>` 标签，`main` 产生 `latest`、`slim` 与 `git-<sha>` 标签。
+`.github/workflows/go-docker-publish.yml` 在 `codex/backend-refactor` 和 `main` 上运行 Go 测试、Docker 构建、镜像内容检查、健康检查和内存门禁，并推送到 `iwvw/halowebui`。重构分支产生 `go-edge` 与 `git-<sha>` 标签；只有 `main` 产生 `latest`、`slim` 与 `git-<sha>` 标签。因此重构分支部署应使用 `iwvw/halowebui:go-edge` 或具体的 `git-<sha>`，不能使用不存在的 `latest`。
 
 回滚只切换到上一份 Go 镜像并保留 `/app/data`；不要恢复已删除的 Python 服务，也不要在回滚时删除 SQLite、上传或备份文件。

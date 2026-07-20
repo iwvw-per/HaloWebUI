@@ -56,7 +56,7 @@ func (a *App) defaultAudioConfig() audioConfig {
 		STT: audioSTTConfig{
 			OpenAIBaseURL: a.config.OpenAIBaseURL,
 			OpenAIAPIKey:  a.config.OpenAIAPIKey,
-			Engine:        "web",
+			Engine:        "openai",
 			Model:         "whisper-1",
 		},
 	}
@@ -73,6 +73,14 @@ func (a *App) loadAudioConfig(r *http.Request) (audioConfig, error) {
 	}
 	if err := json.Unmarshal(resource.Body, &config); err != nil {
 		return audioConfig{}, err
+	}
+	// Local Python, Deepgram, and Azure engines are not part of the Go slim
+	// image. Normalize old persisted values to the supported remote adapter.
+	if config.STT.Engine != "openai" {
+		config.STT.Engine = "openai"
+	}
+	if config.TTS.Engine != "" && config.TTS.Engine != "openai" {
+		config.TTS.Engine = ""
 	}
 	return config, nil
 }
@@ -120,6 +128,14 @@ func (a *App) handleAudioConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid audio config")
 			return
 		}
+	}
+	if config.STT.Engine != "openai" {
+		writeError(w, http.StatusBadRequest, "Go slim supports only the remote OpenAI-compatible STT engine")
+		return
+	}
+	if config.TTS.Engine != "" && config.TTS.Engine != "openai" {
+		writeError(w, http.StatusBadRequest, "Go slim supports browser TTS or the remote OpenAI-compatible TTS engine")
+		return
 	}
 	if config.TTS.SplitOn == "" {
 		config.TTS.SplitOn = "punctuation"
@@ -202,7 +218,7 @@ func (a *App) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.ToLower(config.TTS.Engine) != "openai" {
-		writeError(w, http.StatusNotImplemented, "local speech engines are disabled; configure a remote OpenAI-compatible TTS endpoint")
+		writeError(w, http.StatusServiceUnavailable, "remote OpenAI-compatible TTS is not configured")
 		return
 	}
 	var payload map[string]any
@@ -255,7 +271,7 @@ func (a *App) handleAudioTranscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.ToLower(config.STT.Engine) != "openai" {
-		writeError(w, http.StatusNotImplemented, "local transcription engines are disabled; configure a remote OpenAI-compatible STT endpoint")
+		writeError(w, http.StatusServiceUnavailable, "remote OpenAI-compatible STT is not configured")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 25*1024*1024)
