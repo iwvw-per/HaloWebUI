@@ -411,7 +411,7 @@ export const updateTaskConfig = async (token: string, config: object) => {
 export const generateTitle = async (
 	token: string = '',
 	model: string,
-	messages: string[],
+	messages: object[],
 	chat_id?: string
 ) => {
 	let error = null;
@@ -448,7 +448,7 @@ export const generateTitle = async (
 export const generateTags = async (
 	token: string = '',
 	model: string,
-	messages: string,
+	messages: string | object[],
 	chat_id?: string
 ) => {
 	let error = null;
@@ -510,6 +510,26 @@ export const generateTags = async (
 	} catch (e) {
 		// Catch and safely return empty array on any parsing errors
 		console.error('Failed to parse response: ', e);
+		return [];
+	}
+};
+
+export const generateFollowUps = async (
+	token: string = '',
+	model: string,
+	messages: object[],
+	chat_id?: string
+) => {
+	const res = await fetch(`${WEBUI_BASE_URL}/api/v1/tasks/follow_ups/completions`, {
+		method: 'POST',
+		headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+		body: JSON.stringify({ model, messages, ...(chat_id && { chat_id }) })
+	}).then(parseJsonResponse);
+	const content = res?.choices?.[0]?.message?.content ?? '';
+	try {
+		const parsed = JSON.parse(content.slice(content.indexOf('{'), content.lastIndexOf('}') + 1));
+		return Array.isArray(parsed?.follow_ups) ? parsed.follow_ups : [];
+	} catch {
 		return [];
 	}
 };

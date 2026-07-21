@@ -117,6 +117,7 @@
 		getChatById,
 		getChatContextById,
 		getChatList,
+		updateChatTitleById,
 		updateChatById,
 		updateChatComposerStateById
 	} from '$lib/apis/chats';
@@ -129,6 +130,9 @@
 	import { getAndUpdateUserLocation, getUserSettings } from '$lib/apis/users';
 	import {
 		chatCompleted,
+		generateTitle,
+		generateTags,
+		generateFollowUps,
 		generateQueries,
 		chatAction,
 		generateMoACompletion,
@@ -4046,6 +4050,31 @@
 
 			if (hasHistoryMessageUpdates) {
 				notifyHistoryUpdated();
+			}
+		}
+
+		if (!$temporaryChatEnabled && chatId && responseMessage?.role === 'assistant') {
+			const taskMessages = messages.filter((item) => item.role === 'user' || item.role === 'assistant');
+			const taskModel = modelId;
+			const jobs: Promise<unknown>[] = [];
+			if ($settings?.title?.auto ?? true) {
+				jobs.push(generateTitle(localStorage.token, taskModel, taskMessages, chatId).then((title) => updateChatTitleById(localStorage.token, chatId, title)));
+			}
+			if ($settings?.autoTags ?? true) {
+				jobs.push(generateTags(localStorage.token, taskModel, JSON.stringify(taskMessages), chatId).then(async (tagNames) => {
+					for (const tagName of tagNames as string[]) await addTagById(localStorage.token, chatId, tagName);
+				}));
+			}
+			if ($settings?.autoFollowUps ?? true) {
+				jobs.push(generateFollowUps(localStorage.token, taskModel, taskMessages, chatId).then((followUps) => {
+					history.messages[responseMessageId].followUps = followUps;
+				}));
+			}
+			await Promise.allSettled(jobs);
+			if ($chatId === chatId) {
+				chat = await getChatById(localStorage.token, chatId);
+				chatTitle.set(chat?.title ?? 'New Chat');
+				allTags.set(await getAllTags(localStorage.token));
 			}
 		}
 

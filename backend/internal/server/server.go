@@ -218,7 +218,7 @@ func (a *App) registerRoutes() {
 	a.mux.HandleFunc("POST /api/v1/retrieval/reset/uploads", a.handleRetrievalReset)
 	a.mux.HandleFunc("GET /api/v1/tasks/config", a.handleTaskConfig)
 	a.mux.HandleFunc("POST /api/v1/tasks/config/update", a.handleTaskConfigUpdate)
-	for _, task := range []string{"title", "tags", "emoji", "queries", "auto", "moa", "image_prompt"} {
+	for _, task := range []string{"title", "tags", "follow_ups", "emoji", "queries", "auto", "moa", "image_prompt"} {
 		a.mux.HandleFunc("POST /api/v1/tasks/"+task+"/completions", a.handleTaskCompletion)
 	}
 	a.mux.HandleFunc("GET /api/v1/users/", a.handleUsers)

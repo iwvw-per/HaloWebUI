@@ -149,6 +149,14 @@ func (a *App) handleTaskCompletion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if task == "title" && !boolConfig(config, "ENABLE_TITLE_GENERATION") {
+		writeError(w, http.StatusBadRequest, "Title generation is disabled")
+		return
+	}
+	if task == "tags" && !boolConfig(config, "ENABLE_TAGS_GENERATION") {
+		writeError(w, http.StatusBadRequest, "Tags generation is disabled")
+		return
+	}
 	messages := normalizeTaskMessages(form["messages"])
 	instruction := taskInstruction(task, form, user.Name, config)
 	messages = append(messages, map[string]any{"role": "user", "content": instruction})
@@ -220,6 +228,8 @@ func taskInstruction(task string, form map[string]json.RawMessage, userName stri
 		return "Generate a concise title for this conversation. Return only the title without quotes."
 	case "tags":
 		return `Generate up to three short tags for this conversation. Return strict JSON: {"tags":["tag"]}.`
+	case "follow_ups":
+		return `Generate up to three useful follow-up questions for this conversation. Return strict JSON: {"follow_ups":["question"]}.`
 	case "emoji":
 		return "Return exactly one emoji that best represents this text: " + prompt
 	case "queries":

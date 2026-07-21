@@ -243,7 +243,6 @@
 			enableAutoScrollOnStreaming: boolean;
 		};
 		layout: {
-			defaultModelId: string;
 			showChatTitleInTab: boolean;
 			showFeaturedAssistantsOnHome: boolean;
 			landingPageMode: string;
@@ -268,6 +267,7 @@
 			promptSuggestions: any[];
 		};
 		chat: {
+			defaultModelId: string;
 			titleAutoGenerate: boolean;
 			autoTags: boolean;
 			autoFollowUps: boolean;
@@ -565,7 +565,6 @@
 			enableAutoScrollOnStreaming
 		},
 		layout: {
-			defaultModelId: resolveDefaultModelId(defaultModelId),
 			showChatTitleInTab,
 			showFeaturedAssistantsOnHome,
 			landingPageMode,
@@ -590,6 +589,7 @@
 			promptSuggestions
 		},
 		chat: {
+			defaultModelId: resolveDefaultModelId(defaultModelId),
 			titleAutoGenerate,
 			autoTags,
 			autoFollowUps,
@@ -644,7 +644,6 @@
 	};
 
 	const applyLayoutSnapshot = (snapshot: SectionSnapshot['layout']) => {
-		defaultModelId = resolveDefaultModelId(snapshot.defaultModelId);
 		showChatTitleInTab = snapshot.showChatTitleInTab;
 		showFeaturedAssistantsOnHome = snapshot.showFeaturedAssistantsOnHome;
 		landingPageMode = snapshot.landingPageMode;
@@ -671,6 +670,7 @@
 	};
 
 	const applyChatSnapshot = (snapshot: SectionSnapshot['chat']) => {
+		defaultModelId = resolveDefaultModelId(snapshot.defaultModelId);
 		titleAutoGenerate = snapshot.titleAutoGenerate;
 		autoTags = snapshot.autoTags;
 		autoFollowUps = snapshot.autoFollowUps;
@@ -1036,7 +1036,10 @@
 
 		chatSaving = true;
 		try {
+			const resolvedDefaultModelId = resolveDefaultModelId(defaultModelId);
 			await saveSettings({
+				// 默认模型显示在“对话功能”页签，必须随该页签一起保存。
+				models: resolvedDefaultModelId ? [resolvedDefaultModelId] : [],
 				title: {
 					...($settings?.title ?? {}),
 					auto: titleAutoGenerate
