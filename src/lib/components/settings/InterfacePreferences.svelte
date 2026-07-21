@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher, getContext, onMount, onDestroy, tick } from 'svelte';
+	import { createEventDispatcher, getContext, onMount, tick } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import { slide } from 'svelte/transition';
 	import { quintOut } from 'svelte/easing';
@@ -335,9 +335,6 @@
 	};
 	let sectionDirtyState: SectionDirtyState = dirtySections;
 	let initialSectionSnapshot: SectionSnapshot | null = null;
-	let autoSyncSectionBaseline = false;
-	let sectionBaselineSyncTimeout: ReturnType<typeof setTimeout> | null = null;
-	const SECTION_BASELINE_SYNC_WINDOW_MS = 400;
 
 	// Admin-only user preferences (still stored per-user)
 
@@ -345,7 +342,9 @@
 	const resolveDefaultModelId = (value: string | null | undefined) => {
 		const normalized = normalizeModelId(value);
 		if (!normalized) return '';
-		return resolveModelSelectionId($models ?? [], normalized, { preserveAmbiguous: true }) || normalized;
+		return (
+			resolveModelSelectionId($models ?? [], normalized, { preserveAmbiguous: true }) || normalized
+		);
 	};
 
 	const normalizeImageCompressionSize = (
@@ -786,13 +785,6 @@
 		iframeSandboxAllowForms;
 		sectionSnapshot = buildSectionSnapshot();
 	}
-	$: if (
-		autoSyncSectionBaseline &&
-		(initialSectionSnapshot === null ||
-			!isSettingsSnapshotEqual(sectionSnapshot, initialSectionSnapshot))
-	) {
-		initialSectionSnapshot = cloneSettingsSnapshot(sectionSnapshot);
-	}
 	$: dirtySections = initialSectionSnapshot
 		? {
 				appearance: !isSettingsSnapshotEqual(
@@ -829,32 +821,47 @@
 
 	export const getSectionSaving = (section: SectionKey): boolean => {
 		switch (section) {
-			case 'appearance': return appearanceSaving;
-			case 'layout': return layoutSaving;
-			case 'input': return inputSaving;
-			case 'chat': return chatSaving;
-			case 'advanced': return advancedSaving;
+			case 'appearance':
+				return appearanceSaving;
+			case 'layout':
+				return layoutSaving;
+			case 'input':
+				return inputSaving;
+			case 'chat':
+				return chatSaving;
+			case 'advanced':
+				return advancedSaving;
 		}
 	};
 
 	// Per-section save/reset exports for parent page shell
 	export const saveSection = async (section: SectionKey) => {
 		switch (section) {
-			case 'appearance': return saveAppearanceChanges();
-			case 'layout': return saveLayoutChanges();
-			case 'input': return saveInputChanges();
-			case 'chat': return saveChatChanges();
-			case 'advanced': return saveAdvancedChanges();
+			case 'appearance':
+				return saveAppearanceChanges();
+			case 'layout':
+				return saveLayoutChanges();
+			case 'input':
+				return saveInputChanges();
+			case 'chat':
+				return saveChatChanges();
+			case 'advanced':
+				return saveAdvancedChanges();
 		}
 	};
 
 	export const resetSection = async (section: SectionKey) => {
 		switch (section) {
-			case 'appearance': return resetAppearanceChanges();
-			case 'layout': return resetLayoutChanges();
-			case 'input': return resetInputChanges();
-			case 'chat': return resetChatChanges();
-			case 'advanced': return resetAdvancedChanges();
+			case 'appearance':
+				return resetAppearanceChanges();
+			case 'layout':
+				return resetLayoutChanges();
+			case 'input':
+				return resetInputChanges();
+			case 'chat':
+				return resetChatChanges();
+			case 'advanced':
+				return resetAdvancedChanges();
 		}
 	};
 
@@ -888,17 +895,6 @@
 			...initialSectionSnapshot,
 			[section]: cloneSettingsSnapshot(buildSectionSnapshot()[section])
 		};
-	};
-
-	const startSectionBaselineSync = () => {
-		autoSyncSectionBaseline = true;
-		if (sectionBaselineSyncTimeout) {
-			clearTimeout(sectionBaselineSyncTimeout);
-		}
-		sectionBaselineSyncTimeout = setTimeout(() => {
-			autoSyncSectionBaseline = false;
-			sectionBaselineSyncTimeout = null;
-		}, SECTION_BASELINE_SYNC_WINDOW_MS);
 	};
 
 	const ensureNotificationPermission = async () => {
@@ -959,7 +955,6 @@
 			commitThemeSelection(selectedTheme);
 			commitTextScaleSelection(textScale);
 			await tick();
-			startSectionBaselineSync();
 			updateSectionBaseline('appearance');
 			dispatch('save');
 		} finally {
@@ -995,7 +990,6 @@
 				_banners.set(savedBanners);
 			}
 			await tick();
-			startSectionBaselineSync();
 			updateSectionBaseline('layout');
 			dispatch('save');
 		} finally {
@@ -1030,7 +1024,6 @@
 				await setDefaultPromptSuggestions(localStorage.token, promptSuggestions);
 			}
 			await tick();
-			startSectionBaselineSync();
 			updateSectionBaseline('input');
 			dispatch('save');
 		} finally {
@@ -1084,7 +1077,6 @@
 				imageCompressionInChannels
 			});
 			await tick();
-			startSectionBaselineSync();
 			updateSectionBaseline('chat');
 			dispatch('save');
 		} finally {
@@ -1105,7 +1097,6 @@
 				hapticFeedback
 			});
 			await tick();
-			startSectionBaselineSync();
 			updateSectionBaseline('advanced');
 			dispatch('save');
 		} finally {
@@ -1207,7 +1198,7 @@
 		autoFollowUps = $settings?.autoFollowUps ?? true;
 
 		detectArtifacts = $settings?.detectArtifacts ?? true;
-		svgPreviewAutoOpen = $settings?.svgPreviewAutoOpen ?? ($settings?.detectArtifacts ?? true);
+		svgPreviewAutoOpen = $settings?.svgPreviewAutoOpen ?? $settings?.detectArtifacts ?? true;
 		responseAutoCopy = $settings?.responseAutoCopy ?? false;
 		showChatTitleInTab = $settings?.showChatTitleInTab ?? true;
 		enableMessageQueue = $settings?.enableMessageQueue ?? true;
@@ -1290,17 +1281,10 @@
 		}
 
 		await tick();
-		startSectionBaselineSync();
 		syncSectionBaseline();
 		loading = false;
 
 		void modelsPromise;
-	});
-
-	onDestroy(() => {
-		if (sectionBaselineSyncTimeout) {
-			clearTimeout(sectionBaselineSyncTimeout);
-		}
 	});
 
 	const toggleSection = async (section: SectionKey) => {
@@ -1310,7 +1294,13 @@
 		}
 	};
 
-	export const baseSections: Array<{ key: SectionKey; titleKey: string; iconPaths: string[]; badgeColor: string; iconColor: string }> = [
+	export const baseSections: Array<{
+		key: SectionKey;
+		titleKey: string;
+		iconPaths: string[];
+		badgeColor: string;
+		iconColor: string;
+	}> = [
 		{
 			key: 'appearance',
 			titleKey: '界面设置',
@@ -1359,7 +1349,13 @@
 		}
 	];
 
-	let sections: Array<{ key: SectionKey; title: string; iconPaths: string[]; badgeColor: string; iconColor: string }> = [];
+	let sections: Array<{
+		key: SectionKey;
+		title: string;
+		iconPaths: string[];
+		badgeColor: string;
+		iconColor: string;
+	}> = [];
 	$: sections = baseSections.map((s) => ({ ...s, title: $i18n.t(s.titleKey) }));
 	$: filteredSections = activeSection ? sections.filter((s) => s.key === activeSection) : sections;
 </script>
@@ -1383,1317 +1379,1250 @@
 
 		<div class={bodyClass}>
 			<div class="max-w-6xl mx-auto space-y-6">
-			{#each filteredSections as s (s.key)}
-				<div
-					bind:this={sectionEls[s.key]}
-					class={activeSection ? '' : `scroll-mt-2 transition-all duration-300 ${sectionDirtyState[s.key] ? 'glass-section glass-section-dirty' : 'glass-section'}`}
-				>
-					{#if !activeSection}
-					<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-5 py-4">
-						<button
-							type="button"
-							class="flex min-w-0 flex-1 items-center justify-between gap-4 text-left rounded-2xl"
-							on:click={() => toggleSection(s.key)}
-						>
-							<div class="flex items-center gap-3">
-								<div class="glass-icon-badge {s.badgeColor}">
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										viewBox="0 0 24 24"
-										fill="currentColor"
-										class="size-[18px] {s.iconColor}"
-									>
-										{#each s.iconPaths as pathD}
-											<path fill-rule="evenodd" d={pathD} clip-rule="evenodd" />
-										{/each}
-									</svg>
-								</div>
-								<span class="text-base font-semibold text-gray-800 dark:text-gray-100">{s.title}</span>
-							</div>
+				{#each filteredSections as s (s.key)}
+					<div
+						bind:this={sectionEls[s.key]}
+						class={activeSection
+							? ''
+							: `scroll-mt-2 transition-all duration-300 ${sectionDirtyState[s.key] ? 'glass-section glass-section-dirty' : 'glass-section'}`}
+					>
+						{#if !activeSection}
 							<div
-								class="transform transition-transform duration-200 {expandedSections[s.key]
-									? 'rotate-180'
-									: ''}"
+								class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-5 py-4"
 							>
-								<ChevronDown className="size-5 text-gray-400 dark:text-gray-500" />
+								<button
+									type="button"
+									class="flex min-w-0 flex-1 items-center justify-between gap-4 text-left rounded-2xl"
+									on:click={() => toggleSection(s.key)}
+								>
+									<div class="flex items-center gap-3">
+										<div class="glass-icon-badge {s.badgeColor}">
+											<svg
+												xmlns="http://www.w3.org/2000/svg"
+												viewBox="0 0 24 24"
+												fill="currentColor"
+												class="size-[18px] {s.iconColor}"
+											>
+												{#each s.iconPaths as pathD}
+													<path fill-rule="evenodd" d={pathD} clip-rule="evenodd" />
+												{/each}
+											</svg>
+										</div>
+										<span class="text-base font-semibold text-gray-800 dark:text-gray-100"
+											>{s.title}</span
+										>
+									</div>
+									<div
+										class="transform transition-transform duration-200 {expandedSections[s.key]
+											? 'rotate-180'
+											: ''}"
+									>
+										<ChevronDown className="size-5 text-gray-400 dark:text-gray-500" />
+									</div>
+								</button>
 							</div>
-						</button>
-					</div>
-					{/if}
+						{/if}
 
-					{#if activeSection || expandedSections[s.key]}
-						<div transition:slide={{ duration: 200, easing: quintOut }} class="{activeSection ? '' : 'px-5 pb-5'} space-y-3">
-							{#if s.key === 'appearance'}
-								<InlineDirtyActions
-									dirty={dirtySections.appearance}
-									saving={appearanceSaving}
-									saveAsSubmit={false}
-									on:reset={resetAppearanceChanges}
-									on:save={saveAppearanceChanges}
-								/>
-								<div class="space-y-3">
-									<div class="space-y-2">
-										<div class="glass-item p-4">
-											<div class="text-sm font-medium mb-2">{$i18n.t('Theme')}</div>
-											<ThemeSelector bind:value={selectedTheme} />
-										</div>
-										<div class="glass-item p-4 space-y-4">
-											<div
-												class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-											>
-												<div class="text-sm font-medium">
-													{$i18n.t('Code Highlight Theme')}
-												</div>
-												<HaloSelect
-													bind:value={highlighterTheme}
-													className="w-full sm:w-72"
-													searchEnabled={true}
-													searchPlaceholder={$i18n.t('Search')}
-													noResultsText={$i18n.t('No results found')}
-													options={LOBE_HIGHLIGHTER_THEMES.map((item) => ({
-														value: item.id,
-														label: getThemeOptionLabel(item.displayName, item.id)
-													}))}
-												/>
-											</div>
-											<CodeHighlightThemePreview themeId={highlighterTheme} />
-										</div>
-										<div class="glass-item p-4 space-y-4">
-											<div
-												class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-											>
-												<div class="text-sm font-medium">
-													{$i18n.t('Mermaid Theme')}
-												</div>
-												<HaloSelect
-													bind:value={mermaidTheme}
-													className="w-full sm:w-72"
-													options={LOBE_MERMAID_THEMES.map((item) => ({
-														value: item.id,
-														label: getThemeOptionLabel(item.displayName, item.id)
-													}))}
-												/>
-											</div>
-											<MermaidThemePreview themeId={mermaidTheme} />
-										</div>
+						{#if activeSection || expandedSections[s.key]}
+							<div
+								transition:slide={{ duration: 200, easing: quintOut }}
+								class="{activeSection ? '' : 'px-5 pb-5'} space-y-3"
+							>
+								{#if s.key === 'appearance'}
+									<InlineDirtyActions
+										dirty={dirtySections.appearance}
+										saving={appearanceSaving}
+										saveAsSubmit={false}
+										on:reset={resetAppearanceChanges}
+										on:save={saveAppearanceChanges}
+									/>
+									<div class="space-y-3">
 										<div class="space-y-2">
-											<div class="glass-item px-4 py-4 space-y-4">
+											<div class="glass-item p-4">
+												<div class="text-sm font-medium mb-2">{$i18n.t('Theme')}</div>
+												<ThemeSelector bind:value={selectedTheme} />
+											</div>
+											<div class="glass-item p-4 space-y-4">
+												<div
+													class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+												>
+													<div class="text-sm font-medium">
+														{$i18n.t('Code Highlight Theme')}
+													</div>
+													<HaloSelect
+														bind:value={highlighterTheme}
+														className="w-full sm:w-72"
+														searchEnabled={true}
+														searchPlaceholder={$i18n.t('Search')}
+														noResultsText={$i18n.t('No results found')}
+														options={LOBE_HIGHLIGHTER_THEMES.map((item) => ({
+															value: item.id,
+															label: getThemeOptionLabel(item.displayName, item.id)
+														}))}
+													/>
+												</div>
+												<CodeHighlightThemePreview themeId={highlighterTheme} />
+											</div>
+											<div class="glass-item p-4 space-y-4">
+												<div
+													class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+												>
+													<div class="text-sm font-medium">
+														{$i18n.t('Mermaid Theme')}
+													</div>
+													<HaloSelect
+														bind:value={mermaidTheme}
+														className="w-full sm:w-72"
+														options={LOBE_MERMAID_THEMES.map((item) => ({
+															value: item.id,
+															label: getThemeOptionLabel(item.displayName, item.id)
+														}))}
+													/>
+												</div>
+												<MermaidThemePreview themeId={mermaidTheme} />
+											</div>
+											<div class="space-y-2">
+												<div class="glass-item px-4 py-4 space-y-4">
+													<div
+														class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
+													>
+														<div class="space-y-1">
+															<div class="text-sm font-medium">
+																{$i18n.t('Transition Animation')}
+															</div>
+															<div class="text-xs text-gray-500 dark:text-gray-400">
+																{$i18n.t('Choose how streaming chat messages appear')}
+															</div>
+														</div>
+														<div
+															class="inline-flex items-center gap-1 self-start rounded-xl border border-gray-200/70 bg-white/90 p-1 shadow-xs dark:border-gray-700/60 dark:bg-gray-900/70"
+														>
+															{#each transitionModeOptions as option}
+																<button
+																	type="button"
+																	class={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+																		transitionMode === option.value
+																			? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
+																			: 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100'
+																	}`}
+																	on:click={() => {
+																		transitionMode = option.value;
+																	}}
+																>
+																	{$i18n.t(option.label)}
+																</button>
+															{/each}
+														</div>
+													</div>
+													{#key transitionMode}
+														<ChatTransitionPreview mode={transitionMode} />
+													{/key}
+												</div>
+												<div class="flex items-center justify-between glass-item px-4 py-3">
+													<div class="space-y-1">
+														<div class="text-sm font-medium">
+															{$i18n.t('Auto-scroll during streaming')}
+														</div>
+														<div class="text-xs text-gray-500 dark:text-gray-400">
+															{$i18n.t(
+																'Keep the viewport pinned to the latest tokens while the reply is streaming'
+															)}
+														</div>
+													</div>
+													<Switch bind:state={enableAutoScrollOnStreaming} />
+												</div>
+											</div>
+											<div class="glass-item p-4">
 												<div
 													class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
 												>
-													<div class="space-y-1">
-														<div class="text-sm font-medium">
-															{$i18n.t('Transition Animation')}
-														</div>
-														<div class="text-xs text-gray-500 dark:text-gray-400">
-															{$i18n.t('Choose how streaming chat messages appear')}
-														</div>
+													<div class="text-sm font-medium">
+														{$i18n.t('Chat Background Image')}
 													</div>
+													<div class="flex flex-wrap items-center gap-2 shrink-0">
+														<button
+															type="button"
+															class="px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/5 transition"
+															on:click={() => filesInputElement?.click()}
+														>
+															{$i18n.t('Choose')}
+														</button>
+														<button
+															type="button"
+															class="px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/5 transition"
+															on:click={clearBackgroundImage}
+														>
+															{$i18n.t('Clear')}
+														</button>
+													</div>
+												</div>
+												{#if backgroundImageUrl}
 													<div
-														class="inline-flex items-center gap-1 self-start rounded-xl border border-gray-200/70 bg-white/90 p-1 shadow-xs dark:border-gray-700/60 dark:bg-gray-900/70"
+														class="mt-3 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800"
 													>
-														{#each transitionModeOptions as option}
-															<button
-																type="button"
-																class={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-																	transitionMode === option.value
-																		? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
-																		: 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100'
-																}`}
-																on:click={() => {
-																	transitionMode = option.value;
-																}}
+														<img
+															src={backgroundImageUrl}
+															alt="Background"
+															class="w-full h-40 object-cover"
+														/>
+													</div>
+												{:else}
+													<div class="mt-3 text-xs text-gray-500">
+														{$i18n.t('No background image selected.')}
+													</div>
+												{/if}
+											</div>
+
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('UI Scale')}
+												</div>
+												<div class="flex items-center gap-2.5 min-w-[16rem]">
+													{#if textScale !== null}
+														<input
+															class="flex-1 h-1.5 accent-blue-500 cursor-pointer"
+															type="range"
+															min={TEXT_SCALE_MIN}
+															max={TEXT_SCALE_MAX}
+															step={0.01}
+															bind:value={textScale}
+														/>
+														<span
+															class="text-xs font-mono text-gray-500 dark:text-gray-400 w-10 text-right tabular-nums"
+															>{Math.round((textScale ?? TEXT_SCALE_DEFAULT) * 100)}%</span
+														>
+													{/if}
+													<button
+														type="button"
+														class="px-2.5 py-1 text-xs rounded-md border transition whitespace-nowrap
+																{textScale === null
+															? 'border-blue-300 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+															: 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5'}"
+														on:click={() => {
+															textScale = textScale === null ? TEXT_SCALE_DEFAULT : null;
+														}}
+													>
+														{textScale === null ? $i18n.t('Default') : $i18n.t('Reset')}
+													</button>
+												</div>
+											</div>
+										</div>
+									</div>
+								{:else if s.key === 'layout'}
+									<InlineDirtyActions
+										dirty={dirtySections.layout}
+										saving={layoutSaving}
+										saveAsSubmit={false}
+										on:reset={resetLayoutChanges}
+										on:save={saveLayoutChanges}
+									/>
+									<div class="space-y-3">
+										<div class="space-y-2">
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Landing Page Mode')}
+												</div>
+												<HaloSelect
+													bind:value={landingPageMode}
+													options={[
+														{ value: '', label: $i18n.t('Default') },
+														{ value: 'chat', label: $i18n.t('Chat') }
+													]}
+												/>
+											</div>
+
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Show featured assistants on home page')}
+												</div>
+												<Switch bind:state={showFeaturedAssistantsOnHome} />
+											</div>
+
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Chat direction')}
+												</div>
+												<HaloSelect
+													bind:value={chatDirection}
+													options={[
+														{ value: 'auto', label: $i18n.t('Auto') },
+														{ value: 'LTR', label: $i18n.t('LTR') },
+														{ value: 'RTL', label: $i18n.t('RTL') }
+													]}
+												/>
+											</div>
+
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Notifications')}
+												</div>
+												<Switch bind:state={notificationEnabled} />
+											</div>
+
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Widescreen Mode')}
+												</div>
+												<Switch bind:state={widescreenMode} />
+											</div>
+
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Notification Sound')}
+												</div>
+												<Switch bind:state={notificationSound} />
+											</div>
+
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Chat Bubble UI')}
+												</div>
+												<Switch bind:state={chatBubble} />
+											</div>
+
+											{#if !chatBubble}
+												<div class="flex items-center justify-between glass-item px-4 py-3">
+													<div class="text-sm font-medium">
+														{$i18n.t('Display the username instead of You in the Chat')}
+													</div>
+													<Switch bind:state={showUsername} />
+												</div>
+											{/if}
+
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Display chat title in tab')}
+												</div>
+												<Switch bind:state={showChatTitleInTab} />
+											</div>
+
+											{#if $user?.role === 'admin'}
+												<!-- Banners -->
+												<div class="glass-item p-4">
+													<div class="flex w-full justify-between items-center mb-3">
+														<div class="text-sm font-medium">{$i18n.t('Banners')}</div>
+														<button
+															class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+															type="button"
+															aria-label="Add Banner"
+															on:click={() => {
+																if (banners.length === 0 || banners.at(-1)?.content !== '') {
+																	banners = [
+																		...banners,
+																		{
+																			id: uuidv4(),
+																			type: '',
+																			title: '',
+																			content: '',
+																			dismissible: true,
+																			timestamp: Math.floor(Date.now() / 1000)
+																		}
+																	];
+																}
+															}}
+														>
+															<svg
+																xmlns="http://www.w3.org/2000/svg"
+																viewBox="0 0 20 20"
+																fill="currentColor"
+																class="w-4 h-4"
 															>
-																{$i18n.t(option.label)}
-															</button>
+																<path
+																	d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"
+																/>
+															</svg>
+														</button>
+													</div>
+
+													<div class="flex flex-col space-y-2">
+														{#each banners as banner, bannerIdx}
+															<div class="flex justify-between items-center">
+																<div
+																	class="flex flex-row flex-1 border rounded-lg border-gray-200 dark:border-gray-700 overflow-hidden"
+																>
+																	<HaloSelect
+																		bind:value={banner.type}
+																		on:change={touchBanners}
+																		options={[
+																			{ value: 'info', label: $i18n.t('Info') },
+																			{ value: 'warning', label: $i18n.t('Warning') },
+																			{ value: 'error', label: $i18n.t('Error') },
+																			{ value: 'success', label: $i18n.t('Success') }
+																		]}
+																		placeholder={$i18n.t('Type')}
+																		className="w-fit capitalize rounded-l-lg text-xs"
+																	/>
+
+																	<input
+																		class="flex-1 py-2 px-3 text-xs bg-transparent outline-hidden"
+																		placeholder={$i18n.t('Content')}
+																		bind:value={banner.content}
+																		on:input={touchBanners}
+																	/>
+
+																	<div class="flex items-center px-2">
+																		<Tooltip
+																			content={$i18n.t('Dismissible')}
+																			className="flex h-fit items-center"
+																		>
+																			<Switch
+																				bind:state={banner.dismissible}
+																				on:change={touchBanners}
+																			/>
+																		</Tooltip>
+																	</div>
+																</div>
+
+																<button
+																	class="p-2 ml-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+																	type="button"
+																	on:click={() => {
+																		banners.splice(bannerIdx, 1);
+																		banners = banners;
+																	}}
+																>
+																	<svg
+																		xmlns="http://www.w3.org/2000/svg"
+																		viewBox="0 0 20 20"
+																		fill="currentColor"
+																		class="w-4 h-4"
+																	>
+																		<path
+																			d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
+																		/>
+																	</svg>
+																</button>
+															</div>
 														{/each}
 													</div>
 												</div>
-												{#key transitionMode}
-													<ChatTransitionPreview mode={transitionMode} />
-												{/key}
-											</div>
-											<div class="flex items-center justify-between glass-item px-4 py-3">
-												<div class="space-y-1">
-													<div class="text-sm font-medium">
-														{$i18n.t('Auto-scroll during streaming')}
-													</div>
-													<div class="text-xs text-gray-500 dark:text-gray-400">
-														{$i18n.t('Keep the viewport pinned to the latest tokens while the reply is streaming')}
-													</div>
-												</div>
-												<Switch bind:state={enableAutoScrollOnStreaming} />
-											</div>
-										</div>
-										<div class="glass-item p-4">
-											<div
-												class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
-											>
-												<div class="text-sm font-medium">
-													{$i18n.t('Chat Background Image')}
-												</div>
-												<div class="flex flex-wrap items-center gap-2 shrink-0">
-													<button
-														type="button"
-														class="px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/5 transition"
-														on:click={() => filesInputElement?.click()}
-													>
-														{$i18n.t('Choose')}
-													</button>
-													<button
-														type="button"
-														class="px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/5 transition"
-														on:click={clearBackgroundImage}
-													>
-														{$i18n.t('Clear')}
-													</button>
-												</div>
-											</div>
-											{#if backgroundImageUrl}
-												<div
-													class="mt-3 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800"
-												>
-													<img
-														src={backgroundImageUrl}
-														alt="Background"
-														class="w-full h-40 object-cover"
-													/>
-												</div>
-											{:else}
-												<div class="mt-3 text-xs text-gray-500">
-													{$i18n.t('No background image selected.')}
-												</div>
 											{/if}
 										</div>
-
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('UI Scale')}
+									</div>
+								{:else if s.key === 'input'}
+									<InlineDirtyActions
+										dirty={dirtySections.input}
+										saving={inputSaving}
+										saveAsSubmit={false}
+										on:reset={resetInputChanges}
+										on:save={saveInputChanges}
+									/>
+									<div class="space-y-3">
+										<div class="space-y-2">
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Rich Text Input for Chat')}
+												</div>
+												<Switch bind:state={richTextInput} />
 											</div>
-											<div class="flex items-center gap-2.5 min-w-[16rem]">
-												{#if textScale !== null}
-													<input
-														class="flex-1 h-1.5 accent-blue-500 cursor-pointer"
-														type="range"
-														min={TEXT_SCALE_MIN}
-														max={TEXT_SCALE_MAX}
-														step={0.01}
-														bind:value={textScale}
-													/>
-													<span
-														class="text-xs font-mono text-gray-500 dark:text-gray-400 w-10 text-right tabular-nums"
-														>{Math.round((textScale ?? TEXT_SCALE_DEFAULT) * 100)}%</span
-													>
-												{/if}
-												<button
-													type="button"
-													class="px-2.5 py-1 text-xs rounded-md border transition whitespace-nowrap
-																{textScale === null
-														? 'border-blue-300 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
-														: 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5'}"
-													on:click={() => {
-														textScale = textScale === null ? TEXT_SCALE_DEFAULT : null;
-													}}
-												>
-													{textScale === null ? $i18n.t('Default') : $i18n.t('Reset')}
-												</button>
-											</div>
-										</div>
-
-									</div>
-								</div>
-							{:else if s.key === 'layout'}
-								<InlineDirtyActions
-									dirty={dirtySections.layout}
-									saving={layoutSaving}
-									saveAsSubmit={false}
-									on:reset={resetLayoutChanges}
-									on:save={saveLayoutChanges}
-								/>
-								<div
-									class="space-y-3"
-								>
-								<div class="space-y-2">
-									<div class="flex items-center justify-between glass-item px-4 py-3">
-										<div class="text-sm font-medium">
-											{$i18n.t('Landing Page Mode')}
-										</div>
-										<HaloSelect
-											bind:value={landingPageMode}
-											options={[
-												{ value: '', label: $i18n.t('Default') },
-												{ value: 'chat', label: $i18n.t('Chat') }
-											]}
-										/>
-									</div>
-
-									<div class="flex items-center justify-between glass-item px-4 py-3">
-										<div class="text-sm font-medium">
-											{$i18n.t('Show featured assistants on home page')}
-										</div>
-										<Switch
-											bind:state={showFeaturedAssistantsOnHome}
-										/>
-									</div>
-
-									<div class="flex items-center justify-between glass-item px-4 py-3">
-										<div class="text-sm font-medium">
-											{$i18n.t('Chat direction')}
-										</div>
-										<HaloSelect
-											bind:value={chatDirection}
-											options={[
-												{ value: 'auto', label: $i18n.t('Auto') },
-												{ value: 'LTR', label: $i18n.t('LTR') },
-												{ value: 'RTL', label: $i18n.t('RTL') }
-											]}
-										/>
-									</div>
-
-									<div class="flex items-center justify-between glass-item px-4 py-3">
-										<div class="text-sm font-medium">
-											{$i18n.t('Notifications')}
-										</div>
-										<Switch bind:state={notificationEnabled} />
-									</div>
-
-									<div class="flex items-center justify-between glass-item px-4 py-3">
-										<div class="text-sm font-medium">
-											{$i18n.t('Widescreen Mode')}
-										</div>
-										<Switch
-											bind:state={widescreenMode}
-										/>
-									</div>
-
-									<div class="flex items-center justify-between glass-item px-4 py-3">
-										<div class="text-sm font-medium">
-											{$i18n.t('Notification Sound')}
-										</div>
-										<Switch
-											bind:state={notificationSound}
-										/>
-									</div>
-
-									<div class="flex items-center justify-between glass-item px-4 py-3">
-										<div class="text-sm font-medium">
-											{$i18n.t('Chat Bubble UI')}
-										</div>
-										<Switch
-											bind:state={chatBubble}
-										/>
-									</div>
-
-									{#if !chatBubble}
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Display the username instead of You in the Chat')}
-											</div>
-											<Switch
-												bind:state={showUsername}
-											/>
-										</div>
-									{/if}
-
-									<div class="flex items-center justify-between glass-item px-4 py-3">
-										<div class="text-sm font-medium">
-											{$i18n.t('Display chat title in tab')}
-										</div>
-										<Switch
-											bind:state={showChatTitleInTab}
-										/>
-									</div>
-
-									{#if $user?.role === 'admin'}
-										<!-- Banners -->
-										<div class="glass-item p-4">
-											<div class="flex w-full justify-between items-center mb-3">
-												<div class="text-sm font-medium">{$i18n.t('Banners')}</div>
-												<button
-													class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
-													type="button"
-													aria-label="Add Banner"
-													on:click={() => {
-														if (banners.length === 0 || banners.at(-1)?.content !== '') {
-															banners = [
-																...banners,
-																{
-																	id: uuidv4(),
-																	type: '',
-																	title: '',
-																	content: '',
-																	dismissible: true,
-																	timestamp: Math.floor(Date.now() / 1000)
-																}
-															];
-														}
-													}}
-												>
-													<svg
-														xmlns="http://www.w3.org/2000/svg"
-														viewBox="0 0 20 20"
-														fill="currentColor"
-														class="w-4 h-4"
-													>
-														<path
-															d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"
-														/>
-													</svg>
-												</button>
-											</div>
-
-											<div class="flex flex-col space-y-2">
-												{#each banners as banner, bannerIdx}
-													<div class="flex justify-between items-center">
-														<div
-															class="flex flex-row flex-1 border rounded-lg border-gray-200 dark:border-gray-700 overflow-hidden"
+											{#if $user?.role === 'admin'}
+												<div class="glass-item px-4 py-3 space-y-3">
+													<div class="flex items-center justify-between">
+														<div class="text-sm font-medium">
+															{$i18n.t('Autocomplete Generation')}
+														</div>
+														<Tooltip
+															content={$i18n.t('Enable autocomplete generation for chat messages')}
 														>
-															<HaloSelect
-																bind:value={banner.type}
-																on:change={touchBanners}
-																options={[
-																	{ value: 'info', label: $i18n.t('Info') },
-																	{ value: 'warning', label: $i18n.t('Warning') },
-																	{ value: 'error', label: $i18n.t('Error') },
-																	{ value: 'success', label: $i18n.t('Success') }
-																]}
-																placeholder={$i18n.t('Type')}
-																className="w-fit capitalize rounded-l-lg text-xs"
-															/>
-
+															<Switch bind:state={enableAutocompleteGeneration} />
+														</Tooltip>
+													</div>
+													{#if enableAutocompleteGeneration}
+														<div>
+															<div
+																class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5"
+															>
+																{$i18n.t('Autocomplete Generation Input Max Length')}
+															</div>
 															<input
-																class="flex-1 py-2 px-3 text-xs bg-transparent outline-hidden"
-																placeholder={$i18n.t('Content')}
-																bind:value={banner.content}
-																on:input={touchBanners}
-															/>
-
-															<div class="flex items-center px-2">
-																<Tooltip
-																	content={$i18n.t('Dismissible')}
-																	className="flex h-fit items-center"
-																>
-																	<Switch bind:state={banner.dismissible} on:change={touchBanners} />
-																</Tooltip>
-															</div>
-														</div>
-
-														<button
-															class="p-2 ml-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
-															type="button"
-															on:click={() => {
-																banners.splice(bannerIdx, 1);
-																banners = banners;
-															}}
-														>
-															<svg
-																xmlns="http://www.w3.org/2000/svg"
-																viewBox="0 0 20 20"
-																fill="currentColor"
-																class="w-4 h-4"
-															>
-																<path
-																	d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
-																/>
-															</svg>
-														</button>
-													</div>
-												{/each}
-											</div>
-										</div>
-									{/if}
-
-								</div>
-								</div>
-							{:else if s.key === 'input'}
-								<InlineDirtyActions
-									dirty={dirtySections.input}
-									saving={inputSaving}
-									saveAsSubmit={false}
-									on:reset={resetInputChanges}
-									on:save={saveInputChanges}
-								/>
-								<div
-									class="space-y-3"
-								>
-									<div class="space-y-2">
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Rich Text Input for Chat')}
-											</div>
-											<Switch
-												bind:state={richTextInput}
-											/>
-										</div>
-										{#if $user?.role === 'admin'}
-											<div class="glass-item px-4 py-3 space-y-3">
-												<div class="flex items-center justify-between">
-													<div class="text-sm font-medium">
-														{$i18n.t('Autocomplete Generation')}
-													</div>
-													<Tooltip content={$i18n.t('Enable autocomplete generation for chat messages')}>
-														<Switch
-															bind:state={enableAutocompleteGeneration}
-														/>
-													</Tooltip>
-												</div>
-												{#if enableAutocompleteGeneration}
-													<div>
-														<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-															{$i18n.t('Autocomplete Generation Input Max Length')}
-														</div>
-														<input
-															class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
-															bind:value={autocompleteGenerationInputMaxLength}
-															placeholder={$i18n.t(
-																'-1 for no limit, or a positive integer for a specific limit'
-															)}
-														/>
-													</div>
-												{/if}
-											</div>
-										{/if}
-										{#if $config?.features?.enable_autocomplete_generation || ($user?.role === 'admin' && enableAutocompleteGeneration)}
-											<div class="flex items-center justify-between glass-item px-4 py-3">
-												<div class="text-sm font-medium">
-													{$i18n.t('Prompt Autocompletion')}
-												</div>
-												<Switch
-													bind:state={promptAutocomplete}
-												/>
-											</div>
-										{/if}
-										{#if richTextInput}
-											<div class="flex items-center justify-between glass-item px-4 py-3">
-												<div class="text-sm font-medium">
-													{$i18n.t('Show Formatting Toolbar')}
-												</div>
-												<Switch
-													bind:state={showFormattingToolbar}
-												/>
-											</div>
-											<div class="flex items-center justify-between glass-item px-4 py-3">
-												<div class="text-sm font-medium">
-													{$i18n.t('Insert Prompt as Rich Text')}
-												</div>
-												<Switch
-													bind:state={insertPromptAsRichText}
-												/>
-											</div>
-										{/if}
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Paste Large Text as File')}
-											</div>
-											<Switch
-												bind:state={largeTextAsFile}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Enter Key Behavior')}
-											</div>
-											<HaloSelect
-												value={ctrlEnterToSend ? 'ctrl_enter' : 'enter'}
-												on:change={onCtrlEnterBehaviorChange}
-												options={[
-													{ value: 'enter', label: $i18n.t('Enter to Send') },
-													{ value: 'ctrl_enter', label: $i18n.t('Ctrl+Enter to Send') }
-												]}
-											/>
-										</div>
-									</div>
-
-									{#if $user?.role === 'admin'}
-										<!-- Default Prompt Suggestions -->
-										<div class="glass-item p-4">
-											<div class="flex w-full justify-between items-center mb-3">
-												<div class="text-sm font-medium">{$i18n.t('Default Prompt Suggestions')}</div>
-												<button
-													class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
-													type="button"
-													on:click={() => {
-														if (
-															promptSuggestions.length === 0 ||
-															promptSuggestions.at(-1)?.content !== ''
-														) {
-															promptSuggestions = [
-																...promptSuggestions,
-																{ content: '', title: ['', ''] }
-															];
-														}
-													}}
-												>
-													<svg
-														xmlns="http://www.w3.org/2000/svg"
-														viewBox="0 0 20 20"
-														fill="currentColor"
-														class="w-4 h-4"
-													>
-														<path
-															d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"
-														/>
-													</svg>
-												</button>
-											</div>
-
-											<div class="flex flex-col space-y-2">
-												{#each promptSuggestions as prompt, promptIdx}
-													<div
-														class="flex border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden"
-													>
-														<div class="flex flex-col flex-1">
-															<div class="flex border-b border-gray-200 dark:border-gray-700">
-																<input
-																	class="flex-1 px-3 py-2 text-xs bg-transparent outline-hidden border-r border-gray-200 dark:border-gray-700"
-																	placeholder={$i18n.t('Title (e.g. Tell me a fun fact)')}
-																	bind:value={prompt.title[0]}
-																/>
-																<input
-																	class="flex-1 px-3 py-2 text-xs bg-transparent outline-hidden"
-																	placeholder={$i18n.t('Subtitle (e.g. about the Roman Empire)')}
-																	bind:value={prompt.title[1]}
-																/>
-															</div>
-															<textarea
-																class="px-3 py-2 text-xs w-full bg-transparent outline-hidden resize-none"
+																class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
+																bind:value={autocompleteGenerationInputMaxLength}
 																placeholder={$i18n.t(
-																	'Prompt (e.g. Tell me a fun fact about the Roman Empire)'
+																	'-1 for no limit, or a positive integer for a specific limit'
 																)}
-																rows="2"
-																bind:value={prompt.content}
 															/>
 														</div>
-														<button
-															class="px-3 flex items-center hover:bg-gray-100 dark:hover:bg-gray-800 transition"
-															type="button"
-															on:click={() => {
-																promptSuggestions.splice(promptIdx, 1);
-																promptSuggestions = promptSuggestions;
-															}}
-														>
-															<svg
-																xmlns="http://www.w3.org/2000/svg"
-																viewBox="0 0 20 20"
-																fill="currentColor"
-																class="w-4 h-4"
-															>
-																<path
-																	d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
-																/>
-															</svg>
-														</button>
-													</div>
-												{/each}
-											</div>
-
-											{#if promptSuggestions.length > 0}
-												<div class="text-xs text-gray-500 mt-3">
-													{$i18n.t(
-														'Adjusting these settings will apply changes universally to all users.'
-													)}
+													{/if}
 												</div>
 											{/if}
-										</div>
-									{/if}
-
-									<div class="glass-item p-4">
-										<div class="flex items-start gap-3">
-											<div class="shrink-0 size-9 rounded-2xl border border-sky-200/80 bg-linear-to-br from-sky-50 to-blue-100 text-sky-600 shadow-xs dark:border-sky-800/60 dark:from-sky-950/40 dark:to-blue-950/30 dark:text-sky-300 flex items-center justify-center">
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													viewBox="0 0 24 24"
-													fill="currentColor"
-													class="size-4.5"
-												>
-													<path
-														fill-rule="evenodd"
-														d="M7.5 3.75A2.25 2.25 0 0 0 5.25 6v12A2.25 2.25 0 0 0 7.5 20.25h9A2.25 2.25 0 0 0 18.75 18V8.56a2.25 2.25 0 0 0-.659-1.591l-2.56-2.56A2.25 2.25 0 0 0 13.94 3.75H7.5Zm3 4.5a.75.75 0 0 1 .75-.75h2.25a.75.75 0 0 1 0 1.5h-2.25a.75.75 0 0 1-.75-.75Zm-1.5 3a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Zm0 3a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z"
-														clip-rule="evenodd"
-													/>
-												</svg>
-											</div>
-											<div class="min-w-0 flex-1">
-												<div class="flex flex-wrap items-center gap-2">
-													<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
-														{$i18n.t('Global Default System Prompt')}
-													</div>
-													<span class="inline-flex items-center rounded-full border border-sky-200/80 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:border-sky-800/70 dark:bg-sky-950/40 dark:text-sky-300">
-														{$i18n.t('Applies to New Chats')}
-													</span>
-												</div>
-												<p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
-													{$i18n.t(
-														'New chats without a custom current-chat system prompt will inherit this setting. A current chat system prompt can override it.'
-													)}
-												</p>
-											</div>
-										</div>
-
-										<div class="mt-3">
-											<Textarea
-												bind:value={globalSystemPrompt}
-												rows={5}
-												minSize={140}
-												placeholder={$i18n.t(
-													'Leave empty if you do not want a global default system prompt.'
-												)}
-												className="w-full rounded-xl border border-gray-200/80 bg-white/80 px-3.5 py-3 text-sm leading-6 text-gray-800 outline-hidden transition-colors focus:border-sky-300/80 dark:border-gray-700/70 dark:bg-gray-900/60 dark:text-gray-200 dark:focus:border-sky-500/60"
-											/>
-										</div>
-
-										<div class="mt-3 rounded-xl border border-dashed border-gray-200/90 bg-gray-50/80 px-3 py-2 text-xs leading-5 text-gray-500 dark:border-gray-700/70 dark:bg-gray-900/40 dark:text-gray-400">
-											{$i18n.t(
-												'This default is not copied into each chat. Chats without an override inherit it dynamically.'
-											)}
-										</div>
-									</div>
-
-								</div>
-							{:else if s.key === 'chat'}
-								<InlineDirtyActions
-									dirty={dirtySections.chat}
-									saving={chatSaving}
-									saveAsSubmit={false}
-									on:reset={resetChatChanges}
-									on:save={saveChatChanges}
-								/>
-								<div
-									class="space-y-3"
-								>
-									<!-- Personal Default Model -->
-									<div class="space-y-2">
-										<div class="glass-item px-4 py-3">
-											<div class="flex items-center justify-between gap-3">
-												<div class="min-w-0">
+											{#if $config?.features?.enable_autocomplete_generation || ($user?.role === 'admin' && enableAutocompleteGeneration)}
+												<div class="flex items-center justify-between glass-item px-4 py-3">
 													<div class="text-sm font-medium">
-														{$i18n.t('Default Model')}
+														{$i18n.t('Prompt Autocompletion')}
 													</div>
-													<div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-														{$i18n.t('Applies to this account only')}
+													<Switch bind:state={promptAutocomplete} />
+												</div>
+											{/if}
+											{#if richTextInput}
+												<div class="flex items-center justify-between glass-item px-4 py-3">
+													<div class="text-sm font-medium">
+														{$i18n.t('Show Formatting Toolbar')}
 													</div>
+													<Switch bind:state={showFormattingToolbar} />
+												</div>
+												<div class="flex items-center justify-between glass-item px-4 py-3">
+													<div class="text-sm font-medium">
+														{$i18n.t('Insert Prompt as Rich Text')}
+													</div>
+													<Switch bind:state={insertPromptAsRichText} />
+												</div>
+											{/if}
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Paste Large Text as File')}
+												</div>
+												<Switch bind:state={largeTextAsFile} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Enter Key Behavior')}
 												</div>
 												<HaloSelect
-													className="w-60 shrink-0"
-													bind:value={defaultModelId}
-													searchEnabled={true}
-													placeholder={$i18n.t('Select a model')}
-													searchPlaceholder={$i18n.t('Search a model')}
-													noResultsText={$i18n.t('No results found')}
+													value={ctrlEnterToSend ? 'ctrl_enter' : 'enter'}
+													on:change={onCtrlEnterBehaviorChange}
 													options={[
-														{ value: '', label: $i18n.t('None') },
-														...($models ?? []).map((m) => ({
-															value: getModelSelectionId(m),
-															label: getModelChatDisplayName(m)
-														}))
+														{ value: 'enter', label: $i18n.t('Enter to Send') },
+														{ value: 'ctrl_enter', label: $i18n.t('Ctrl+Enter to Send') }
 													]}
 												/>
 											</div>
-											{#if modelsLoading && ($models?.length ?? 0) === 0}
-												<div class="mt-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-													<Spinner className="size-3.5" />
-													<span>{$i18n.t('Loading...')}</span>
-												</div>
-											{:else if modelsLoadError && ($models?.length ?? 0) === 0}
-												<div class="mt-2 text-xs text-amber-600 dark:text-amber-400">
-													{modelsLoadError}
-												</div>
-											{/if}
 										</div>
-									</div>
 
-									<!-- Sub-group A: Auto Generation -->
-									<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1">
-										{$i18n.t('Auto Generation')}
-									</div>
-									<div class="space-y-2">
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
-												<span>{$i18n.t('Title Auto-Generation')}</span>
-												<Tooltip
-													content={autoGenerationRequestWarning}
-													className="inline-flex shrink-0"
-												>
-													<button
-														type="button"
-														aria-label={tr(
-															'查看自动生成请求频率提醒',
-															'View auto-generation request rate warning'
-														)}
-														class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
-													>
-														<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
-													</button>
-												</Tooltip>
-											</div>
-											<Switch
-												bind:state={titleAutoGenerate}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
-												<span>{$i18n.t('Follow-Up Auto-Generation')}</span>
-												<Tooltip
-													content={autoGenerationRequestWarning}
-													className="inline-flex shrink-0"
-												>
-													<button
-														type="button"
-														aria-label={tr(
-															'查看自动生成请求频率提醒',
-															'View auto-generation request rate warning'
-														)}
-														class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
-													>
-														<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
-													</button>
-												</Tooltip>
-											</div>
-											<Switch
-												bind:state={autoFollowUps}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
-												<span>{$i18n.t('Chat Tags Auto-Generation')}</span>
-												<Tooltip
-													content={autoGenerationRequestWarning}
-													className="inline-flex shrink-0"
-												>
-													<button
-														type="button"
-														aria-label={tr(
-															'查看自动生成请求频率提醒',
-															'View auto-generation request rate warning'
-														)}
-														class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
-													>
-														<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
-													</button>
-												</Tooltip>
-											</div>
-											<Switch
-												bind:state={autoTags}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Detect Artifacts Automatically')}
-											</div>
-											<Switch
-												bind:state={detectArtifacts}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Auto-Open SVG Preview')}
-											</div>
-											<Switch
-												bind:state={svgPreviewAutoOpen}
-											/>
-										</div>
-									</div>
-
-									<!-- Sub-group B: Display & Rendering -->
-									<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1 mt-3">
-										{$i18n.t('Display')}
-									</div>
-									<div class="space-y-2">
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Always Collapse Code Blocks')}
-											</div>
-											<Switch
-												bind:state={collapseCodeBlocks}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Collapse Historical Long Responses')}
-											</div>
-											<Switch
-												bind:state={collapseHistoricalLongResponses}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="flex items-center gap-1.5 pr-4 text-sm font-medium">
-												<span>{tr('HTML 格式输出', 'HTML format output')}</span>
-												<Tooltip
-													content={tr(
-														'开启后，模型回复会以 HTML 格式展示；关闭后使用 Markdown。',
-														'Render model replies as HTML when enabled; use Markdown when disabled.'
-													)}
-												>
-													<QuestionMarkCircle
-														className="w-4 h-4 cursor-help text-gray-400 dark:text-gray-500"
-													/>
-												</Tooltip>
-											</div>
-											<Switch
-												bind:state={responseHtmlFormat}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{tr('显示正文引用标签', 'Show Inline Citations')}
-											</div>
-											<Switch
-												bind:state={showInlineCitations}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Show Message Outline')}
-											</div>
-											<Switch
-												bind:state={showMessageOutline}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Show Formula Quick Copy Button')}
-											</div>
-											<Switch
-												bind:state={showFormulaQuickCopyButton}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Copy Formatted Text')}
-											</div>
-											<Switch
-												bind:state={copyFormatted}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Expand Tool and Detail Blocks by Default')}
-											</div>
-											<Switch
-												bind:state={expandDetails}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Render Markdown in Previews')}
-											</div>
-											<Switch
-												bind:state={renderMarkdownInPreviews}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Display Multi-model Responses in Tabs')}
-											</div>
-											<Switch
-												bind:state={displayMultiModelResponsesInTabs}
-											/>
-										</div>
-										<div class="glass-item px-4 py-3">
-											<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-												<div class="min-w-0">
+										{#if $user?.role === 'admin'}
+											<!-- Default Prompt Suggestions -->
+											<div class="glass-item p-4">
+												<div class="flex w-full justify-between items-center mb-3">
 													<div class="text-sm font-medium">
-														{$i18n.t('Multi-model discussion rounds')}
+														{$i18n.t('Default Prompt Suggestions')}
 													</div>
-													<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-														{$i18n.t('Choose how many discussion rounds each multi-model question uses')}
-													</div>
+													<button
+														class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+														type="button"
+														on:click={() => {
+															if (
+																promptSuggestions.length === 0 ||
+																promptSuggestions.at(-1)?.content !== ''
+															) {
+																promptSuggestions = [
+																	...promptSuggestions,
+																	{ content: '', title: ['', ''] }
+																];
+															}
+														}}
+													>
+														<svg
+															xmlns="http://www.w3.org/2000/svg"
+															viewBox="0 0 20 20"
+															fill="currentColor"
+															class="w-4 h-4"
+														>
+															<path
+																d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"
+															/>
+														</svg>
+													</button>
 												</div>
-												<select
-													class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-hidden transition focus:border-gray-300 dark:border-gray-700 dark:bg-gray-900 sm:w-40"
-													value={multiModelDiscussionRounds}
-													on:change={handleMultiModelDiscussionRoundsChange}
-												>
-													{#each [1, 2, 3, 4, 5] as roundCount}
-														<option value={roundCount}>{$i18n.t('{{count}} round(s)', { count: roundCount })}</option>
+
+												<div class="flex flex-col space-y-2">
+													{#each promptSuggestions as prompt, promptIdx}
+														<div
+															class="flex border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden"
+														>
+															<div class="flex flex-col flex-1">
+																<div class="flex border-b border-gray-200 dark:border-gray-700">
+																	<input
+																		class="flex-1 px-3 py-2 text-xs bg-transparent outline-hidden border-r border-gray-200 dark:border-gray-700"
+																		placeholder={$i18n.t('Title (e.g. Tell me a fun fact)')}
+																		bind:value={prompt.title[0]}
+																	/>
+																	<input
+																		class="flex-1 px-3 py-2 text-xs bg-transparent outline-hidden"
+																		placeholder={$i18n.t('Subtitle (e.g. about the Roman Empire)')}
+																		bind:value={prompt.title[1]}
+																	/>
+																</div>
+																<textarea
+																	class="px-3 py-2 text-xs w-full bg-transparent outline-hidden resize-none"
+																	placeholder={$i18n.t(
+																		'Prompt (e.g. Tell me a fun fact about the Roman Empire)'
+																	)}
+																	rows="2"
+																	bind:value={prompt.content}
+																/>
+															</div>
+															<button
+																class="px-3 flex items-center hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+																type="button"
+																on:click={() => {
+																	promptSuggestions.splice(promptIdx, 1);
+																	promptSuggestions = promptSuggestions;
+																}}
+															>
+																<svg
+																	xmlns="http://www.w3.org/2000/svg"
+																	viewBox="0 0 20 20"
+																	fill="currentColor"
+																	class="w-4 h-4"
+																>
+																	<path
+																		d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
+																	/>
+																</svg>
+															</button>
+														</div>
 													{/each}
-												</select>
-											</div>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Scroll to bottom when switching between branches')}
-											</div>
-											<Switch
-												bind:state={scrollOnBranchChange}
-											/>
-										</div>
-										<div class="glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{tr('PDF 导出说明', 'PDF export note')}
-											</div>
-											<div class="text-xs text-gray-500 dark:text-gray-400 mt-1.5 leading-5">
-												{tr(
-													'PDF 现已改为文档型导出，优先保证文字、列表、代码块和图片的稳定排版，不再跟随当前聊天页面视觉样式。',
-													'PDF export now uses a document layout to keep text, lists, code blocks, and images stable instead of mirroring the current chat page style.'
-												)}
-											</div>
-										</div>
-									</div>
+												</div>
 
-									<!-- Sub-group C: Interaction -->
-									<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1 mt-3">
-										{$i18n.t('Interaction')}
-									</div>
-									<div class="space-y-2">
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Enable Message Queue')}
+												{#if promptSuggestions.length > 0}
+													<div class="text-xs text-gray-500 mt-3">
+														{$i18n.t(
+															'Adjusting these settings will apply changes universally to all users.'
+														)}
+													</div>
+												{/if}
 											</div>
-											<Switch
-												bind:state={enableMessageQueue}
-											/>
-										</div>
-										<div class="glass-item px-4 py-3">
-											<div class="flex items-center justify-between gap-4">
-												<div class="min-w-0">
-													<div class="text-sm font-medium">
-														{tr('新对话继承上次对话状态', 'Inherit Previous State for New Chats')}
+										{/if}
+
+										<div class="glass-item p-4">
+											<div class="flex items-start gap-3">
+												<div
+													class="shrink-0 size-9 rounded-2xl border border-sky-200/80 bg-linear-to-br from-sky-50 to-blue-100 text-sky-600 shadow-xs dark:border-sky-800/60 dark:from-sky-950/40 dark:to-blue-950/30 dark:text-sky-300 flex items-center justify-center"
+												>
+													<svg
+														xmlns="http://www.w3.org/2000/svg"
+														viewBox="0 0 24 24"
+														fill="currentColor"
+														class="size-4.5"
+													>
+														<path
+															fill-rule="evenodd"
+															d="M7.5 3.75A2.25 2.25 0 0 0 5.25 6v12A2.25 2.25 0 0 0 7.5 20.25h9A2.25 2.25 0 0 0 18.75 18V8.56a2.25 2.25 0 0 0-.659-1.591l-2.56-2.56A2.25 2.25 0 0 0 13.94 3.75H7.5Zm3 4.5a.75.75 0 0 1 .75-.75h2.25a.75.75 0 0 1 0 1.5h-2.25a.75.75 0 0 1-.75-.75Zm-1.5 3a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Zm0 3a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z"
+															clip-rule="evenodd"
+														/>
+													</svg>
+												</div>
+												<div class="min-w-0 flex-1">
+													<div class="flex flex-wrap items-center gap-2">
+														<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+															{$i18n.t('Global Default System Prompt')}
+														</div>
+														<span
+															class="inline-flex items-center rounded-full border border-sky-200/80 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:border-sky-800/70 dark:bg-sky-950/40 dark:text-sky-300"
+														>
+															{$i18n.t('Applies to New Chats')}
+														</span>
 													</div>
 													<p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
-														{tr(
-															'开启后，点击“新对话”会沿用上一轮的模型选择、联网、图片生成、代码解释器、工具和推理设置；关闭后，新对话从默认设置开始。点击左上角 Halo WebUI 图标仍会打开完全干净的新对话。',
-															'When enabled, New Chat keeps the previous model selection, web search, image generation, code interpreter, tools, and reasoning settings. Turn it off to start from defaults. The Halo WebUI logo still opens a clean fresh chat.'
+														{$i18n.t(
+															'New chats without a custom current-chat system prompt will inherit this setting. A current chat system prompt can override it.'
 														)}
 													</p>
 												</div>
-												<Switch
-													bind:state={newChatInheritsPreviousState}
+											</div>
+
+											<div class="mt-3">
+												<Textarea
+													bind:value={globalSystemPrompt}
+													rows={5}
+													minSize={140}
+													placeholder={$i18n.t(
+														'Leave empty if you do not want a global default system prompt.'
+													)}
+													className="w-full rounded-xl border border-gray-200/80 bg-white/80 px-3.5 py-3 text-sm leading-6 text-gray-800 outline-hidden transition-colors focus:border-sky-300/80 dark:border-gray-700/70 dark:bg-gray-900/60 dark:text-gray-200 dark:focus:border-sky-500/60"
 												/>
 											</div>
-										</div>
-										{#if $user?.role === 'admin' || $user?.permissions?.chat?.temporary}
-											<div class="flex items-center justify-between glass-item px-4 py-3">
-												<div class="text-sm font-medium">
-													{$i18n.t('Temporary Chat by Default')}
-												</div>
-												<Switch
-													bind:state={temporaryChatByDefault}
-												/>
+
+											<div
+												class="mt-3 rounded-xl border border-dashed border-gray-200/90 bg-gray-50/80 px-3 py-2 text-xs leading-5 text-gray-500 dark:border-gray-700/70 dark:bg-gray-900/40 dark:text-gray-400"
+											>
+												{$i18n.t(
+													'This default is not copied into each chat. Chats without an override inherit it dynamically.'
+												)}
 											</div>
-										{/if}
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Auto-Copy Response to Clipboard')}
-											</div>
-											<Switch
-												bind:state={responseAutoCopy}
-											/>
 										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Insert Suggestion Prompt to Input')}
-											</div>
-											<Switch
-												bind:state={insertSuggestionPrompt}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Keep Follow-Up Prompts in Chat')}
-											</div>
-											<Switch
-												bind:state={keepFollowUpPrompts}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Insert Follow-Up Prompt to Input')}
-											</div>
-											<Switch
-												bind:state={insertFollowUpPrompt}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Regenerate Menu')}
-											</div>
-											<Switch
-												bind:state={regenerateMenu}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Floating Quick Actions')}
-											</div>
-											<Switch
-												bind:state={showFloatingActionButtons}
-											/>
-										</div>
-										{#if showFloatingActionButtons}
-											<div class="space-y-2">
-												<div class="flex items-center justify-between gap-4">
-													<div class="text-sm font-medium">
-														{$i18n.t('Quick Actions')}
+									</div>
+								{:else if s.key === 'chat'}
+									<InlineDirtyActions
+										dirty={dirtySections.chat}
+										saving={chatSaving}
+										saveAsSubmit={false}
+										on:reset={resetChatChanges}
+										on:save={saveChatChanges}
+									/>
+									<div class="space-y-3">
+										<!-- Personal Default Model -->
+										<div class="space-y-2">
+											<div class="glass-item px-4 py-3">
+												<div class="flex items-center justify-between gap-3">
+													<div class="min-w-0">
+														<div class="text-sm font-medium">
+															{$i18n.t('Default Model')}
+														</div>
+														<div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+															{$i18n.t('Applies to this account only')}
+														</div>
 													</div>
 													<HaloSelect
-														value={floatingActionButtons === null ? 'default' : 'custom'}
-														on:change={(e) => {
-															setFloatingActionsMode(
-																e.detail.value === 'custom' ? 'custom' : 'default'
-															);
-														}}
+														className="w-60 shrink-0"
+														bind:value={defaultModelId}
+														searchEnabled={true}
+														placeholder={$i18n.t('Select a model')}
+														searchPlaceholder={$i18n.t('Search a model')}
+														noResultsText={$i18n.t('No results found')}
 														options={[
-															{ value: 'default', label: $i18n.t('Default') },
-															{ value: 'custom', label: $i18n.t('Custom') }
+															{ value: '', label: $i18n.t('None') },
+															...($models ?? []).map((m) => ({
+																value: getModelSelectionId(m),
+																label: getModelChatDisplayName(m)
+															}))
 														]}
 													/>
 												</div>
-
-												{#if floatingActionButtons !== null}
-													{#if floatingActionButtons.length === 0}
-														<div class="text-xs text-gray-500">
-															{$i18n.t('No action buttons configured yet.')}
-														</div>
-													{/if}
-													{#each floatingActionButtons as button, buttonIdx (button.id)}
-														<div
-															class="rounded-lg border border-gray-200 dark:border-gray-700 p-2.5 space-y-2"
-														>
-															<div class="grid grid-cols-2 gap-2">
-																<input
-																	class=""
-																	placeholder={$i18n.t('Button Label')}
-																	bind:value={button.label}
-																	on:change={touchFloatingActions}
-																/>
-																<input
-																	class=""
-																	placeholder={$i18n.t('Button ID')}
-																	bind:value={button.id}
-																	on:change={touchFloatingActions}
-																/>
-															</div>
-															<div class="flex items-center justify-between gap-2">
-																<div class="text-xs text-gray-500">
-																	{$i18n.t('Require user input')}
-																</div>
-																<Switch
-																	bind:state={button.input}
-																	on:change={touchFloatingActions}
-																/>
-															</div>
-															<textarea
-																rows="3"
-																class="w-full dark:bg-gray-850 rounded-lg px-3 py-2 text-sm bg-gray-50 outline-none border border-gray-200 dark:border-gray-700"
-																placeholder={$i18n.t('Button Prompt')}
-																bind:value={button.prompt}
-																on:change={touchFloatingActions}
-															/>
-															<div class="flex justify-end">
-																<button
-																	type="button"
-																	class="px-2.5 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/5 transition"
-																	on:click={() => removeFloatingAction(button.id)}
-																>
-																	{$i18n.t('Remove')}
-																</button>
-															</div>
-														</div>
-													{/each}
-													<div class="flex justify-end">
-														<button
-															type="button"
-															class="px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/5 transition"
-															on:click={addFloatingAction}
-														>
-															{$i18n.t('Add')}
-														</button>
+												{#if modelsLoading && ($models?.length ?? 0) === 0}
+													<div
+														class="mt-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400"
+													>
+														<Spinner className="size-3.5" />
+														<span>{$i18n.t('Loading...')}</span>
+													</div>
+												{:else if modelsLoadError && ($models?.length ?? 0) === 0}
+													<div class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+														{modelsLoadError}
 													</div>
 												{/if}
 											</div>
-										{/if}
-									</div>
+										</div>
 
-									<!-- Sub-group D: Memory -->
-									<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1 mt-3">
-										<Tooltip
-											content={$i18n.t(
-												'This is an experimental feature, it may not function as expected and is subject to change at any time.'
-											)}
-										>
-											{$i18n.t('Memory')}
-											<span class="normal-case">({$i18n.t('Experimental')})</span>
-										</Tooltip>
-									</div>
-									<div class="space-y-2">
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Enable Memory')}
-											</div>
-											<Switch
-												bind:state={enableMemory}
-											/>
+										<!-- Sub-group A: Auto Generation -->
+										<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1">
+											{$i18n.t('Auto Generation')}
 										</div>
-									</div>
-									<div class="text-xs text-gray-500 dark:text-gray-400 mt-1.5 pl-1">
-										{$i18n.t(
-											"You can personalize your interactions with LLMs by adding memories through the 'Manage' button below, making them more helpful and tailored to you."
-										)}
-									</div>
-									<div class="mt-2">
-										<button
-											type="button"
-											class="px-3.5 py-1.5 font-medium hover:bg-black/5 dark:hover:bg-white/5 outline outline-1 outline-gray-300 dark:outline-gray-800 rounded-3xl text-sm"
-											on:click={() => {
-												showManageModal = true;
-											}}
-										>
-											{$i18n.t('Manage')}
-										</button>
-									</div>
-
-									<!-- Sub-group E: Voice & Media -->
-									<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1 mt-3">
-										{$i18n.t('Voice & Media')}
-									</div>
-									<div class="space-y-2">
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Allow Voice Interruption in Call')}
+										<div class="space-y-2">
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+													<span>{$i18n.t('Title Auto-Generation')}</span>
+													<Tooltip
+														content={autoGenerationRequestWarning}
+														className="inline-flex shrink-0"
+													>
+														<button
+															type="button"
+															aria-label={tr(
+																'查看自动生成请求频率提醒',
+																'View auto-generation request rate warning'
+															)}
+															class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
+														>
+															<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
+														</button>
+													</Tooltip>
+												</div>
+												<Switch bind:state={titleAutoGenerate} />
 											</div>
-											<Switch
-												bind:state={voiceInterruption}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Display Emoji in Call')}
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+													<span>{$i18n.t('Follow-Up Auto-Generation')}</span>
+													<Tooltip
+														content={autoGenerationRequestWarning}
+														className="inline-flex shrink-0"
+													>
+														<button
+															type="button"
+															aria-label={tr(
+																'查看自动生成请求频率提醒',
+																'View auto-generation request rate warning'
+															)}
+															class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
+														>
+															<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
+														</button>
+													</Tooltip>
+												</div>
+												<Switch bind:state={autoFollowUps} />
 											</div>
-											<Switch
-												bind:state={showEmojiInCall}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Image Compression')}
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+													<span>{$i18n.t('Chat Tags Auto-Generation')}</span>
+													<Tooltip
+														content={autoGenerationRequestWarning}
+														className="inline-flex shrink-0"
+													>
+														<button
+															type="button"
+															aria-label={tr(
+																'查看自动生成请求频率提醒',
+																'View auto-generation request rate warning'
+															)}
+															class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
+														>
+															<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
+														</button>
+													</Tooltip>
+												</div>
+												<Switch bind:state={autoTags} />
 											</div>
-											<Switch
-												bind:state={imageCompression}
-											/>
-										</div>
-										{#if imageCompression}
 											<div class="flex items-center justify-between glass-item px-4 py-3">
 												<div class="text-sm font-medium">
-													{$i18n.t('Image Max Compression Size')}
+													{$i18n.t('Detect Artifacts Automatically')}
 												</div>
-							<HaloSelect
-								bind:value={imageCompressionPreset}
-								on:change={handleImageCompressionPresetChange}
-								options={[
-														{
-															value: 'auto',
-															label: tr(
-																'自动（仅压缩文件大小）',
-																'Auto (compress file size only)'
-															)
-														},
-														{
-															value: 'standard',
-															label: tr('标准 (1920x1080)', 'Standard (1920x1080)')
-														},
-														{
-															value: 'medium',
-															label: tr('中等 (1280x720)', 'Medium (1280x720)')
-														},
-														{
-															value: 'small',
-															label: tr('小图 (800x600)', 'Small (800x600)')
-														},
-														{
-															value: 'custom',
-															label: tr('自定义', 'Custom')
-														}
-													]}
-													className="w-64"
-												/>
+												<Switch bind:state={detectArtifacts} />
 											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Auto-Open SVG Preview')}
+												</div>
+												<Switch bind:state={svgPreviewAutoOpen} />
+											</div>
+										</div>
 
-											{#if imageCompressionPreset === 'custom'}
+										<!-- Sub-group B: Display & Rendering -->
+										<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1 mt-3">
+											{$i18n.t('Display')}
+										</div>
+										<div class="space-y-2">
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Always Collapse Code Blocks')}
+												</div>
+												<Switch bind:state={collapseCodeBlocks} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Collapse Historical Long Responses')}
+												</div>
+												<Switch bind:state={collapseHistoricalLongResponses} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="flex items-center gap-1.5 pr-4 text-sm font-medium">
+													<span>{tr('HTML 格式输出', 'HTML format output')}</span>
+													<Tooltip
+														content={tr(
+															'开启后，模型回复会以 HTML 格式展示；关闭后使用 Markdown。',
+															'Render model replies as HTML when enabled; use Markdown when disabled.'
+														)}
+													>
+														<QuestionMarkCircle
+															className="w-4 h-4 cursor-help text-gray-400 dark:text-gray-500"
+														/>
+													</Tooltip>
+												</div>
+												<Switch bind:state={responseHtmlFormat} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{tr('显示正文引用标签', 'Show Inline Citations')}
+												</div>
+												<Switch bind:state={showInlineCitations} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Show Message Outline')}
+												</div>
+												<Switch bind:state={showMessageOutline} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Show Formula Quick Copy Button')}
+												</div>
+												<Switch bind:state={showFormulaQuickCopyButton} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Copy Formatted Text')}
+												</div>
+												<Switch bind:state={copyFormatted} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Expand Tool and Detail Blocks by Default')}
+												</div>
+												<Switch bind:state={expandDetails} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Render Markdown in Previews')}
+												</div>
+												<Switch bind:state={renderMarkdownInPreviews} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Display Multi-model Responses in Tabs')}
+												</div>
+												<Switch bind:state={displayMultiModelResponsesInTabs} />
+											</div>
+											<div class="glass-item px-4 py-3">
+												<div
+													class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+												>
+													<div class="min-w-0">
+														<div class="text-sm font-medium">
+															{$i18n.t('Multi-model discussion rounds')}
+														</div>
+														<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+															{$i18n.t(
+																'Choose how many discussion rounds each multi-model question uses'
+															)}
+														</div>
+													</div>
+													<select
+														class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-hidden transition focus:border-gray-300 dark:border-gray-700 dark:bg-gray-900 sm:w-40"
+														value={multiModelDiscussionRounds}
+														on:change={handleMultiModelDiscussionRoundsChange}
+													>
+														{#each [1, 2, 3, 4, 5] as roundCount}
+															<option value={roundCount}
+																>{$i18n.t('{{count}} round(s)', { count: roundCount })}</option
+															>
+														{/each}
+													</select>
+												</div>
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Scroll to bottom when switching between branches')}
+												</div>
+												<Switch bind:state={scrollOnBranchChange} />
+											</div>
+											<div class="glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{tr('PDF 导出说明', 'PDF export note')}
+												</div>
+												<div class="text-xs text-gray-500 dark:text-gray-400 mt-1.5 leading-5">
+													{tr(
+														'PDF 现已改为文档型导出，优先保证文字、列表、代码块和图片的稳定排版，不再跟随当前聊天页面视觉样式。',
+														'PDF export now uses a document layout to keep text, lists, code blocks, and images stable instead of mirroring the current chat page style.'
+													)}
+												</div>
+											</div>
+										</div>
+
+										<!-- Sub-group C: Interaction -->
+										<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1 mt-3">
+											{$i18n.t('Interaction')}
+										</div>
+										<div class="space-y-2">
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Enable Message Queue')}
+												</div>
+												<Switch bind:state={enableMessageQueue} />
+											</div>
+											<div class="glass-item px-4 py-3">
+												<div class="flex items-center justify-between gap-4">
+													<div class="min-w-0">
+														<div class="text-sm font-medium">
+															{tr('新对话继承上次对话状态', 'Inherit Previous State for New Chats')}
+														</div>
+														<p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+															{tr(
+																'开启后，点击“新对话”会沿用上一轮的模型选择、联网、图片生成、代码解释器、工具和推理设置；关闭后，新对话从默认设置开始。点击左上角 Halo WebUI 图标仍会打开完全干净的新对话。',
+																'When enabled, New Chat keeps the previous model selection, web search, image generation, code interpreter, tools, and reasoning settings. Turn it off to start from defaults. The Halo WebUI logo still opens a clean fresh chat.'
+															)}
+														</p>
+													</div>
+													<Switch bind:state={newChatInheritsPreviousState} />
+												</div>
+											</div>
+											{#if $user?.role === 'admin' || $user?.permissions?.chat?.temporary}
 												<div class="flex items-center justify-between glass-item px-4 py-3">
 													<div class="text-sm font-medium">
-														{tr('自定义尺寸', 'Custom size')}
+														{$i18n.t('Temporary Chat by Default')}
 													</div>
-													<div class="flex items-center gap-2">
-														<input
-															bind:value={imageCompressionSize.width}
-															type="number"
-															min="0"
-															placeholder={tr('宽', 'Width')}
-															class="w-24 dark:bg-gray-850 rounded-lg px-3 py-2 text-sm bg-gray-50 outline-none border border-gray-200 dark:border-gray-700 text-center"
-														/>
-														<span class="text-gray-500">x</span>
-														<input
-															bind:value={imageCompressionSize.height}
-															type="number"
-															min="0"
-															placeholder={tr('高', 'Height')}
-															class="w-24 dark:bg-gray-850 rounded-lg px-3 py-2 text-sm bg-gray-50 outline-none border border-gray-200 dark:border-gray-700 text-center"
-														/>
-													</div>
+													<Switch bind:state={temporaryChatByDefault} />
 												</div>
 											{/if}
-
 											<div class="flex items-center justify-between glass-item px-4 py-3">
 												<div class="text-sm font-medium">
-													{$i18n.t('Compress Images in Channels')}
+													{$i18n.t('Auto-Copy Response to Clipboard')}
 												</div>
-												<Switch
-													bind:state={imageCompressionInChannels}
-												/>
+												<Switch bind:state={responseAutoCopy} />
 											</div>
-										{/if}
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Insert Suggestion Prompt to Input')}
+												</div>
+												<Switch bind:state={insertSuggestionPrompt} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Keep Follow-Up Prompts in Chat')}
+												</div>
+												<Switch bind:state={keepFollowUpPrompts} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Insert Follow-Up Prompt to Input')}
+												</div>
+												<Switch bind:state={insertFollowUpPrompt} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Regenerate Menu')}
+												</div>
+												<Switch bind:state={regenerateMenu} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Floating Quick Actions')}
+												</div>
+												<Switch bind:state={showFloatingActionButtons} />
+											</div>
+											{#if showFloatingActionButtons}
+												<div class="space-y-2">
+													<div class="flex items-center justify-between gap-4">
+														<div class="text-sm font-medium">
+															{$i18n.t('Quick Actions')}
+														</div>
+														<HaloSelect
+															value={floatingActionButtons === null ? 'default' : 'custom'}
+															on:change={(e) => {
+																setFloatingActionsMode(
+																	e.detail.value === 'custom' ? 'custom' : 'default'
+																);
+															}}
+															options={[
+																{ value: 'default', label: $i18n.t('Default') },
+																{ value: 'custom', label: $i18n.t('Custom') }
+															]}
+														/>
+													</div>
+
+													{#if floatingActionButtons !== null}
+														{#if floatingActionButtons.length === 0}
+															<div class="text-xs text-gray-500">
+																{$i18n.t('No action buttons configured yet.')}
+															</div>
+														{/if}
+														{#each floatingActionButtons as button, buttonIdx (button.id)}
+															<div
+																class="rounded-lg border border-gray-200 dark:border-gray-700 p-2.5 space-y-2"
+															>
+																<div class="grid grid-cols-2 gap-2">
+																	<input
+																		class=""
+																		placeholder={$i18n.t('Button Label')}
+																		bind:value={button.label}
+																		on:change={touchFloatingActions}
+																	/>
+																	<input
+																		class=""
+																		placeholder={$i18n.t('Button ID')}
+																		bind:value={button.id}
+																		on:change={touchFloatingActions}
+																	/>
+																</div>
+																<div class="flex items-center justify-between gap-2">
+																	<div class="text-xs text-gray-500">
+																		{$i18n.t('Require user input')}
+																	</div>
+																	<Switch
+																		bind:state={button.input}
+																		on:change={touchFloatingActions}
+																	/>
+																</div>
+																<textarea
+																	rows="3"
+																	class="w-full dark:bg-gray-850 rounded-lg px-3 py-2 text-sm bg-gray-50 outline-none border border-gray-200 dark:border-gray-700"
+																	placeholder={$i18n.t('Button Prompt')}
+																	bind:value={button.prompt}
+																	on:change={touchFloatingActions}
+																/>
+																<div class="flex justify-end">
+																	<button
+																		type="button"
+																		class="px-2.5 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/5 transition"
+																		on:click={() => removeFloatingAction(button.id)}
+																	>
+																		{$i18n.t('Remove')}
+																	</button>
+																</div>
+															</div>
+														{/each}
+														<div class="flex justify-end">
+															<button
+																type="button"
+																class="px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/5 transition"
+																on:click={addFloatingAction}
+															>
+																{$i18n.t('Add')}
+															</button>
+														</div>
+													{/if}
+												</div>
+											{/if}
+										</div>
+
+										<!-- Sub-group D: Memory -->
+										<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1 mt-3">
+											<Tooltip
+												content={$i18n.t(
+													'This is an experimental feature, it may not function as expected and is subject to change at any time.'
+												)}
+											>
+												{$i18n.t('Memory')}
+												<span class="normal-case">({$i18n.t('Experimental')})</span>
+											</Tooltip>
+										</div>
+										<div class="space-y-2">
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Enable Memory')}
+												</div>
+												<Switch bind:state={enableMemory} />
+											</div>
+										</div>
+										<div class="text-xs text-gray-500 dark:text-gray-400 mt-1.5 pl-1">
+											{$i18n.t(
+												"You can personalize your interactions with LLMs by adding memories through the 'Manage' button below, making them more helpful and tailored to you."
+											)}
+										</div>
+										<div class="mt-2">
+											<button
+												type="button"
+												class="px-3.5 py-1.5 font-medium hover:bg-black/5 dark:hover:bg-white/5 outline outline-1 outline-gray-300 dark:outline-gray-800 rounded-3xl text-sm"
+												on:click={() => {
+													showManageModal = true;
+												}}
+											>
+												{$i18n.t('Manage')}
+											</button>
+										</div>
+
+										<!-- Sub-group E: Voice & Media -->
+										<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1 mt-3">
+											{$i18n.t('Voice & Media')}
+										</div>
+										<div class="space-y-2">
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Allow Voice Interruption in Call')}
+												</div>
+												<Switch bind:state={voiceInterruption} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Display Emoji in Call')}
+												</div>
+												<Switch bind:state={showEmojiInCall} />
+											</div>
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Image Compression')}
+												</div>
+												<Switch bind:state={imageCompression} />
+											</div>
+											{#if imageCompression}
+												<div class="flex items-center justify-between glass-item px-4 py-3">
+													<div class="text-sm font-medium">
+														{$i18n.t('Image Max Compression Size')}
+													</div>
+													<HaloSelect
+														bind:value={imageCompressionPreset}
+														on:change={handleImageCompressionPresetChange}
+														options={[
+															{
+																value: 'auto',
+																label: tr(
+																	'自动（仅压缩文件大小）',
+																	'Auto (compress file size only)'
+																)
+															},
+															{
+																value: 'standard',
+																label: tr('标准 (1920x1080)', 'Standard (1920x1080)')
+															},
+															{
+																value: 'medium',
+																label: tr('中等 (1280x720)', 'Medium (1280x720)')
+															},
+															{
+																value: 'small',
+																label: tr('小图 (800x600)', 'Small (800x600)')
+															},
+															{
+																value: 'custom',
+																label: tr('自定义', 'Custom')
+															}
+														]}
+														className="w-64"
+													/>
+												</div>
+
+												{#if imageCompressionPreset === 'custom'}
+													<div class="flex items-center justify-between glass-item px-4 py-3">
+														<div class="text-sm font-medium">
+															{tr('自定义尺寸', 'Custom size')}
+														</div>
+														<div class="flex items-center gap-2">
+															<input
+																bind:value={imageCompressionSize.width}
+																type="number"
+																min="0"
+																placeholder={tr('宽', 'Width')}
+																class="w-24 dark:bg-gray-850 rounded-lg px-3 py-2 text-sm bg-gray-50 outline-none border border-gray-200 dark:border-gray-700 text-center"
+															/>
+															<span class="text-gray-500">x</span>
+															<input
+																bind:value={imageCompressionSize.height}
+																type="number"
+																min="0"
+																placeholder={tr('高', 'Height')}
+																class="w-24 dark:bg-gray-850 rounded-lg px-3 py-2 text-sm bg-gray-50 outline-none border border-gray-200 dark:border-gray-700 text-center"
+															/>
+														</div>
+													</div>
+												{/if}
+
+												<div class="flex items-center justify-between glass-item px-4 py-3">
+													<div class="text-sm font-medium">
+														{$i18n.t('Compress Images in Channels')}
+													</div>
+													<Switch bind:state={imageCompressionInChannels} />
+												</div>
+											{/if}
+										</div>
 									</div>
-								</div>
-							{:else if s.key === 'advanced'}
-								<InlineDirtyActions
-									dirty={dirtySections.advanced}
-									saving={advancedSaving}
-									saveAsSubmit={false}
-									on:reset={resetAdvancedChanges}
-									on:save={saveAdvancedChanges}
-								/>
-								<div
-									class="space-y-3"
-								>
-									<div class="space-y-2">
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Allow User Location')}
+								{:else if s.key === 'advanced'}
+									<InlineDirtyActions
+										dirty={dirtySections.advanced}
+										saving={advancedSaving}
+										saveAsSubmit={false}
+										on:reset={resetAdvancedChanges}
+										on:save={saveAdvancedChanges}
+									/>
+									<div class="space-y-3">
+										<div class="space-y-2">
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Allow User Location')}
+												</div>
+												<Switch bind:state={userLocation} />
 											</div>
-											<Switch bind:state={userLocation} />
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('iframe Sandbox Allow Same Origin')}
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('iframe Sandbox Allow Same Origin')}
+												</div>
+												<Switch bind:state={iframeSandboxAllowSameOrigin} />
 											</div>
-											<Switch
-												bind:state={iframeSandboxAllowSameOrigin}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('iframe Sandbox Allow Forms')}
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('iframe Sandbox Allow Forms')}
+												</div>
+												<Switch bind:state={iframeSandboxAllowForms} />
 											</div>
-											<Switch
-												bind:state={iframeSandboxAllowForms}
-											/>
-										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Haptic Feedback')} ({$i18n.t('Only available on Android')})
+											<div class="flex items-center justify-between glass-item px-4 py-3">
+												<div class="text-sm font-medium">
+													{$i18n.t('Haptic Feedback')} ({$i18n.t('Only available on Android')})
+												</div>
+												<Switch bind:state={hapticFeedback} />
 											</div>
-											<Switch
-												bind:state={hapticFeedback}
-											/>
 										</div>
 									</div>
-								</div>
-							{/if}
-						</div>
-					{/if}
-				</div>
-			{/each}
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/each}
 			</div>
 		</div>
 	</div>

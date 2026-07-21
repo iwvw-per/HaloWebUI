@@ -4,6 +4,8 @@
 
 	import { getContext, createEventDispatcher } from 'svelte';
 	import type { Writable } from 'svelte/store';
+	import { slide } from 'svelte/transition';
+	import { quintOut } from 'svelte/easing';
 	const i18n: Writable<any> = getContext('i18n');
 
 	import dayjs from '$lib/dayjs';
@@ -34,9 +36,6 @@
 
 	const dispatch = createEventDispatcher();
 	$: dispatch('change', open);
-
-	import { slide } from 'svelte/transition';
-	import { quintOut } from 'svelte/easing';
 
 	import ChevronUp from '../icons/ChevronUp.svelte';
 	import ChevronDown from '../icons/ChevronDown.svelte';
@@ -355,16 +354,14 @@
 				</div>
 
 				{#if grow}
-					{#if open && !hide}
-						<div
-							transition:slide={{ duration: 300, easing: quintOut, axis: 'y' }}
-							on:pointerup={(e) => {
-								e.stopPropagation();
-							}}
-						>
+					<div
+						class="collapsible-size-shell {open && !hide ? 'collapsible-size-shell-open' : ''}"
+						aria-hidden={open && !hide ? 'false' : 'true'}
+					>
+						<div class="collapsible-size-inner" on:pointerup={(e) => e.stopPropagation()}>
 							<slot name="content" />
 						</div>
-					{/if}
+					</div>
 				{/if}
 			</div>
 		</div>

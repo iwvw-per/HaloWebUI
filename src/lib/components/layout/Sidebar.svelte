@@ -660,8 +660,7 @@
 	data-style={sidebarStyle}
 >
 	<div
-		class="py-2 flex flex-col h-screen max-h-[100dvh] overflow-x-hidden z-50 transition-all duration-300 ease-in-out
-			{$showSidebar || $mobile ? 'w-[260px]' : 'w-[60px]'}"
+		class="py-2 flex flex-col h-screen max-h-[100dvh] overflow-x-hidden z-50 w-[260px] min-w-[260px]"
 	>
 		<!-- 顶栏：Logo + 折叠按钮 -->
 		<div

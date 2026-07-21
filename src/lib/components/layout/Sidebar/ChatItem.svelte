@@ -175,7 +175,12 @@
 	};
 
 	const archiveChatHandler = async (id) => {
-		await archiveChatById(localStorage.token, id);
+		try {
+			await archiveChatById(localStorage.token, id);
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : $i18n.t('Failed to archive chat'));
+			return;
+		}
 
 		if ($chatId === id) {
 			await goto('/');
