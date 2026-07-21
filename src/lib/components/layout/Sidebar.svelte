@@ -550,7 +550,8 @@
 			}
 		});
 
-		showSidebar.set(!$mobile ? localStorage.sidebar === 'true' : false);
+		// 展开侧栏作为桌面端默认状态；仅在用户明确保存为 false 时收起。
+		showSidebar.set(!$mobile ? localStorage.sidebar !== 'false' : false);
 		showSidebar.subscribe((value) => {
 			localStorage.sidebar = value;
 
@@ -660,7 +661,8 @@
 	data-style={sidebarStyle}
 >
 	<div
-		class="py-2 flex flex-col h-screen max-h-[100dvh] overflow-x-hidden z-50 w-[260px] min-w-[260px]"
+		class="py-2 flex flex-col h-screen max-h-[100dvh] overflow-x-hidden z-50
+			{$showSidebar || $mobile ? 'w-[260px]' : 'w-[60px]'}"
 	>
 		<!-- 顶栏：Logo + 折叠按钮 -->
 		<div
