@@ -84,24 +84,6 @@
 					? 'bg-gray-100 dark:bg-gray-850'
 					: 'group-hover:bg-gray-100 dark:group-hover:bg-gray-850';
 
-	$: menuFromClass = isFolderVariant
-		? id === $chatId || confirmEdit
-			? 'from-white dark:from-gray-900'
-			: selected
-				? 'from-white/70 dark:from-gray-900/55'
-				: 'from-white/70 dark:from-gray-900/55'
-		: uiStyle === 'card'
-			? id === $chatId || confirmEdit
-				? 'from-white/85 dark:from-gray-900/60'
-				: selected
-					? 'from-white/65 dark:from-gray-900/45'
-					: 'from-white/60 dark:from-gray-900/40'
-			: id === $chatId || confirmEdit
-				? 'from-gray-200 dark:from-gray-800'
-				: selected
-					? 'from-gray-100 dark:from-gray-850'
-					: 'from-gray-100 dark:from-gray-850';
-
 	$: titleClass = isFolderVariant
 		? 'text-left self-center overflow-hidden w-full h-[19px] leading-5'
 		: 'text-left self-center overflow-hidden w-full h-[20px]';
@@ -317,11 +299,9 @@
 
 	<!-- svelte-ignore a11y-no-static-element-interactions -->
 	<div
-		class="{menuFromClass} absolute {className === 'pr-2'
+		class="absolute {className === 'pr-2'
 			? 'right-[8px]'
-			: 'right-0'} {menuOffsetClass} py-0.5 pr-0.5 mr-1.5 pl-5 bg-linear-to-l from-80%
-
-              to-transparent"
+			: 'right-0'} {menuOffsetClass} py-0.5 pr-0.5 mr-1.5 pl-5"
 		on:mouseenter={(e) => {
 			mouseOver = true;
 		}}
