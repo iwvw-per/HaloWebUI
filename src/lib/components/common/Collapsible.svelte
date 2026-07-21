@@ -130,12 +130,7 @@
 		return $i18n.t('Thinking deeply...');
 	}
 
-	function getActivityTitle(
-		type: string,
-		done: boolean,
-		duration: unknown,
-		name: string
-	): string {
+	function getActivityTitle(type: string, done: boolean, duration: unknown, name: string): string {
 		if (type === 'reasoning') {
 			return formatReasoningTitle(done, duration);
 		}
@@ -167,12 +162,7 @@
 		return done ? 'success' : 'running';
 	}
 
-	$: activityTitle = getActivityTitle(
-		activityType,
-		activityDone,
-		activityDuration,
-		activityName
-	);
+	$: activityTitle = getActivityTitle(activityType, activityDone, activityDuration, activityName);
 	$: activityStatus = getActivityStatus(activityType, activityDone);
 	$: activityStatusTone = getActivityStatusTone(activityDone);
 </script>
@@ -424,18 +414,20 @@
 			{/if}
 		{/if}
 	{:else if !isActivityBlock && !grow}
-		{#if open && !hide}
+		<div
+			class="collapsible-size-shell {open && !hide ? 'collapsible-size-shell-open' : ''}"
+			aria-hidden={open && !hide ? 'false' : 'true'}
+		>
 			<div
-				transition:slide={{ duration: 300, easing: quintOut, axis: 'y' }}
-				class={attributes?.type === 'error'
+				class="collapsible-size-inner {attributes?.type === 'error'
 					? 'mt-1 rounded-lg border border-red-200 bg-red-50/60 px-3 py-2 text-red-900 dark:border-red-900/50 dark:bg-red-900/10 dark:text-red-100'
 					: attributes?.type === 'warning'
 						? 'mt-1 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-amber-900 dark:border-amber-800/50 dark:bg-amber-900/10 dark:text-amber-100'
-						: ''}
+						: ''}"
 			>
 				<slot name="content" />
 			</div>
-		{/if}
+		</div>
 	{/if}
 </div>
 
@@ -467,5 +459,27 @@
 	:global(.activity-reasoning-body li) {
 		font-size: inherit;
 		line-height: inherit;
+	}
+
+	.collapsible-size-shell {
+		display: grid;
+		grid-template-rows: 0fr;
+		opacity: 0;
+		overflow: hidden;
+		pointer-events: none;
+		transition:
+			grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1),
+			opacity 160ms ease-out;
+	}
+
+	.collapsible-size-shell-open {
+		grid-template-rows: 1fr;
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.collapsible-size-inner {
+		min-height: 0;
+		overflow: hidden;
 	}
 </style>

@@ -42,6 +42,8 @@
 	let delayedAnimatedTimer: ReturnType<typeof setTimeout> | null = null;
 	let lastLexedContent = '';
 	let effectiveTransitionMode: ChatTransitionMode = transitionMode;
+	let smoothStreamPreset: 'balanced' | 'silky' = transitionMode === 'smooth' ? 'silky' : 'balanced';
+	let currentSmoothStreamPreset: 'balanced' | 'silky' = smoothStreamPreset;
 
 	let smoothStreamController = createSmoothStreamContentController({
 		enabled: false,
@@ -123,11 +125,7 @@
 	};
 
 	$: processedContent = content
-		? replaceTokens(
-				processResponseContent(content),
-				getModelChatDisplayName(model),
-				$user?.name
-			)
+		? replaceTokens(processResponseContent(content), getModelChatDisplayName(model), $user?.name)
 		: '';
 
 	const hasStreamingReasoningDetails = (value: string) =>
@@ -138,37 +136,40 @@
 	// can refresh immediately as each backend delta arrives.
 	$: effectiveTransitionMode =
 		streaming && hasStreamingReasoningDetails(processedContent) ? 'none' : transitionMode;
+	$: smoothStreamPreset = effectiveTransitionMode === 'smooth' ? 'silky' : 'balanced';
 
-	$: syncDelayedAnimated(streaming && effectiveTransitionMode !== 'none');
+	$: syncDelayedAnimated(streaming && effectiveTransitionMode === 'smooth');
 	$: renderTransitionMode =
-		effectiveTransitionMode !== 'none' && delayedAnimated ? effectiveTransitionMode : 'none';
+		effectiveTransitionMode === 'smooth' && delayedAnimated ? 'smooth' : 'none';
 
-	// Rebuild controller when preset changes
+	// Rebuild only when the preset actually changes. Recreating this controller on every
+	// streamed token restarts character animation and causes visible flashing.
 	$: {
-		const nextPreset = effectiveTransitionMode === 'smooth' ? 'silky' : 'balanced';
-		const currentContent = smoothStreamController.getDisplayedContent();
-		smoothStreamController.destroy();
-		smoothStreamController = createSmoothStreamContentController({
-			enabled: false,
-			initialContent: currentContent,
-			onUpdate: (nextContent) => {
-				renderedContent = nextContent;
-			},
-			preset: nextPreset
-		});
+		if (currentSmoothStreamPreset !== smoothStreamPreset) {
+			currentSmoothStreamPreset = smoothStreamPreset;
+			const currentContent = smoothStreamController.getDisplayedContent();
+			smoothStreamController.destroy();
+			smoothStreamController = createSmoothStreamContentController({
+				enabled: false,
+				initialContent: currentContent,
+				onUpdate: (nextContent) => {
+					renderedContent = nextContent;
+				},
+				preset: smoothStreamPreset
+			});
+		}
 	}
 
-	$: smoothStreamController.setEnabled(renderTransitionMode !== 'none');
+	$: smoothStreamController.setEnabled(renderTransitionMode === 'smooth');
 
-	$: if (renderTransitionMode !== 'none') {
+	$: if (renderTransitionMode === 'smooth') {
 		smoothStreamController.setContent(processedContent);
 	} else {
 		renderedContent = processedContent;
 	}
 
 	$: {
-		const nextLexedContent =
-			renderTransitionMode !== 'none' ? renderedContent : processedContent;
+		const nextLexedContent = renderTransitionMode !== 'none' ? renderedContent : processedContent;
 
 		if (nextLexedContent !== lastLexedContent) {
 			lastLexedContent = nextLexedContent;

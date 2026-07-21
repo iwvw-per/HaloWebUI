@@ -13,6 +13,7 @@
 		getAllTags,
 		getChatList,
 		getPinnedChatList,
+		toggleChatPinnedStatusById,
 		updateChatTitleById
 	} from '$lib/apis/chats';
 	import {
@@ -36,6 +37,7 @@
 	import ArchiveBox from '$lib/components/icons/ArchiveBox.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
+	import { Pin } from 'lucide-svelte';
 
 	export let className = '';
 	export let uiStyle: 'flat' | 'card' = 'flat';
@@ -56,22 +58,21 @@
 	export let shiftKey = false;
 
 	$: isFolderVariant = variant === 'folder';
+	$: isPinned = $pinnedChats?.some((chat) => chat.id === id) ?? false;
 
-	$: itemShellClass =
-		isFolderVariant
-			? 'w-full flex justify-between rounded-md border border-transparent px-2.5 py-1.5 text-[13px] transition-colors duration-150'
-			: uiStyle === 'card'
+	$: itemShellClass = isFolderVariant
+		? 'w-full flex justify-between rounded-md border border-transparent px-2.5 py-1.5 text-[13px] transition-colors duration-150'
+		: uiStyle === 'card'
 			? 'w-full flex justify-between rounded-xl border border-transparent px-3 py-2 transition-colors duration-150'
 			: 'w-full flex justify-between rounded-lg px-3 py-2 transition-colors duration-150';
 
-	$: itemStateClass =
-		isFolderVariant
-			? id === $chatId || confirmEdit
-				? 'bg-white text-gray-900 border-gray-200/80 shadow-sm font-medium dark:bg-gray-900/80 dark:text-gray-100 dark:border-gray-700/70'
-				: selected
-					? 'bg-white/70 text-gray-800 border-gray-200/60 dark:bg-gray-900/55 dark:text-gray-200 dark:border-gray-800/70'
-					: 'text-gray-600 group-hover:bg-white/70 group-hover:border-gray-200/70 dark:text-gray-300 dark:group-hover:bg-gray-900/55 dark:group-hover:border-gray-800/70'
-			: uiStyle === 'card'
+	$: itemStateClass = isFolderVariant
+		? id === $chatId || confirmEdit
+			? 'bg-white text-gray-900 border-gray-200/80 shadow-sm font-medium dark:bg-gray-900/80 dark:text-gray-100 dark:border-gray-700/70'
+			: selected
+				? 'bg-white/70 text-gray-800 border-gray-200/60 dark:bg-gray-900/55 dark:text-gray-200 dark:border-gray-800/70'
+				: 'text-gray-600 group-hover:bg-white/70 group-hover:border-gray-200/70 dark:text-gray-300 dark:group-hover:bg-gray-900/55 dark:group-hover:border-gray-800/70'
+		: uiStyle === 'card'
 			? id === $chatId || confirmEdit
 				? 'bg-white/85 dark:bg-gray-900/60 border-gray-200/70 dark:border-gray-800/70 shadow-sm font-medium'
 				: selected
@@ -83,24 +84,23 @@
 					? 'bg-gray-100 dark:bg-gray-850'
 					: 'group-hover:bg-gray-100 dark:group-hover:bg-gray-850';
 
-	$: menuFromClass =
-		isFolderVariant
-			? id === $chatId || confirmEdit
-				? 'from-white dark:from-gray-900'
-				: selected
-					? 'from-white/70 dark:from-gray-900/55'
-					: 'invisible group-hover:visible from-white/70 dark:from-gray-900/55'
-			: uiStyle === 'card'
+	$: menuFromClass = isFolderVariant
+		? id === $chatId || confirmEdit
+			? 'from-white dark:from-gray-900'
+			: selected
+				? 'from-white/70 dark:from-gray-900/55'
+				: 'from-white/70 dark:from-gray-900/55'
+		: uiStyle === 'card'
 			? id === $chatId || confirmEdit
 				? 'from-white/85 dark:from-gray-900/60'
 				: selected
 					? 'from-white/65 dark:from-gray-900/45'
-					: 'invisible group-hover:visible from-white/60 dark:from-gray-900/40'
+					: 'from-white/60 dark:from-gray-900/40'
 			: id === $chatId || confirmEdit
 				? 'from-gray-200 dark:from-gray-800'
 				: selected
 					? 'from-gray-100 dark:from-gray-850'
-					: 'invisible group-hover:visible from-gray-100 dark:from-gray-850';
+					: 'from-gray-100 dark:from-gray-850';
 
 	$: titleClass = isFolderVariant
 		? 'text-left self-center overflow-hidden w-full h-[19px] leading-5'
@@ -112,6 +112,7 @@
 
 	let showShareChatModal = false;
 	let confirmEdit = false;
+	let showChatMenu = false;
 
 	let chatTitle = title;
 
@@ -138,11 +139,13 @@
 
 			title = nextTitle;
 
-			chats.update((list) =>
-				list?.map((chat) => (chat.id === id ? { ...chat, title: nextTitle } : chat)) ?? list
+			chats.update(
+				(list) =>
+					list?.map((chat) => (chat.id === id ? { ...chat, title: nextTitle } : chat)) ?? list
 			);
-			pinnedChats.update((list) =>
-				list?.map((chat) => (chat.id === id ? { ...chat, title: nextTitle } : chat)) ?? list
+			pinnedChats.update(
+				(list) =>
+					list?.map((chat) => (chat.id === id ? { ...chat, title: nextTitle } : chat)) ?? list
 			);
 
 			dispatch('title-change', { id, title: nextTitle, chat: updatedChat });
@@ -205,6 +208,16 @@
 		dispatch('change');
 	};
 
+	const pinChatHandler = async (id) => {
+		await toggleChatPinnedStatusById(localStorage.token, id);
+
+		currentChatPage.set(1);
+		await chats.set(await getChatList(localStorage.token, $currentChatPage));
+		await pinnedChats.set(await getPinnedChatList(localStorage.token));
+
+		dispatch('change');
+	};
+
 	const focusEdit = async (node: HTMLInputElement) => {
 		node.focus();
 	};
@@ -241,7 +254,7 @@
 	</div>
 </DeleteConfirmDialog>
 
-<div bind:this={itemElement} class=" w-full {className} relative group">
+<div bind:this={itemElement} class=" w-full {className} relative group mb-1 last:mb-0">
 	{#if confirmEdit}
 		<div class="{itemShellClass} {itemStateClass} whitespace-nowrap text-ellipsis">
 			<input
@@ -270,6 +283,10 @@
 			on:dblclick={() => {
 				chatTitle = title;
 				confirmEdit = true;
+			}}
+			on:contextmenu|preventDefault={() => {
+				dispatch('select');
+				showChatMenu = true;
 			}}
 			on:mouseenter={(e) => {
 				mouseOver = true;
@@ -369,7 +386,39 @@
 			</div>
 		{:else}
 			<div class="flex self-center space-x-1 z-10">
+				<Tooltip content={isPinned ? $i18n.t('Unpin') : $i18n.t('Pin')}>
+					<button
+						aria-label={isPinned ? $i18n.t('Unpin') : $i18n.t('Pin')}
+						class="self-center rounded-md p-0.5 text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
+						on:click|stopPropagation={() => {
+							pinChatHandler(id);
+						}}
+						type="button"
+					>
+						<Pin
+							class="size-3.5"
+							strokeWidth={2.2}
+							fill={isPinned ? 'currentColor' : 'none'}
+							style={`transform: rotate(${isPinned ? 40 : 0}deg); transform-origin: center;`}
+						/>
+					</button>
+				</Tooltip>
+
+				<Tooltip content={$i18n.t('Archive')}>
+					<button
+						aria-label={$i18n.t('Archive')}
+						class="self-center rounded-md p-0.5 text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
+						on:click|stopPropagation={() => {
+							archiveChatHandler(id);
+						}}
+						type="button"
+					>
+						<ArchiveBox className="size-4 translate-y-[0.5px]" strokeWidth="2" />
+					</button>
+				</Tooltip>
+
 				<ChatMenu
+					bind:show={showChatMenu}
 					chatId={id}
 					currentFolderId={folderId}
 					{folderOptions}
