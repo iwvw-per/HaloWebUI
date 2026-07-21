@@ -35,7 +35,7 @@ body:
     id: version
     attributes:
       label: HaloWebUI version or image tag
-      placeholder: latest, go-edge, git-abcdef0, or commit SHA
+      placeholder: latest, dev, or commit SHA
     validations:
       required: true
   - type: input

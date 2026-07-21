@@ -33,6 +33,8 @@ docker run -d --name halowebui \
 
 打开 <http://localhost:3000>。首次注册的用户自动成为管理员。生产部署必须设置稳定的 `WEBUI_SECRET_KEY`，并持久化 `/app/data`。
 
+镜像标签与分支一一对应：`main` 分支发布 `latest`，`dev` 分支发布 `dev`。生产环境使用 `latest`，测试环境可使用 `iwvw/halowebui:dev`。
+
 ### Docker Compose
 
 ```bash

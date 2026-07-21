@@ -7,7 +7,8 @@ FROM node:${NODE_VERSION}-alpine AS frontend-build
 ARG BUILD_HASH=dev
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
-RUN npm ci --ignore-scripts
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --ignore-scripts --prefer-offline --no-audit
 COPY src ./src
 COPY static ./static
 COPY scripts ./scripts
