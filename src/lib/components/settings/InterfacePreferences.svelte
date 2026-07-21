@@ -21,7 +21,7 @@
 	} from '$lib/apis/configs';
 	import { updateUserInfo } from '$lib/apis/users';
 	import { getUserPosition } from '$lib/utils';
-	import { getLanguages, changeLanguage, translateWithDefault } from '$lib/i18n';
+	import { translateWithDefault } from '$lib/i18n';
 	import { resolveCopyFormattedPreference } from '$lib/utils/copy-format';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 	import { getModelSelectionId, resolveModelSelectionId } from '$lib/utils/model-identity';
@@ -103,8 +103,6 @@
 	let themes = ['dark', 'light', 'her', 'rose-pine dark', 'rose-pine-dawn light', 'oled-dark'];
 	let selectedTheme: ThemePreference = 'system';
 	let highlighterTheme = DEFAULT_HIGHLIGHTER_THEME;
-	let languages: Awaited<ReturnType<typeof getLanguages>> = [];
-	let lang = '';
 	let mermaidTheme: MermaidThemeId = DEFAULT_MERMAID_THEME;
 	let notificationEnabled = false;
 
@@ -238,7 +236,6 @@
 		appearance: {
 			selectedTheme: string;
 			highlighterTheme: string;
-			lang: string;
 			backgroundImageUrl: string | null;
 			mermaidTheme: MermaidThemeId;
 			textScale: number | null;
@@ -460,11 +457,6 @@
 		applyTheme(nextTheme);
 	};
 
-	const commitLanguageSelection = async (nextLang: string) => {
-		lang = nextLang;
-		await changeLanguage(nextLang);
-	};
-
 	const getThemeOptionLabel = (displayName: string, id: string) =>
 		id === 'lobe-theme' ? tr('默认主题', 'Default Theme') : displayName;
 
@@ -567,7 +559,6 @@
 		appearance: {
 			selectedTheme: normalizeTheme(selectedTheme),
 			highlighterTheme: normalizeHighlighterTheme(highlighterTheme),
-			lang,
 			backgroundImageUrl,
 			mermaidTheme: normalizeMermaidTheme(mermaidTheme),
 			textScale,
@@ -646,7 +637,6 @@
 	const applyAppearanceSnapshot = (snapshot: SectionSnapshot['appearance']) => {
 		selectedTheme = normalizeTheme(snapshot.selectedTheme);
 		highlighterTheme = normalizeHighlighterTheme(snapshot.highlighterTheme);
-		lang = snapshot.lang;
 		backgroundImageUrl = snapshot.backgroundImageUrl;
 		mermaidTheme = normalizeMermaidTheme(snapshot.mermaidTheme);
 		textScale = snapshot.textScale;
@@ -730,7 +720,6 @@
 	$: {
 		selectedTheme;
 		highlighterTheme;
-		lang;
 		backgroundImageUrl;
 		mermaidTheme;
 		textScale;
@@ -968,7 +957,6 @@
 			});
 			localStorage.setItem('theme', normalizeTheme(selectedTheme));
 			commitThemeSelection(selectedTheme);
-			await commitLanguageSelection(lang);
 			commitTextScaleSelection(textScale);
 			await tick();
 			startSectionBaselineSync();
@@ -1186,11 +1174,6 @@
 				modelsLoading = false;
 			});
 
-		const languagesPromise = getLanguages().catch((error) => {
-			console.error('Failed to load languages', error);
-			return [];
-		});
-
 		const adminTaskConfigPromise =
 			$user?.role === 'admin'
 				? getTaskConfig(localStorage.token).catch((error) => {
@@ -1213,11 +1196,9 @@
 			localStorage.theme = selectedTheme;
 			applyTheme(selectedTheme);
 		}
-		languages = await languagesPromise;
 		highlighterTheme = normalizeHighlighterTheme(
 			$settings?.highlighterTheme ?? DEFAULT_HIGHLIGHTER_THEME
 		);
-		lang = $i18n.language;
 		mermaidTheme = normalizeMermaidTheme($settings?.mermaidTheme ?? DEFAULT_MERMAID_THEME);
 		notificationEnabled = $settings?.notificationEnabled ?? false;
 
@@ -1544,27 +1525,6 @@
 												<Switch bind:state={enableAutoScrollOnStreaming} />
 											</div>
 										</div>
-										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Language')}
-											</div>
-											<HaloSelect
-												bind:value={lang}
-												options={languages.map((l) => ({ value: l['code'], label: l['title'] }))}
-											/>
-										</div>
-										{#if $i18n.language === 'en-US'}
-											<div class="text-xs text-gray-400 dark:text-gray-500 pl-1">
-												Couldn't find your language?
-												<a
-													class="text-gray-500 dark:text-gray-400 font-medium underline"
-													href="https://github.com/ztx888/HaloWebUI/blob/main/docs/CONTRIBUTING.md#-translations-and-internationalization"
-													target="_blank"
-												>
-													Help us translate Halo WebUI!
-												</a>
-											</div>
-										{/if}
 										<div class="glass-item p-4">
 											<div
 												class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"

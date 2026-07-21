@@ -194,7 +194,7 @@
 			text = text.replaceAll('{{USER_AGE}}', getAge(sessionUser.date_of_birth));
 		}
 		if (text.includes('{{USER_LANGUAGE}}')) {
-			text = text.replaceAll('{{USER_LANGUAGE}}', localStorage.getItem('locale') || 'en-US');
+			text = text.replaceAll('{{USER_LANGUAGE}}', 'zh-CN');
 		}
 		if (text.includes('{{CURRENT_DATE}}')) {
 			text = text.replaceAll('{{CURRENT_DATE}}', getFormattedDate());

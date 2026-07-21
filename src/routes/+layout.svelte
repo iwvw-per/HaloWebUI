@@ -35,8 +35,7 @@
 	import 'tippy.js/dist/tippy.css';
 
 	import { WEBUI_BASE_URL, WEBUI_HOSTNAME } from '$lib/constants';
-	import i18n, { initI18n, getLanguages, changeLanguage } from '$lib/i18n';
-	import { bestMatchingLanguage } from '$lib/utils';
+	import i18n, { initI18n } from '$lib/i18n';
 	import {
 		approvePyodideConsent,
 		canUsePyodideRuntime,
@@ -602,17 +601,7 @@
 		// Initialize i18n even if we didn't get a backend config,
 		// so `/error` can show something that's not `undefined`.
 
-		await initI18n(localStorage?.locale);
-		if (!localStorage.locale) {
-			const languages = await getLanguages();
-			const browserLanguages = navigator.languages
-				? navigator.languages
-				: [navigator.language || navigator.userLanguage];
-			const lang = backendConfig?.default_locale
-				? backendConfig.default_locale
-				: bestMatchingLanguage(languages, browserLanguages, 'en-US');
-			await changeLanguage(lang);
-		}
+		await initI18n('zh-CN');
 
 		if (backendConfig) {
 			// Save Backend Status to Store

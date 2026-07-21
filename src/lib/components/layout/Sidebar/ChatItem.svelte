@@ -385,11 +385,11 @@
 				</Tooltip>
 			</div>
 		{:else}
-			<div class="flex self-center space-x-1 z-10">
+			<div class="flex h-6 w-[78px] shrink-0 items-center justify-end gap-0.5 z-10">
 				<Tooltip content={isPinned ? $i18n.t('Unpin') : $i18n.t('Pin')}>
 					<button
 						aria-label={isPinned ? $i18n.t('Unpin') : $i18n.t('Pin')}
-						class="self-center rounded-md p-0.5 text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
+						class="flex size-6 items-center justify-center rounded-md p-0 text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
 						on:click|stopPropagation={() => {
 							pinChatHandler(id);
 						}}
@@ -407,7 +407,7 @@
 				<Tooltip content={$i18n.t('Archive')}>
 					<button
 						aria-label={$i18n.t('Archive')}
-						class="self-center rounded-md p-0.5 text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
+						class="flex size-6 items-center justify-center rounded-md p-0 text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
 						on:click|stopPropagation={() => {
 							archiveChatHandler(id);
 						}}
@@ -456,7 +456,7 @@
 				>
 					<button
 						aria-label="Chat Menu"
-						class=" self-center dark:hover:text-white transition"
+						class="flex size-6 items-center justify-center rounded-md p-0 dark:hover:text-white transition"
 						on:click={() => {
 							dispatch('select');
 						}}

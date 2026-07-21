@@ -5,7 +5,6 @@
 	import Selector from './ModelSelector/Selector.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Switch from '$lib/components/common/Switch.svelte';
-	import Spinner from '$lib/components/common/Spinner.svelte';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 	import { getModelSelectionId, resolveModelSelectionId } from '$lib/utils/model-identity';
 	import { getTemporaryChatAccess } from '$lib/utils/temporary-chat';
@@ -57,12 +56,7 @@
 </script>
 
 <div class="flex min-w-0 flex-col w-full items-start">
-	{#if $modelsStatus === 'loading' && $models.length === 0}
-		<div class="flex items-center gap-2 text-xs text-gray-500 ml-1 pb-1">
-			<Spinner className="size-3.5" />
-			<span>{$i18n.t('Loading models...')}</span>
-		</div>
-	{:else if $modelsStatus === 'error' && $models.length === 0}
+	{#if $modelsStatus === 'error' && $models.length === 0}
 		<div class="text-xs text-gray-500 ml-1 pb-1">
 			<span>{$i18n.t('Failed to load models')}</span>
 			{#if $modelsError}

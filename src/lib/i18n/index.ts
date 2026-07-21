@@ -4,8 +4,8 @@ import LanguageDetector from 'i18next-browser-languagedetector';
 import type { i18n as i18nType } from 'i18next';
 import { writable } from 'svelte/store';
 
-const DEFAULT_LOCALE = 'en-US';
 const PRIMARY_CHINESE_LOCALE = 'zh-CN';
+const DEFAULT_LOCALE = PRIMARY_CHINESE_LOCALE;
 let supportedLocaleCodesPromise: Promise<Set<string>> | null = null;
 const ZH_TW_PHRASE_MAP: Array<[string, string]> = [
 	['设置', '設定'],
@@ -414,22 +414,10 @@ const createIsLoadingStore = (i18n: i18nType) => {
 	return isLoading;
 };
 
-export const initI18n = async (defaultLocale?: string | undefined) => {
-	const requestedLocale = typeof defaultLocale === 'string' ? defaultLocale.trim() : '';
-	const resolvedDefaultLocale = requestedLocale
-		? await resolveSupportedLocale(requestedLocale)
-		: DEFAULT_LOCALE;
-	const preloadLocales = Array.from(
-		new Set([resolvedDefaultLocale, DEFAULT_LOCALE, PRIMARY_CHINESE_LOCALE].filter(Boolean))
-	);
-
-	if (requestedLocale && requestedLocale !== resolvedDefaultLocale) {
-		persistResolvedLocale(resolvedDefaultLocale);
-	}
-
-	let detectionOrder = requestedLocale
-		? ['querystring', 'localStorage']
-		: ['querystring', 'localStorage', 'navigator'];
+export const initI18n = async (_defaultLocale?: string | undefined) => {
+	void _defaultLocale;
+	const resolvedDefaultLocale = PRIMARY_CHINESE_LOCALE;
+	const preloadLocales = [PRIMARY_CHINESE_LOCALE];
 
 	const loadResource = (language: string, namespace: string) =>
 		import(`./locales/${language}/${namespace}.json`);
@@ -439,9 +427,10 @@ export const initI18n = async (defaultLocale?: string | undefined) => {
 		.use(LanguageDetector)
 		.init({
 			debug: false,
+			lng: PRIMARY_CHINESE_LOCALE,
 			detection: {
-				order: detectionOrder,
-				caches: ['localStorage'],
+				order: [],
+				caches: [],
 				lookupQuerystring: 'lang',
 				lookupLocalStorage: 'locale'
 			},
@@ -470,8 +459,10 @@ export const getLanguages = async () => {
 	const languages = (await import(`./locales/languages.json`)).default;
 	return languages;
 };
-export const changeLanguage = async (lang: string) => {
-	const resolvedLocale = await resolveSupportedLocale(lang);
+export const changeLanguage = async (_lang: string) => {
+	void _lang;
+	// HaloWebUI is distributed as a Simplified Chinese-only interface.
+	const resolvedLocale = PRIMARY_CHINESE_LOCALE;
 	document.documentElement.setAttribute('lang', resolvedLocale);
 	persistResolvedLocale(resolvedLocale);
 	await i18next.changeLanguage(resolvedLocale);
