@@ -107,6 +107,8 @@
 	export let selectedModels: [''];
 	export let activeAssistant: ChatAssistantSnapshot | null = null;
 	export let onDeactivateAssistant: (() => void) | null = null;
+	export let widescreenMode: boolean | undefined = undefined;
+	$: resolvedWidescreenMode = widescreenMode ?? ($settings?.widescreenMode ?? false);
 
 	let selectedModelIds = [];
 	$: selectedModelIds =
@@ -1043,8 +1045,8 @@
 	<div class="w-full font-primary">
 		<div class=" mx-auto inset-x-0 bg-transparent flex justify-center">
 			<div
-				class="flex flex-col px-3 {($settings?.widescreenMode ?? null)
-					? 'max-w-full'
+				class="flex flex-col px-3 {resolvedWidescreenMode
+					? 'max-w-7xl'
 					: 'max-w-5xl'} w-full"
 			>
 				<div class="relative">
@@ -1145,8 +1147,8 @@
 
 		<div class="bg-transparent pb-3 pt-1">
 			<div
-				class="{($settings?.widescreenMode ?? null)
-					? 'max-w-full'
+				class="{resolvedWidescreenMode
+					? 'max-w-7xl'
 					: 'max-w-4xl'} px-2.5 mx-auto inset-x-0"
 			>
 				<div class="">

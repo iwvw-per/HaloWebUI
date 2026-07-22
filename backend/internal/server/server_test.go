@@ -504,6 +504,121 @@ func TestUnifiedChatTranslatesHaloEnvelope(t *testing.T) {
 	}
 }
 
+func TestUnifiedChatRestoresAssistantPrompt(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&upstreamBody); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+		}
+		writeJSON(response, http.StatusOK, map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+		})
+	}))
+	defer upstream.Close()
+
+	app := testApp(t)
+	app.config.OpenAIBaseURL = upstream.URL
+	token := signupToken(t, app)
+	response := authenticatedRequest(t, app, token, http.MethodPost, "/api/chat/completions", `{
+		"model":"test-model",
+		"messages":[{"role":"user","content":"hello"}],
+		"assistant":{"id":"65","name":"Linux 终端","prompt":"Act as a terminal"},
+		"stream":false
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("assistant chat failed: %d %s", response.Code, response.Body.String())
+	}
+	messages, _ := upstreamBody["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("assistant prompt was not injected: %#v", upstreamBody)
+	}
+	system, _ := messages[0].(map[string]any)
+	if system["role"] != "system" || system["content"] != "Act as a terminal" {
+		t.Fatalf("unexpected assistant system message: %#v", system)
+	}
+	if _, exists := upstreamBody["assistant"]; exists {
+		t.Fatalf("assistant UI metadata leaked upstream: %#v", upstreamBody)
+	}
+}
+
+func TestUnifiedChatRestoresSystemPromptFromParams(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_ = json.NewDecoder(request.Body).Decode(&upstreamBody)
+		writeJSON(response, http.StatusOK, map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+		})
+	}))
+	defer upstream.Close()
+
+	app := testApp(t)
+	app.config.OpenAIBaseURL = upstream.URL
+	token := signupToken(t, app)
+	response := authenticatedRequest(t, app, token, http.MethodPost, "/api/chat/completions", `{
+		"model":"test-model",
+		"messages":[{"role":"user","content":"hello"}],
+		"params":{"system":"Explicit parameter prompt"},
+		"assistant":{"id":"1","name":"Assistant","prompt":"Assistant prompt"},
+		"stream":false
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("system prompt chat failed: %d %s", response.Code, response.Body.String())
+	}
+	messages, _ := upstreamBody["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("parameter system prompt was not injected: %#v", upstreamBody)
+	}
+	system, _ := messages[0].(map[string]any)
+	if system["role"] != "system" || system["content"] != "Explicit parameter prompt" {
+		t.Fatalf("unexpected parameter system message: %#v", system)
+	}
+	if _, exists := upstreamBody["params"]; exists {
+		t.Fatalf("internal params leaked upstream: %#v", upstreamBody)
+	}
+}
+
+func TestUnifiedChatKeepsExplicitSystemPrompt(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_ = json.NewDecoder(request.Body).Decode(&upstreamBody)
+		writeJSON(response, http.StatusOK, map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+		})
+	}))
+	defer upstream.Close()
+
+	app := testApp(t)
+	app.config.OpenAIBaseURL = upstream.URL
+	token := signupToken(t, app)
+	response := authenticatedRequest(t, app, token, http.MethodPost, "/api/chat/completions", `{
+		"model":"test-model",
+		"messages":[{"role":"system","content":"Explicit prompt"},{"role":"user","content":"hello"}],
+		"assistant":{"id":"1","name":"Assistant","prompt":"Assistant prompt"},
+		"stream":false
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("assistant chat failed: %d %s", response.Code, response.Body.String())
+	}
+	messages, _ := upstreamBody["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("explicit system message was duplicated: %#v", upstreamBody)
+	}
+	system, _ := messages[0].(map[string]any)
+	if system["content"] != "Explicit prompt" {
+		t.Fatalf("explicit system prompt was replaced: %#v", system)
+	}
+}
+
+func TestTaskModelIDDecodesCanonicalSelectionID(t *testing.T) {
+	selectionID := "modelref::gemini::personal::idx:0::gemini-3.1-flash-lite"
+	if got := taskModelID(selectionID); got != "gemini-3.1-flash-lite" {
+		t.Fatalf("task model id was not decoded: %q", got)
+	}
+	if got := taskModelID(" plain-model "); got != "plain-model" {
+		t.Fatalf("plain task model id changed: %q", got)
+	}
+}
+
 func TestOpenAICompatibilityConfigPersistsPerUser(t *testing.T) {
 	app := testApp(t)
 	token := signupToken(t, app)
@@ -703,6 +818,61 @@ func TestExtendedChatLifecycle(t *testing.T) {
 	cloned := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/"+chatID+"/clone", `{"title":"Roadmap copy"}`)
 	if cloned["id"] == chatID || cloned["title"] != "Roadmap copy" {
 		t.Fatalf("unexpected clone response: %#v", cloned)
+	}
+}
+
+func TestArchiveAllChatsArchivesEveryChat(t *testing.T) {
+	app := testApp(t)
+	token := signupToken(t, app)
+	for index := 0; index < 201; index++ {
+		created := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/new", fmt.Sprintf(`{"chat":{"title":"Chat %d","messages":[]}}`, index))
+		if created["id"] == "" {
+			t.Fatalf("chat %d was not created: %#v", index, created)
+		}
+	}
+	response := authenticatedRequest(t, app, token, http.MethodPost, "/api/v1/chats/archive/all", "")
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "true" {
+		t.Fatalf("archive all failed: %d %s", response.Code, response.Body.String())
+	}
+	archived := authenticatedRequest(t, app, token, http.MethodGet, "/api/v1/chats/archived?page=4", "")
+	if archived.Code != http.StatusOK {
+		t.Fatalf("archived chats failed: %d %s", archived.Code, archived.Body.String())
+	}
+	var chats []map[string]any
+	if err := json.NewDecoder(archived.Body).Decode(&chats); err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 21 {
+		t.Fatalf("expected all 201 chats to be archived, page 4 returned %d", len(chats))
+	}
+}
+
+func TestArchivedChatDisappearsFromActiveLists(t *testing.T) {
+	app := testApp(t)
+	token := signupToken(t, app)
+	created := authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/new", `{"chat":{"title":"Archive me","messages":[]}}`)
+	chatID, _ := created["id"].(string)
+	authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/"+chatID+"/pin", "")
+	authenticatedJSON(t, app, token, http.MethodPost, "/api/v1/chats/"+chatID+"/archive", "")
+
+	for _, path := range []string{"/api/v1/chats/", "/api/v1/chats/pinned", "/api/v1/chats/search?text=Archive"} {
+		response := authenticatedRequest(t, app, token, http.MethodGet, path, "")
+		var chats []map[string]any
+		if err := json.NewDecoder(response.Body).Decode(&chats); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK || len(chats) != 0 {
+			t.Fatalf("%s still returned archived chat: %d %s", path, response.Code, response.Body.String())
+		}
+	}
+
+	response := authenticatedRequest(t, app, token, http.MethodGet, "/api/v1/chats/archived", "")
+	var archived []map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&archived); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || len(archived) != 1 || archived[0]["id"] != chatID {
+		t.Fatalf("archived list did not return chat: %d %s", response.Code, response.Body.String())
 	}
 }
 

@@ -61,6 +61,7 @@
 
 	export let atSelectedModel: Model | undefined;
 	export let selectedModels: [''];
+	export let widescreenMode = false;
 	export let activeAssistant: ChatAssistantSnapshot | null = null;
 	export let onActivateAssistant: ((assistant: ChatAssistantSnapshot) => void) | null = null;
 	export let onDeactivateAssistant: (() => void) | null = null;
@@ -255,7 +256,8 @@
 										src={model?.info?.meta?.profile_image_url ??
 											model?.meta?.profile_image_url ??
 											`${WEBUI_BASE_URL}/static/favicon.png`}
-										className="size-14 @sm:size-16 rounded-2xl border-2 border-white dark:border-gray-800 shadow-lg"
+										bare
+										className="size-14 @sm:size-16"
 										alt="logo"
 									/>
 								</button>
@@ -318,6 +320,7 @@
 				<MessageInput
 					{history}
 					{selectedModels}
+					{widescreenMode}
 					{activeAssistant}
 					bind:files
 					bind:prompt

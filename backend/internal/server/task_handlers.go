@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/iwvw-per/HaloWebUI/backend/internal/auth"
@@ -122,6 +123,7 @@ func (a *App) handleTaskCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 	var model string
 	_ = json.Unmarshal(form["model"], &model)
+	model = taskModelID(model)
 	if strings.TrimSpace(model) == "" {
 		writeError(w, http.StatusBadRequest, "model is required")
 		return
@@ -184,6 +186,16 @@ func (a *App) handleTaskCompletion(w http.ResponseWriter, r *http.Request) {
 	a.proxyProvider(w, request, baseURL, apiKey, "/chat/completions")
 }
 
+func taskModelID(value string) string {
+	parts := strings.Split(value, "::")
+	if len(parts) == 5 && parts[0] == "modelref" {
+		if decoded, err := url.QueryUnescape(parts[4]); err == nil && strings.TrimSpace(decoded) != "" {
+			return decoded
+		}
+	}
+	return strings.TrimSpace(value)
+}
+
 func taskName(path string) string {
 	parts := splitPath(strings.TrimPrefix(path, "/api/v1/tasks/"))
 	if len(parts) == 0 {
@@ -214,7 +226,9 @@ func normalizeTaskMessages(raw json.RawMessage) []map[string]any {
 
 func taskInstruction(task string, form map[string]json.RawMessage, userName string, config map[string]any) string {
 	var prompt string
-	_ = json.Unmarshal(form["prompt"], &prompt)
+	if form != nil {
+		_ = json.Unmarshal(form["prompt"], &prompt)
+	}
 	if templateKey := map[string]string{
 		"title": "TITLE_GENERATION_PROMPT_TEMPLATE", "tags": "TAGS_GENERATION_PROMPT_TEMPLATE",
 		"queries": "QUERY_GENERATION_PROMPT_TEMPLATE", "image_prompt": "IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE",

@@ -99,7 +99,7 @@
 	import { getFunctionPipeRootId } from '$lib/utils/image-generation';
 	import { isDedicatedImageGenerationModel } from '$lib/utils/model-capabilities';
 	import { resolveModelBuiltinWebSearchState } from '$lib/utils/model-web-search-preference';
-	import { applyUserSettingsSnapshot } from '$lib/utils/user-settings';
+	import { applyUserSettingsSnapshot, saveUserSettingsPatch } from '$lib/utils/user-settings';
 	import {
 		buildWebSearchModeOptions,
 		resolveConfiguredDefaultWebSearchMode
@@ -108,7 +108,6 @@
 
 	import { generateChatCompletion } from '$lib/apis/ollama';
 	import {
-		addTagById,
 		branchChatById,
 		createNewChat,
 		deleteTagById,
@@ -117,7 +116,6 @@
 		getChatById,
 		getChatContextById,
 		getChatList,
-		updateChatTitleById,
 		updateChatById,
 		updateChatComposerStateById
 	} from '$lib/apis/chats';
@@ -130,9 +128,6 @@
 	import { getAndUpdateUserLocation, getUserSettings } from '$lib/apis/users';
 	import {
 		chatCompleted,
-		generateTitle,
-		generateTags,
-		generateFollowUps,
 		generateQueries,
 		chatAction,
 		generateMoACompletion,
@@ -525,6 +520,65 @@
 	const MULTI_MODEL_DISCUSSION_MAX_ROUNDS = 5;
 	let multiModelDiscussionEnabled = false;
 	let activeAssistant: ChatAssistantSnapshot | null = null;
+	let automaticWidescreenActive = false;
+	let widescreenModeOverride: boolean | null = null;
+	let widescreenMode = false;
+	let widescreenModeSaving = false;
+
+	$: multiModelModeActive =
+		multiModelDiscussionEnabled ||
+		selectedModels.filter((modelId) => `${modelId ?? ''}`.trim().length > 0).length > 1;
+
+	$: {
+		if (multiModelModeActive && !automaticWidescreenActive) {
+			automaticWidescreenActive = true;
+			widescreenModeOverride = true;
+		} else if (!multiModelModeActive && automaticWidescreenActive) {
+			automaticWidescreenActive = false;
+			widescreenModeOverride = null;
+		}
+	}
+
+	$: widescreenMode = widescreenModeOverride ?? ($settings?.widescreenMode ?? false);
+
+	const toggleWidescreenMode = async () => {
+		const nextMode = !widescreenMode;
+
+		if (automaticWidescreenActive) {
+			widescreenModeOverride = nextMode;
+			return;
+		}
+
+		if (widescreenModeSaving) {
+			return;
+		}
+
+		const previousMode = $settings?.widescreenMode ?? false;
+		settings.update((currentSettings) => ({
+			...(currentSettings ?? {}),
+			widescreenMode: nextMode
+		}));
+
+		if (!localStorage.token) {
+			return;
+		}
+
+		widescreenModeSaving = true;
+		try {
+			await saveUserSettingsPatch(localStorage.token, { widescreenMode: nextMode });
+		} catch (error) {
+			console.error('Failed to save widescreen mode:', error);
+			if ((error as { status?: number })?.status !== 409) {
+				settings.update((currentSettings) => ({
+					...(currentSettings ?? {}),
+					widescreenMode: previousMode
+				}));
+			}
+			toast.error($i18n.t('Failed to update settings'));
+		} finally {
+			widescreenModeSaving = false;
+		}
+	};
 
 	const getMultiModelDiscussionRounds = () => {
 		const parsed = Number($settings?.multiModelDiscussionRounds ?? MULTI_MODEL_DISCUSSION_DEFAULT_ROUNDS);
@@ -1159,6 +1213,17 @@
 			system: assistant.prompt
 		};
 		persistChatComposerState();
+	};
+
+	const restoreAssistantSystemPrompt = () => {
+		const prompt = activeAssistant?.prompt?.trim();
+		if (!prompt) {
+			return;
+		}
+
+		if (params?.system?.trim() !== prompt) {
+			params = { ...params, system: activeAssistant.prompt };
+		}
 	};
 
 	const deactivateAssistant = () => {
@@ -3535,6 +3600,7 @@
 
 				params = chatContent?.params ?? {};
 				activeAssistant = toChatAssistantSnapshot(chatContent?.assistant ?? null);
+				restoreAssistantSystemPrompt();
 				chatFiles = chatContent?.files ?? [];
 				hasPersistedComposerState = false;
 				applyComposerState(chatContent?.composer_state, { markPersisted: true });
@@ -4008,7 +4074,12 @@
 			model_item: getModelById(modelId),
 			chat_id: chatId,
 			session_id: $socket?.id,
-			id: responseMessageId
+			id: responseMessageId,
+			background_tasks: {
+				title_generation: $settings?.title?.auto ?? true,
+				tags_generation: $settings?.autoTags ?? true,
+				follow_up_generation: $settings?.autoFollowUps ?? true
+			}
 		}).catch(async (error) => {
 			const resolutionDetail = getModelResolutionDetail(error);
 			if (resolutionDetail) {
@@ -4052,25 +4123,12 @@
 				notifyHistoryUpdated();
 			}
 		}
+		for (const taskName of ['title', 'tags', 'follow_ups']) {
+			const detail = res?.[`${taskName}_error`];
+			if (detail) console.error(`Chat background task failed: ${taskName}`, detail);
+		}
 
 		if (!$temporaryChatEnabled && chatId && responseMessage?.role === 'assistant') {
-			const taskMessages = messages.filter((item) => item.role === 'user' || item.role === 'assistant');
-			const taskModel = modelId;
-			const jobs: Promise<unknown>[] = [];
-			if ($settings?.title?.auto ?? true) {
-				jobs.push(generateTitle(localStorage.token, taskModel, taskMessages, chatId).then((title) => updateChatTitleById(localStorage.token, chatId, title)));
-			}
-			if ($settings?.autoTags ?? true) {
-				jobs.push(generateTags(localStorage.token, taskModel, JSON.stringify(taskMessages), chatId).then(async (tagNames) => {
-					for (const tagName of tagNames as string[]) await addTagById(localStorage.token, chatId, tagName);
-				}));
-			}
-			if ($settings?.autoFollowUps ?? true) {
-				jobs.push(generateFollowUps(localStorage.token, taskModel, taskMessages, chatId).then((followUps) => {
-					history.messages[responseMessageId].followUps = followUps;
-				}));
-			}
-			await Promise.allSettled(jobs);
 			if ($chatId === chatId) {
 				chat = await getChatById(localStorage.token, chatId);
 				chatTitle.set(chat?.title ?? 'New Chat');
@@ -5194,9 +5252,17 @@
 			}))
 			.filter((message) => message.content?.trim() || message.role === 'user');
 		try {
+			const effectiveSystemPrompt = getEffectiveChatSystemPrompt();
 			const [response] = await chatCompletion(
 				localStorage.token,
-				{ model: getModelRequestId(model), messages, stream: true },
+				{
+					model: getModelRequestId(model),
+					messages: effectiveSystemPrompt
+						? [{ role: 'system', content: effectiveSystemPrompt }, ...messages]
+						: messages,
+					stream: true,
+					assistant: activeAssistant ?? undefined
+				},
 				`${WEBUI_BASE_URL}/api`
 			);
 			if (!response || !response.ok || !response.body) {
@@ -5222,6 +5288,14 @@
 			responseMessage.done = true;
 			history.messages[responseMessageId] = responseMessage;
 			await saveChatHandler(_chatId, history);
+			if (!$temporaryChatEnabled && _chatId && !responseMessage.error) {
+				await chatCompletedHandler(
+					_chatId,
+					responseMessage.model ?? model,
+					responseMessageId,
+					createMessagesList(history, responseMessageId)
+				);
+			}
 		} catch (error) {
 			await handleOpenAIError(error, responseMessage);
 		} finally {
@@ -5404,6 +5478,7 @@
 				stream: stream,
 				model: getModelRequestId(model),
 				messages: messages,
+				assistant: activeAssistant ?? undefined,
 				...(options.discussion ? { discussion: options.discussion } : {}),
 				params: {
 					...$settings?.params,
@@ -6258,6 +6333,9 @@
 					bind:selectedModels
 					bind:multiModelDiscussionEnabled
 					maxDiscussionModels={MULTI_MODEL_DISCUSSION_MAX_MODELS}
+					{widescreenMode}
+					{widescreenModeSaving}
+					{toggleWidescreenMode}
 					shareEnabled={!!history.currentId}
 				/>
 
@@ -6278,6 +6356,7 @@
 									bind:history
 									bind:autoScroll
 									bind:prompt
+									{widescreenMode}
 									{selectedModels}
 									{atSelectedModel}
 									{sendPrompt}
@@ -6323,6 +6402,7 @@
 								{history}
 								{taskIds}
 								{selectedModels}
+								{widescreenMode}
 								bind:files
 								bind:prompt
 								bind:autoScroll
@@ -6381,6 +6461,7 @@
 							<Placeholder
 								{history}
 								{selectedModels}
+								{widescreenMode}
 								bind:files
 								bind:prompt
 								bind:autoScroll

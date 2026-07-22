@@ -3,7 +3,7 @@
 	"version": "0.0.1",
 	"private": true,
 	"scripts": {
-		"dev": "npm run sync:static && vite dev --host",
+		"dev": "node scripts/dev.js",
 		"dev:5050": "npm run sync:static && vite dev --port 5050",
 		"dev:full": "npm run pyodide:fetch && ENABLE_PYODIDE=true npm run sync:static && ENABLE_PYODIDE=true vite dev --host",
 		"build": "npm run sync:static && vite build",
@@ -99,6 +99,7 @@
 		"jszip": "^3.10.1",
 		"katex": "^0.16.21",
 		"kokoro-js": "^1.1.1",
+		"lowlight": "^3.3.0",
 		"lucide-svelte": "^0.575.0",
 		"mammoth": "^1.11.0",
 		"marked": "^9.1.0",

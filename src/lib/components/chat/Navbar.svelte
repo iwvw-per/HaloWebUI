@@ -28,6 +28,7 @@
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
 	import MenuLines from '../icons/MenuLines.svelte';
 	import AdjustmentsHorizontal from '../icons/AdjustmentsHorizontal.svelte';
+	import { Maximize2, Minimize2 } from 'lucide-svelte';
 
 	import PencilSquare from '../icons/PencilSquare.svelte';
 	import Banner from '../common/Banner.svelte';
@@ -43,6 +44,9 @@
 	export let multiModelDiscussionEnabled = false;
 	export let maxDiscussionModels = 5;
 	export let showModelSelector = true;
+	export let widescreenMode = false;
+	export let widescreenModeSaving = false;
+	export let toggleWidescreenMode: () => void = () => {};
 
 	let showShareChatModal = false;
 	let showDownloadChatModal = false;
@@ -126,6 +130,26 @@
 							</button>
 						</Menu>
 					{/if}
+
+					<Tooltip
+						content={`${$i18n.t('Widescreen Mode')}: ${$i18n.t(widescreenMode ? 'On' : 'Off')}`}
+					>
+						<button
+							class="{$mobile ? 'hidden' : 'flex'} cursor-pointer px-2 py-2 rounded-xl transition disabled:cursor-wait disabled:opacity-50 {widescreenMode
+								? 'bg-gray-100 text-gray-800 dark:bg-gray-850 dark:text-gray-200'
+								: 'hover:bg-gray-50 dark:hover:bg-gray-850'}"
+							on:click={toggleWidescreenMode}
+							disabled={widescreenModeSaving}
+							aria-label={$i18n.t('Widescreen Mode')}
+							aria-pressed={widescreenMode}
+						>
+							{#if widescreenMode}
+								<Minimize2 class="size-5" strokeWidth={1.7} />
+							{:else}
+								<Maximize2 class="size-5" strokeWidth={1.7} />
+							{/if}
+						</button>
+					</Tooltip>
 
 					<Tooltip content={$i18n.t('Controls')}>
 						<button

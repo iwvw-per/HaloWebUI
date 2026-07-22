@@ -147,7 +147,7 @@
 			<div class=" flex flex-col w-full flex-auto overflow-auto h-0" id="messages-container">
 				<div
 					class="pt-5 px-2 w-full {($settings?.widescreenMode ?? null)
-						? 'max-w-full'
+						? 'max-w-7xl'
 						: 'max-w-5xl'} mx-auto"
 				>
 					<div class="px-3">

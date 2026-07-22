@@ -5,7 +5,6 @@
 	const dispatch = createEventDispatcher();
 	const i18n = getContext('i18n');
 
-	import { settings } from '$lib/stores';
 	import { copyToClipboard } from '$lib/utils';
 
 	import MultiResponseMessages from './MultiResponseMessages.svelte';
@@ -43,11 +42,12 @@
 	export let readOnly = false;
 	export let forceExpandContent = false;
 	export let deferOffscreenRendering = false;
+	export let widescreenMode = false;
 </script>
 
 <div
-	class="flex flex-col justify-between px-4 sm:px-8 mb-3 w-full {($settings?.widescreenMode ?? null)
-		? 'max-w-full'
+	class="flex flex-col justify-between px-4 sm:px-8 mb-3 w-full {widescreenMode
+		? 'max-w-7xl'
 		: 'max-w-5xl'} mx-auto rounded-lg group"
 	style={deferOffscreenRendering
 		? 'content-visibility: auto; contain-intrinsic-size: 0 900px;'

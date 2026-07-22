@@ -115,6 +115,7 @@ export const connectionsConfigCache = writable(null);
 
 export const showSidebar = writable(false);
 export const showArchivedChats = writable(false);
+export const openChatMenuId = writable<string | null>(null);
 export const showChangelog = writable(false);
 
 export const showControls = writable(false);
@@ -123,9 +124,11 @@ export const overviewFocusedMessageId: Writable<string | null> = writable(null);
 export const showArtifacts = writable(false);
 export const showCallOverlay = writable(false);
 export const artifactAutoOpenDismissedMessageId: Writable<string | null> = writable(null);
-export const artifactPreviewTarget: Writable<
-	{ messageId?: string; type?: 'svg' | 'iframe'; content?: string } | null
-> = writable(null);
+export const artifactPreviewTarget: Writable<{
+	messageId?: string;
+	type?: 'svg' | 'iframe';
+	content?: string;
+} | null> = writable(null);
 
 export const temporaryChatEnabled = writable(false);
 export const scrollPaginationEnabled = writable(false);

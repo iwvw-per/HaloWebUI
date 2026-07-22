@@ -97,7 +97,8 @@ func (a *App) handleChatSearch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{Search: r.URL.Query().Get("text")}, pageQuery(r, 1), 60)
+	archived := false
+	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{Archived: &archived, Search: r.URL.Query().Get("text")}, pageQuery(r, 1), 60)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to search chats")
 		return
@@ -118,7 +119,8 @@ func (a *App) handleChatFolderList(w http.ResponseWriter, r *http.Request) {
 	if folder == "" {
 		folder = strings.TrimPrefix(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/chats/folder/"), "/list"), "/")
 	}
-	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{FolderID: &folder}, pageQuery(r, 1), 60)
+	archived := false
+	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{Archived: &archived, FolderID: &folder}, pageQuery(r, 1), 60)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list folder chats")
 		return
@@ -135,7 +137,8 @@ func (a *App) handleChatAssistantList(w http.ResponseWriter, r *http.Request) {
 	if assistant == "" {
 		assistant = strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/chats/assistant/"), "/list")
 	}
-	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{Assistant: &assistant}, pageQuery(r, 1), 60)
+	archived := false
+	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{Archived: &archived, Assistant: &assistant}, pageQuery(r, 1), 60)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list assistant chats")
 		return
@@ -149,7 +152,8 @@ func (a *App) handlePinnedChats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pinned := true
-	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{Pinned: &pinned}, 1, 200)
+	archived := false
+	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{Archived: &archived, Pinned: &pinned}, 1, 200)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list pinned chats")
 		return
@@ -249,16 +253,9 @@ func (a *App) handleArchiveAllChats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	chats, err := a.store.ListChatsWithFilter(r.Context(), user.ID, store.ChatFilter{}, 1, 200)
-	if err != nil {
+	if err := a.store.ArchiveAllChats(r.Context(), user.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to archive chats")
 		return
-	}
-	for _, chat := range chats {
-		if _, err := a.store.SetChatField(r.Context(), chat.ID, "archived", true); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to archive chats")
-			return
-		}
 	}
 	writeJSON(w, http.StatusOK, true)
 }

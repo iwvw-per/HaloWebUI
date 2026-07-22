@@ -26,7 +26,8 @@
 		showSidebar,
 		currentChatPage,
 		tags,
-		activeChatIds
+		activeChatIds,
+		openChatMenuId
 	} from '$lib/stores';
 
 	import ChatMenu from './ChatMenu.svelte';
@@ -85,16 +86,25 @@
 					: 'group-hover:bg-gray-100 dark:group-hover:bg-gray-850';
 
 	$: titleClass = isFolderVariant
-		? 'text-left self-center overflow-hidden w-full h-[19px] leading-5'
-		: 'text-left self-center overflow-hidden w-full h-[20px]';
+		? 'text-left self-center min-w-0 flex-1 overflow-hidden text-ellipsis pr-[78px] h-[19px] leading-5'
+		: 'text-left self-center min-w-0 flex-1 overflow-hidden text-ellipsis pr-[78px] h-[20px]';
 
 	$: menuOffsetClass = isFolderVariant ? 'top-[4px]' : 'top-[6px]';
 
 	let mouseOver = false;
 
 	let showShareChatModal = false;
+	let showDeleteConfirm = false;
 	let confirmEdit = false;
 	let showChatMenu = false;
+	let showChatContextMenu = false;
+	const menuInstanceId = `${id}:${Math.random().toString(36).slice(2)}`;
+	const dropdownMenuInstanceId = `${menuInstanceId}:dropdown`;
+	const contextMenuInstanceId = `${menuInstanceId}:context`;
+	$: if ($openChatMenuId !== dropdownMenuInstanceId && showChatMenu) showChatMenu = false;
+	$: if ($openChatMenuId !== contextMenuInstanceId && showChatContextMenu) {
+		showChatContextMenu = false;
+	}
 
 	let chatTitle = title;
 
@@ -205,13 +215,38 @@
 		dispatch('change');
 	};
 
-	const focusEdit = async (node: HTMLInputElement) => {
+	const focusEdit = (node: HTMLInputElement) => {
 		node.focus();
 	};
 
-	let itemElement;
+	const cloneCurrentChat = () => cloneChatHandler(id);
+	const archiveCurrentChat = () => archiveChatHandler(id);
+	const shareCurrentChat = () => {
+		showShareChatModal = true;
+	};
+	const requestDeleteChat = () => {
+		showDeleteConfirm = true;
+	};
+	const renameCurrentChat = async () => {
+		chatTitle = title;
+		confirmEdit = true;
 
-	let showDeleteConfirm = false;
+		await tick();
+		document.getElementById(`chat-title-input-${id}`)?.focus();
+	};
+	const closeMenu = (instanceId: string) => {
+		openChatMenuId.update((openId) => (openId === instanceId ? null : openId));
+		dispatch('unselect');
+	};
+	const handleMenuOpenChange = (open: boolean, instanceId: string) => {
+		if (open) {
+			openChatMenuId.set(instanceId);
+		} else {
+			openChatMenuId.update((openId) => (openId === instanceId ? null : openId));
+		}
+	};
+
+	let itemElement;
 
 	const chatTitleInputKeydownHandler = (e) => {
 		if (e.key === 'Enter') {
@@ -253,53 +288,69 @@
 			/>
 		</div>
 	{:else}
-		<a
-			class="{itemShellClass} {itemStateClass} whitespace-nowrap text-ellipsis"
-			href="/c/{id}"
-			on:click={() => {
-				dispatch('select');
-
-				if ($selectedAssistantScene && $selectedAssistantScene.id !== assistantId) {
-					selectedAssistantScene.set(null);
-				}
-
-				if ($mobile) {
-					showSidebar.set(false);
-				}
+		<ChatMenu
+			mode="context"
+			bind:show={showChatContextMenu}
+			chatId={id}
+			currentFolderId={folderId}
+			{folderOptions}
+			cloneChatHandler={cloneCurrentChat}
+			shareHandler={shareCurrentChat}
+			archiveChatHandler={archiveCurrentChat}
+			renameHandler={renameCurrentChat}
+			deleteHandler={requestDeleteChat}
+			onClose={() => closeMenu(contextMenuInstanceId)}
+			on:change={() => dispatch('change')}
+			on:open-change={(event) => {
+				handleMenuOpenChange(event.detail, contextMenuInstanceId);
 			}}
-			on:dblclick={() => {
-				chatTitle = title;
-				confirmEdit = true;
-			}}
-			on:contextmenu|preventDefault={() => {
-				dispatch('select');
-				showChatMenu = true;
-			}}
-			on:mouseenter={(e) => {
-				mouseOver = true;
-			}}
-			on:mouseleave={(e) => {
-				mouseOver = false;
-			}}
-			on:focus={(e) => {}}
-			draggable="false"
 		>
-			<div class=" flex self-center flex-1 w-full">
-				<div dir="auto" class={titleClass}>
-					{title}
-				</div>
-				{#if $activeChatIds.has(id)}
-					<div class="flex-shrink-0 self-center ml-1">
-						<span class="relative flex h-2 w-2">
-							<span
-								class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"
-							></span>
-							<span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-						</span>
+			<a
+				class="{itemShellClass} {itemStateClass} whitespace-nowrap text-ellipsis"
+				href="/c/{id}"
+				on:click={() => {
+					dispatch('select');
+
+					if ($selectedAssistantScene && $selectedAssistantScene.id !== assistantId) {
+						selectedAssistantScene.set(null);
+					}
+
+					if ($mobile) {
+						showSidebar.set(false);
+					}
+				}}
+				on:dblclick={() => {
+					chatTitle = title;
+					confirmEdit = true;
+				}}
+				on:contextmenu={() => {
+					dispatch('select');
+				}}
+				on:mouseenter={() => {
+					mouseOver = true;
+				}}
+				on:mouseleave={() => {
+					mouseOver = false;
+				}}
+				draggable="false"
+			>
+				<div class="flex min-w-0 self-center flex-1 w-full">
+					<div dir="auto" class={titleClass}>
+						{title}
 					</div>
-				{/if}
-			</div>
-		</a>
+					{#if $activeChatIds.has(id)}
+						<div class="flex-shrink-0 self-center ml-1">
+							<span class="relative flex h-2 w-2">
+								<span
+									class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"
+								></span>
+								<span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+							</span>
+						</div>
+					{/if}
+				</div>
+			</a>
+		</ChatMenu>
 	{/if}
 
 	<!-- svelte-ignore a11y-no-static-element-interactions -->
@@ -345,7 +396,7 @@
 			</div>
 		{:else if shiftKey && mouseOver}
 			<div class=" flex items-center self-center space-x-1.5">
-				<Tooltip content={$i18n.t('Archive')} className="flex items-center">
+				<div class="flex items-center">
 					<button
 						class=" self-center dark:hover:text-white transition"
 						on:click={() => {
@@ -355,9 +406,9 @@
 					>
 						<ArchiveBox className="size-4  translate-y-[0.5px]" strokeWidth="2" />
 					</button>
-				</Tooltip>
+				</div>
 
-				<Tooltip content={$i18n.t('Delete')}>
+				<div class="flex items-center">
 					<button
 						class=" self-center dark:hover:text-white transition"
 						on:click={() => {
@@ -367,11 +418,11 @@
 					>
 						<GarbageBin strokeWidth="2" />
 					</button>
-				</Tooltip>
+				</div>
 			</div>
 		{:else}
 			<div class="flex h-6 w-[78px] shrink-0 items-center justify-end gap-0.5 z-10">
-				<Tooltip content={isPinned ? $i18n.t('Unpin') : $i18n.t('Pin')}>
+				<div class="flex items-center">
 					<button
 						aria-label={isPinned ? $i18n.t('Unpin') : $i18n.t('Pin')}
 						class="flex size-6 items-center justify-center rounded-md p-0 text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
@@ -387,9 +438,9 @@
 							style={`transform: rotate(${isPinned ? 40 : 0}deg); transform-origin: center;`}
 						/>
 					</button>
-				</Tooltip>
+				</div>
 
-				<Tooltip content={$i18n.t('Archive')}>
+				<div class="flex items-center">
 					<button
 						aria-label={$i18n.t('Archive')}
 						class="flex size-6 items-center justify-center rounded-md p-0 text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
@@ -400,40 +451,24 @@
 					>
 						<ArchiveBox className="size-4 translate-y-[0.5px]" strokeWidth="2" />
 					</button>
-				</Tooltip>
+				</div>
 
 				<ChatMenu
 					bind:show={showChatMenu}
 					chatId={id}
 					currentFolderId={folderId}
 					{folderOptions}
-					cloneChatHandler={() => {
-						cloneChatHandler(id);
-					}}
-					shareHandler={() => {
-						showShareChatModal = true;
-					}}
-					archiveChatHandler={() => {
-						archiveChatHandler(id);
-					}}
-					renameHandler={async () => {
-						chatTitle = title;
-						confirmEdit = true;
-
-						await tick();
-						const input = document.getElementById(`chat-title-input-${id}`);
-						if (input) {
-							input.focus();
-						}
-					}}
-					deleteHandler={() => {
-						showDeleteConfirm = true;
-					}}
-					onClose={() => {
-						dispatch('unselect');
-					}}
+					cloneChatHandler={cloneCurrentChat}
+					shareHandler={shareCurrentChat}
+					archiveChatHandler={archiveCurrentChat}
+					renameHandler={renameCurrentChat}
+					deleteHandler={requestDeleteChat}
+					onClose={() => closeMenu(dropdownMenuInstanceId)}
 					on:change={async () => {
 						dispatch('change');
+					}}
+					on:open-change={(event) => {
+						handleMenuOpenChange(event.detail, dropdownMenuInstanceId);
 					}}
 					on:tag={(e) => {
 						dispatch('tag', e.detail);

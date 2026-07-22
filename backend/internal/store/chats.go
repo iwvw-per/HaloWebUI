@@ -227,6 +227,11 @@ func (s *Store) DeleteAllChats(ctx context.Context, userID string) error {
 	return err
 }
 
+func (s *Store) ArchiveAllChats(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chat SET archived = 1, updated_at = ? WHERE user_id = ?`, time.Now().UnixMilli(), userID)
+	return err
+}
+
 func (s *Store) UpdateChat(ctx context.Context, chat Chat) (Chat, error) {
 	chat.UpdatedAt = time.Now().UnixMilli()
 	result, err := s.db.ExecContext(ctx, `UPDATE chat SET

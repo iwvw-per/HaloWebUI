@@ -33,6 +33,8 @@
 	export let history = {};
 	export let selectedModels;
 	export let atSelectedModel;
+	export let widescreenMode: boolean | undefined = undefined;
+	$: resolvedWidescreenMode = widescreenMode ?? ($settings?.widescreenMode ?? false);
 
 	let messages = [];
 
@@ -483,6 +485,7 @@
 							{triggerScroll}
 							{readOnly}
 							{forceExpandContent}
+							widescreenMode={resolvedWidescreenMode}
 							deferOffscreenRendering={deferOffscreenRendering && !showAllMessages}
 						/>
 					{/each}

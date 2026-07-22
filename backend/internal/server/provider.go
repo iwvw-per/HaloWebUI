@@ -65,6 +65,16 @@ func (a *App) proxyUnifiedChat(response http.ResponseWriter, request *http.Reque
 	if raw := envelope["params"]; len(raw) > 0 {
 		_ = json.Unmarshal(raw, &params)
 	}
+	systemPrompt := rawString(params["system"])
+	if systemPrompt == "" {
+		systemPrompt = assistantSystemPrompt(envelope["assistant"])
+	}
+	if systemPrompt != "" {
+		messages := appendSystemMessageIfMissing(envelope["messages"], systemPrompt)
+		if messages != nil {
+			translated["messages"] = messages
+		}
+	}
 	for _, field := range []string{
 		"temperature", "top_p", "max_tokens", "max_completion_tokens", "stop",
 		"presence_penalty", "frequency_penalty", "seed", "reasoning_effort",
@@ -90,13 +100,74 @@ func (a *App) proxyUnifiedChat(response http.ResponseWriter, request *http.Reque
 	a.proxyProvider(response, request, baseURL, apiKey, "/chat/completions")
 }
 
+func assistantSystemPrompt(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var assistant struct {
+		Prompt string `json:"prompt"`
+	}
+	if json.Unmarshal(raw, &assistant) != nil {
+		return ""
+	}
+	return strings.TrimSpace(assistant.Prompt)
+}
+
+func rawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func appendSystemMessageIfMissing(raw json.RawMessage, prompt string) json.RawMessage {
+	var messages []json.RawMessage
+	if json.Unmarshal(raw, &messages) != nil || len(messages) == 0 {
+		return nil
+	}
+	for _, message := range messages {
+		var header struct {
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(message, &header) == nil && (header.Role == "system" || header.Role == "developer") {
+			return raw
+		}
+	}
+	system, err := json.Marshal(map[string]string{"role": "system", "content": prompt})
+	if err != nil {
+		return nil
+	}
+	return mustJSONRaw(append([]json.RawMessage{system}, messages...))
+}
+
+func mustJSONRaw(value any) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
 func (a *App) handleChatCompleted(response http.ResponseWriter, request *http.Request) {
-	if _, ok := a.requireUser(response, request); !ok {
+	user, ok := a.requireUser(response, request)
+	if !ok {
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxProviderRequestBytes)
-	_, _ = io.Copy(io.Discard, request.Body)
-	writeJSON(response, http.StatusOK, map[string]bool{"status": true})
+	var form chatCompletedForm
+	if !decodeJSON(response, request, &form) {
+		return
+	}
+	result, err := a.runChatEnhancements(request, user, form)
+	if err != nil {
+		writeError(response, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (a *App) handleOpenAIModels(response http.ResponseWriter, request *http.Request) {

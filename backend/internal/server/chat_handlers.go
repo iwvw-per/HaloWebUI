@@ -106,6 +106,9 @@ func (a *App) handleChatList(response http.ResponseWriter, request *http.Request
 	if request.URL.Path == "/api/v1/chats/archived" || request.URL.Path == "/api/v1/chats/all/archived" {
 		value := true
 		archived = &value
+	} else {
+		value := false
+		archived = &value
 	}
 	chats, err := a.store.ListChats(request.Context(), user.ID, archived, page, 60)
 	if err != nil {
