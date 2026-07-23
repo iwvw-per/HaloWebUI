@@ -2,7 +2,7 @@
 	import { onMount, getContext, setContext } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { toast } from 'svelte-sonner';
 
 	import MenuLines from '$lib/components/icons/MenuLines.svelte';
@@ -57,6 +57,7 @@
 	});
 
 	let currentPath = '';
+	let pendingPath = '';
 	let activeLinks = {
 		general: false,
 		userDefaults: false,
@@ -77,7 +78,30 @@
 		haloclaw: false,
 		externalApi: false
 	};
-	$: currentPath = $page.url.pathname;
+	$: currentPath = pendingPath || $page.url.pathname;
+
+	const markPendingPath = (event: Event) => {
+		const target = event.target;
+		if (!(target instanceof Element)) return;
+		const link = target.closest<HTMLAnchorElement>('a[href^="/settings"]');
+		if (!link || link.target || event.defaultPrevented) return;
+		pendingPath = link.pathname;
+	};
+
+	const trackSettingsNavigation = (node: HTMLElement) => {
+		node.addEventListener('pointerdown', markPendingPath);
+		node.addEventListener('click', markPendingPath);
+		return {
+			destroy() {
+				node.removeEventListener('pointerdown', markPendingPath);
+				node.removeEventListener('click', markPendingPath);
+			}
+		};
+	};
+
+	afterNavigate(() => {
+		pendingPath = '';
+	});
 	$: {
 		const path = currentPath || '';
 		activeLinks = {
@@ -114,7 +138,11 @@
 
 {#if loaded}
 	<div class="relative flex flex-col w-full h-screen max-h-[100dvh] max-w-full">
-		<nav class="px-2.5 pt-1 backdrop-blur-xl drag-region">
+		<nav
+			class="px-2.5 pt-1 backdrop-blur-xl drag-region"
+			data-sveltekit-preload-code="hover"
+			data-sveltekit-preload-data="hover"
+		>
 			<div class="flex items-center gap-1">
 				<div class="{$mobile ? '' : 'hidden'} self-center flex flex-none items-center">
 					<button
@@ -142,6 +170,7 @@
 				<div
 					id="settings-tabs-container"
 					class="flex flex-row overflow-x-auto gap-2.5 max-w-full lg:gap-1 lg:flex-col lg:flex-none lg:w-44 dark:text-gray-200 text-sm font-medium text-left scrollbar-none"
+					use:trackSettingsNavigation
 				>
 					{#if isAdmin}
 						<a class={navLinkClass(activeLinks.general)} href="/settings">{$i18n.t('General')}</a>

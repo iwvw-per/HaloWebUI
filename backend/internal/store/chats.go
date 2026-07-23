@@ -77,20 +77,25 @@ func (s *Store) CreateChat(ctx context.Context, chat Chat) (Chat, error) {
 }
 
 func (s *Store) ChatByID(ctx context.Context, id string) (Chat, error) {
+	chat, err := scanChat(s.db.QueryRowContext(ctx, `SELECT
+		id, user_id, title, chat, created_at, updated_at, share_id,
+		archived, pinned, meta, folder_id, assistant_id
+		FROM chat WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Chat{}, ErrChatNotFound
+	}
+	return chat, err
+}
+
+func scanChat(scanner rowScanner) (Chat, error) {
 	var chat Chat
 	var shareID, folderID, assistantID sql.NullString
 	var archived, pinned int
 	var rawChat, rawMeta string
-	err := s.db.QueryRowContext(ctx, `SELECT
-		id, user_id, title, chat, created_at, updated_at, share_id,
-		archived, pinned, meta, folder_id, assistant_id
-		FROM chat WHERE id = ?`, id).Scan(
+	err := scanner.Scan(
 		&chat.ID, &chat.UserID, &chat.Title, &rawChat, &chat.CreatedAt, &chat.UpdatedAt,
 		&shareID, &archived, &pinned, &rawMeta, &folderID, &assistantID,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Chat{}, ErrChatNotFound
-	}
 	if err != nil {
 		return Chat{}, err
 	}
@@ -161,18 +166,17 @@ func (s *Store) ListChatsWithFilter(ctx context.Context, userID string, filter C
 		}
 	}
 	args = append(args, limit, (page-1)*limit)
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM chat WHERE `+strings.Join(conditions, " AND ")+` ORDER BY updated_at DESC LIMIT ? OFFSET ?`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		id, user_id, title, chat, created_at, updated_at, share_id,
+		archived, pinned, meta, folder_id, assistant_id
+		FROM chat WHERE `+strings.Join(conditions, " AND ")+` ORDER BY updated_at DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	chats := make([]Chat, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		chat, err := s.ChatByID(ctx, id)
+		chat, err := scanChat(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -190,18 +194,17 @@ func (s *Store) ListAllChats(ctx context.Context, limit int) ([]Chat, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM chat ORDER BY updated_at DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		id, user_id, title, chat, created_at, updated_at, share_id,
+		archived, pinned, meta, folder_id, assistant_id
+		FROM chat ORDER BY updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	chats := make([]Chat, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		chat, err := s.ChatByID(ctx, id)
+		chat, err := scanChat(rows)
 		if err != nil {
 			return nil, err
 		}

@@ -59,21 +59,26 @@ func (s *Store) ListUsers(ctx context.Context, query string, limit int) ([]User,
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	pattern := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM user
-		WHERE ? = '%%' OR lower(name) LIKE ? OR lower(email) LIKE ?
-		ORDER BY created_at DESC LIMIT ?`, pattern, pattern, pattern, limit)
+	query = strings.ToLower(strings.TrimSpace(query))
+	statement := `SELECT id, name, email, role, profile_image_url,
+		last_active_at, updated_at, created_at, api_key, settings, info, oauth_sub, note
+		FROM user`
+	args := make([]any, 0, 3)
+	if query != "" {
+		statement += ` WHERE lower(name) LIKE ? OR lower(email) LIKE ?`
+		pattern := "%" + query + "%"
+		args = append(args, pattern, pattern)
+	}
+	statement += ` ORDER BY created_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	users := make([]User, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		user, err := s.UserByID(ctx, id)
+		user, err := scanUser(rows)
 		if err != nil {
 			return nil, err
 		}

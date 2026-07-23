@@ -55,7 +55,7 @@
 <ShareChatModal bind:show={showShareChatModal} chatId={$chatId} />
 
 <nav
-	class="sticky top-0 z-40 w-full py-1.5 -mb-8 flex flex-col items-center drag-region glass transition-colors duration-300"
+	class="sticky top-0 z-40 w-full py-1.5 -mb-8 flex flex-col items-center drag-region bg-transparent transition-colors duration-300"
 >
 	<div class="flex min-w-0 items-center w-full px-1.5">
 		<div class=" flex min-w-0 max-w-full w-full mx-auto px-1 pt-0.5 bg-transparent">

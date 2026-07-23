@@ -1,5 +1,7 @@
-<script>
-	import Analytics from '$lib/components/admin/Analytics.svelte';
+<script lang="ts">
+	import LazySettingsPanel from '$lib/components/settings/LazySettingsPanel.svelte';
+
+	const loadPanel = () => import('$lib/components/admin/Analytics.svelte');
 </script>
 
-<Analytics />
+<LazySettingsPanel load={loadPanel} />

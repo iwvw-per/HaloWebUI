@@ -1,9 +1,10 @@
 <script lang="ts">
-	import ConnectionsPreferences from '$lib/components/settings/ConnectionsPreferences.svelte';
+	import LazySettingsPanel from '$lib/components/settings/LazySettingsPanel.svelte';
 	import { getContext } from 'svelte';
 	import type { UserSettingsContext } from '$lib/types/user-settings';
 
 	const { saveSettings } = getContext<UserSettingsContext>('user-settings');
+	const loadPanel = () => import('$lib/components/settings/ConnectionsPreferences.svelte');
 </script>
 
-<ConnectionsPreferences {saveSettings} />
+<LazySettingsPanel load={loadPanel} props={{ saveSettings }} />

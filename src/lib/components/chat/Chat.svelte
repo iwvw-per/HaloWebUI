@@ -6293,7 +6293,10 @@
 	}}
 />
 
-<div class="h-screen max-h-[100dvh] w-full max-w-full flex flex-col relative" id="chat-container">
+<div
+	class="h-screen max-h-[100dvh] w-full max-w-full flex flex-col relative bg-gray-50 dark:bg-[#0a0a0f]"
+	id="chat-container"
+>
 	{#if !loading}
 		{#if $settings?.backgroundImageUrl ?? null}
 			<div

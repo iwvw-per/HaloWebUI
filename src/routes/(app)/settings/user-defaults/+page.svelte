@@ -1,5 +1,8 @@
 <script lang="ts">
-	import NewUserDefaultSettings from '$lib/components/admin/UserDefaults/NewUserDefaultSettings.svelte';
+	import LazySettingsPanel from '$lib/components/settings/LazySettingsPanel.svelte';
+
+	const loadPanel = () =>
+		import('$lib/components/admin/UserDefaults/NewUserDefaultSettings.svelte');
 </script>
 
-<NewUserDefaultSettings />
+<LazySettingsPanel load={loadPanel} />

@@ -1,5 +1,7 @@
 <script lang="ts">
-	import AudioSettingsPage from '$lib/components/settings/AudioSettingsPage.svelte';
+	import LazySettingsPanel from '$lib/components/settings/LazySettingsPanel.svelte';
+
+	const loadPanel = () => import('$lib/components/settings/AudioSettingsPage.svelte');
 </script>
 
-<AudioSettingsPage />
+<LazySettingsPanel load={loadPanel} />

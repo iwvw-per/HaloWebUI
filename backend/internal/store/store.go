@@ -25,6 +25,10 @@ type Store struct {
 	db *sql.DB
 }
 
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
 type User struct {
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`
@@ -219,22 +223,27 @@ func (s *Store) Authenticate(ctx context.Context, email string) (User, string, e
 }
 
 func (s *Store) UserByID(ctx context.Context, id string) (User, error) {
-	var user User
-	err := s.db.QueryRowContext(
+	user, err := scanUser(s.db.QueryRowContext(
 		ctx,
 		`SELECT id, name, email, role, profile_image_url,
 			last_active_at, updated_at, created_at,
 			api_key, settings, info, oauth_sub, note
 		 FROM user WHERE id = ?`,
 		id,
-	).Scan(
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	return user, err
+}
+
+func scanUser(scanner rowScanner) (User, error) {
+	var user User
+	err := scanner.Scan(
 		&user.ID, &user.Name, &user.Email, &user.Role, &user.ProfileImageURL,
 		&user.LastActiveAt, &user.UpdatedAt, &user.CreatedAt,
 		&user.APIKey, &user.Settings, &user.Info, &user.OAuthSub, &user.Note,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return User{}, ErrUserNotFound
-	}
 	return user, err
 }
 

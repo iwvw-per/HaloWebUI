@@ -105,24 +105,37 @@ func (s *Store) ChannelByID(ctx context.Context, id string) (Channel, error) {
 }
 
 func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM channel ORDER BY updated_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,user_id,type,name,description,data,meta,access_control,created_at,updated_at FROM channel ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	channels := make([]Channel, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		channel, err := s.ChannelByID(ctx, id)
+		channel, err := scanChannel(rows)
 		if err != nil {
 			return nil, err
 		}
 		channels = append(channels, channel)
 	}
 	return channels, rows.Err()
+}
+
+func scanChannel(scanner rowScanner) (Channel, error) {
+	var channel Channel
+	var typ, description, data, meta, access sql.NullString
+	err := scanner.Scan(&channel.ID, &channel.UserID, &typ, &channel.Name, &description, &data, &meta, &access, &channel.CreatedAt, &channel.UpdatedAt)
+	channel.Type, channel.Description = nullableString(typ), nullableString(description)
+	if data.Valid {
+		channel.Data = json.RawMessage(data.String)
+	}
+	if meta.Valid {
+		channel.Meta = json.RawMessage(meta.String)
+	}
+	if access.Valid {
+		channel.AccessControl = json.RawMessage(access.String)
+	}
+	return channel, err
 }
 
 func (s *Store) UpdateChannel(ctx context.Context, channel Channel) (Channel, error) {
@@ -198,10 +211,10 @@ func (s *Store) ListChannelMessages(ctx context.Context, channelID string, paren
 	if limit < 1 || limit > 200 {
 		limit = 50
 	}
-	query := `SELECT id FROM message WHERE channel_id=? AND parent_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	query := `SELECT id,user_id,channel_id,parent_id,content,data,meta,created_at,updated_at FROM message WHERE channel_id=? AND parent_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	args := []any{channelID, limit, skip}
 	if parentID != nil {
-		query = `SELECT id FROM message WHERE channel_id=? AND parent_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?`
+		query = `SELECT id,user_id,channel_id,parent_id,content,data,meta,created_at,updated_at FROM message WHERE channel_id=? AND parent_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?`
 		args = []any{channelID, *parentID, limit, skip}
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -211,17 +224,27 @@ func (s *Store) ListChannelMessages(ctx context.Context, channelID string, paren
 	defer rows.Close()
 	result := make([]ChannelMessage, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		message, err := s.ChannelMessageByID(ctx, id)
+		message, err := scanChannelMessage(rows)
 		if err != nil {
 			return nil, err
 		}
 		result = append(result, message)
 	}
 	return result, rows.Err()
+}
+
+func scanChannelMessage(scanner rowScanner) (ChannelMessage, error) {
+	var message ChannelMessage
+	var parent, data, meta sql.NullString
+	err := scanner.Scan(&message.ID, &message.UserID, &message.ChannelID, &parent, &message.Content, &data, &meta, &message.CreatedAt, &message.UpdatedAt)
+	message.ParentID = nullableString(parent)
+	if data.Valid {
+		message.Data = json.RawMessage(data.String)
+	}
+	if meta.Valid {
+		message.Meta = json.RawMessage(meta.String)
+	}
+	return message, err
 }
 
 func (s *Store) UpdateChannelMessage(ctx context.Context, message ChannelMessage) (ChannelMessage, error) {

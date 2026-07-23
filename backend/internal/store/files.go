@@ -56,16 +56,21 @@ func (s *Store) CreateFile(ctx context.Context, file File) (File, error) {
 }
 
 func (s *Store) FileByID(ctx context.Context, id string) (File, error) {
-	var file File
-	var hash, path, data, meta, access sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, user_id, hash, filename, path,
-		data, meta, access_control, created_at, updated_at FROM file WHERE id = ?`, id).Scan(
-		&file.ID, &file.UserID, &hash, &file.Filename, &path, &data, &meta, &access,
-		&file.CreatedAt, &file.UpdatedAt,
-	)
+	file, err := scanFile(s.db.QueryRowContext(ctx, `SELECT id, user_id, hash, filename, path,
+		data, meta, access_control, created_at, updated_at FROM file WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return File{}, ErrFileNotFound
 	}
+	return file, err
+}
+
+func scanFile(scanner rowScanner) (File, error) {
+	var file File
+	var hash, path, data, meta, access sql.NullString
+	err := scanner.Scan(
+		&file.ID, &file.UserID, &hash, &file.Filename, &path, &data, &meta, &access,
+		&file.CreatedAt, &file.UpdatedAt,
+	)
 	if err != nil {
 		return File{}, err
 	}
@@ -83,18 +88,15 @@ func (s *Store) FileByID(ctx context.Context, id string) (File, error) {
 }
 
 func (s *Store) ListFiles(ctx context.Context, userID string) ([]File, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM file WHERE user_id = ? ORDER BY created_at DESC`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, hash, filename, path,
+		data, meta, access_control, created_at, updated_at FROM file WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	files := make([]File, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		file, err := s.FileByID(ctx, id)
+		file, err := scanFile(rows)
 		if err != nil {
 			return nil, err
 		}

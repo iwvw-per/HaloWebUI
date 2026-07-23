@@ -396,6 +396,29 @@ func TestConfigDisablesHeavyCapabilities(t *testing.T) {
 	}
 }
 
+func TestConfigAdvertisesPersistedFrontendCapabilities(t *testing.T) {
+	app := testApp(t)
+	adminToken := signupToken(t, app)
+
+	authenticatedJSON(t, app, adminToken, http.MethodPost, "/api/v1/retrieval/config/update", `{"web":{"ENABLE_WEB_SEARCH":true,"ENABLE_NATIVE_WEB_SEARCH":true,"DEFAULT_WEB_SEARCH_MODE":"native"}}`)
+	authenticatedJSON(t, app, adminToken, http.MethodPost, "/api/v1/images/config/update", `{"enabled":true}`)
+	authenticatedJSON(t, app, adminToken, http.MethodPost, "/api/v1/configs/connections", `{"ENABLE_DIRECT_CONNECTIONS":true}`)
+
+	config := authenticatedJSON(t, app, adminToken, http.MethodGet, "/api/config", "")
+	features, _ := config["features"].(map[string]any)
+	for _, name := range []string{
+		"enable_web_search", "enable_halo_web_search", "enable_native_web_search",
+		"enable_image_generation", "enable_direct_connections", "enable_channels",
+	} {
+		if features[name] != true {
+			t.Errorf("feature %s did not reflect its working backend capability: %#v", name, features[name])
+		}
+	}
+	if features["default_web_search_mode"] != "native" {
+		t.Errorf("web search mode did not reflect persisted config: %#v", features)
+	}
+}
+
 func TestAudioConfigContractAndPersistence(t *testing.T) {
 	app := testApp(t)
 	adminToken := signupToken(t, app)

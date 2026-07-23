@@ -51,6 +51,9 @@ export default defineConfig({
 		stripPyodideAssets()
 	],
 	server: {
+		watch: {
+			ignored: ['**/backend/**', '**/build/**', '**/.tmp/**', '**/.codex-*.log', '**/coverage/**']
+		},
 		// In dev, keep frontend same-origin and proxy backend routes to `:8080`.
 		// This allows LAN clients (e.g., phone) to only access `:5173`.
 		proxy: {

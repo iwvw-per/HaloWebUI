@@ -492,7 +492,7 @@ func (a *App) handleConfig(response http.ResponseWriter, request *http.Request) 
 			"enable_community_sharing":        false,
 			"enable_autocomplete_generation":  false,
 			"enable_direct_connections":       false,
-			"enable_channels":                 false,
+			"enable_channels":                 true,
 			"enable_user_webhooks":            false,
 			"database_restore_supported":      true,
 			"database_backend":                "sqlite",
@@ -515,6 +515,26 @@ func (a *App) handleConfig(response http.ResponseWriter, request *http.Request) 
 		codeEngine = ""
 	}
 	payload["code"] = map[string]any{"engine": codeEngine}
+	// These flags are consumed by the chat UI. Keep them tied to the same
+	// persisted settings that the corresponding settings pages update.
+	if retrieval, retrievalErr := a.loadGlobalJSON(request, retrievalConfigKey, defaultRetrievalConfig()); retrievalErr == nil {
+		if web, ok := retrieval["web"].(map[string]any); ok {
+			enableSearch, _ := web["ENABLE_WEB_SEARCH"].(bool)
+			nativeSearch, _ := web["ENABLE_NATIVE_WEB_SEARCH"].(bool)
+			features["enable_web_search"] = enableSearch
+			features["enable_halo_web_search"] = enableSearch
+			features["enable_native_web_search"] = nativeSearch
+			if mode, ok := web["DEFAULT_WEB_SEARCH_MODE"].(string); ok {
+				features["default_web_search_mode"] = mode
+			}
+		}
+	}
+	if imageConfig, imageErr := a.loadImageConfig(request); imageErr == nil {
+		features["enable_image_generation"], _ = imageConfig["enabled"].(bool)
+	}
+	if connectionConfig, connectionErr := a.configResource(request, "system", "connections"); connectionErr == nil {
+		features["enable_direct_connections"], _ = connectionConfig["ENABLE_DIRECT_CONNECTIONS"].(bool)
+	}
 	if _, ok := a.currentUser(request); ok {
 		audio, audioErr := a.loadAudioConfig(request)
 		if audioErr != nil {

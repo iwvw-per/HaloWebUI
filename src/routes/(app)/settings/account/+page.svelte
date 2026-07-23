@@ -1,5 +1,7 @@
 <script lang="ts">
-	import AccountSettingsPage from '$lib/components/settings/AccountSettingsPage.svelte';
+	import LazySettingsPanel from '$lib/components/settings/LazySettingsPanel.svelte';
+
+	const loadPanel = () => import('$lib/components/settings/AccountSettingsPage.svelte');
 </script>
 
-<AccountSettingsPage />
+<LazySettingsPanel load={loadPanel} />

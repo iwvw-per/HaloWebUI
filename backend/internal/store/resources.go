@@ -88,7 +88,7 @@ func (s *Store) resource(ctx context.Context, query string, args ...any) (Resour
 }
 
 func (s *Store) ListResources(ctx context.Context, kind string, activeOnly bool) ([]Resource, error) {
-	query := `SELECT id FROM halo_resource WHERE kind = ?`
+	query := `SELECT kind, id, user_id, resource_key, body, active, created_at, updated_at FROM halo_resource WHERE kind = ?`
 	if activeOnly {
 		query += ` AND active = 1`
 	}
@@ -100,17 +100,24 @@ func (s *Store) ListResources(ctx context.Context, kind string, activeOnly bool)
 	defer rows.Close()
 	resources := make([]Resource, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		resource, err := s.ResourceByID(ctx, kind, id)
+		resource, err := scanResource(rows)
 		if err != nil {
 			return nil, err
 		}
 		resources = append(resources, resource)
 	}
 	return resources, rows.Err()
+}
+
+func scanResource(scanner rowScanner) (Resource, error) {
+	var resource Resource
+	var body string
+	var active int
+	err := scanner.Scan(&resource.Kind, &resource.ID, &resource.UserID, &resource.Key, &body,
+		&active, &resource.CreatedAt, &resource.UpdatedAt)
+	resource.Body = json.RawMessage(defaultJSON(body))
+	resource.Active = active != 0
+	return resource, err
 }
 
 func (s *Store) ToggleResource(ctx context.Context, kind, id string) (Resource, error) {

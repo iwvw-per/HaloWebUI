@@ -69,20 +69,25 @@ func (s *Store) UpsertModel(ctx context.Context, model Model) (Model, error) {
 }
 
 func (s *Store) ModelByID(ctx context.Context, id string) (Model, error) {
+	model, err := scanModel(s.db.QueryRowContext(ctx, `SELECT id, user_id, base_model_id, name,
+		params, meta, access_control, is_active, updated_at, created_at
+		FROM model WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Model{}, ErrModelNotFound
+	}
+	return model, err
+}
+
+func scanModel(scanner rowScanner) (Model, error) {
 	var model Model
 	var baseModel sql.NullString
 	var params, meta string
 	var access sql.NullString
 	var active int
-	err := s.db.QueryRowContext(ctx, `SELECT id, user_id, base_model_id, name,
-		params, meta, access_control, is_active, updated_at, created_at
-		FROM model WHERE id = ?`, id).Scan(
+	err := scanner.Scan(
 		&model.ID, &model.UserID, &baseModel, &model.Name, &params, &meta,
 		&access, &active, &model.UpdatedAt, &model.CreatedAt,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Model{}, ErrModelNotFound
-	}
 	if err != nil {
 		return Model{}, err
 	}
@@ -97,7 +102,7 @@ func (s *Store) ModelByID(ctx context.Context, id string) (Model, error) {
 }
 
 func (s *Store) ListModels(ctx context.Context, activeOnly bool) ([]Model, error) {
-	query := `SELECT id FROM model`
+	query := `SELECT id, user_id, base_model_id, name, params, meta, access_control, is_active, updated_at, created_at FROM model`
 	if activeOnly {
 		query += ` WHERE is_active = 1`
 	}
@@ -109,11 +114,7 @@ func (s *Store) ListModels(ctx context.Context, activeOnly bool) ([]Model, error
 	defer rows.Close()
 	models := make([]Model, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		model, err := s.ModelByID(ctx, id)
+		model, err := scanModel(rows)
 		if err != nil {
 			return nil, err
 		}

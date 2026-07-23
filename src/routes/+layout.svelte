@@ -1,6 +1,4 @@
 <script>
-	import { io } from 'socket.io-client';
-
 	import { onMount, tick, setContext } from 'svelte';
 	import {
 		config,
@@ -198,6 +196,7 @@
 			return;
 		}
 
+		const { io } = await import('socket.io-client');
 		const _socket = io(`${WEBUI_BASE_URL}` || undefined, {
 			reconnection: true,
 			reconnectionDelay: 1000,
@@ -241,7 +240,9 @@
 		const packages = getPyodidePackagesForCode(code);
 
 		if (usesRemotePyodideRuntime() && !hasPyodideConsent()) {
-			const shouldContinue = window.confirm(getPyodideDownloadSummary(packages, $i18n.t.bind($i18n)));
+			const shouldContinue = window.confirm(
+				getPyodideDownloadSummary(packages, $i18n.t.bind($i18n))
+			);
 			if (!shouldContinue) {
 				executing = false;
 				if (cb) {

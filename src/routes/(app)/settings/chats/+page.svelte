@@ -1,6 +1,8 @@
 <script lang="ts">
 	// Historical route path: /settings/chats renders the Data Management page.
-	import DataManagementSettingsPage from '$lib/components/settings/DataManagementSettingsPage.svelte';
+	import LazySettingsPanel from '$lib/components/settings/LazySettingsPanel.svelte';
+
+	const loadPanel = () => import('$lib/components/settings/DataManagementSettingsPage.svelte');
 </script>
 
-<DataManagementSettingsPage />
+<LazySettingsPanel load={loadPanel} />

@@ -55,13 +55,17 @@ func (s *Store) CreateKnowledge(ctx context.Context, knowledge Knowledge) (Knowl
 }
 
 func (s *Store) KnowledgeByID(ctx context.Context, id string) (Knowledge, error) {
-	var knowledge Knowledge
-	var data, meta, access sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, user_id, name, description, data, meta, access_control, created_at, updated_at FROM knowledge WHERE id = ?`, id).
-		Scan(&knowledge.ID, &knowledge.UserID, &knowledge.Name, &knowledge.Description, &data, &meta, &access, &knowledge.CreatedAt, &knowledge.UpdatedAt)
+	knowledge, err := scanKnowledge(s.db.QueryRowContext(ctx, `SELECT id, user_id, name, description, data, meta, access_control, created_at, updated_at FROM knowledge WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Knowledge{}, ErrKnowledgeNotFound
 	}
+	return knowledge, err
+}
+
+func scanKnowledge(scanner rowScanner) (Knowledge, error) {
+	var knowledge Knowledge
+	var data, meta, access sql.NullString
+	err := scanner.Scan(&knowledge.ID, &knowledge.UserID, &knowledge.Name, &knowledge.Description, &data, &meta, &access, &knowledge.CreatedAt, &knowledge.UpdatedAt)
 	if err != nil {
 		return Knowledge{}, err
 	}
@@ -78,19 +82,23 @@ func (s *Store) KnowledgeByID(ctx context.Context, id string) (Knowledge, error)
 }
 
 func (s *Store) ListKnowledge(ctx context.Context, query string) ([]Knowledge, error) {
-	pattern := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM knowledge WHERE ? = '%%' OR lower(name) LIKE ? OR lower(description) LIKE ? ORDER BY updated_at DESC`, pattern, pattern, pattern)
+	search := strings.ToLower(strings.TrimSpace(query))
+	statement := `SELECT id, user_id, name, description, data, meta, access_control, created_at, updated_at FROM knowledge`
+	args := make([]any, 0, 2)
+	if search != "" {
+		pattern := "%" + search + "%"
+		statement += ` WHERE lower(name) LIKE ? OR lower(description) LIKE ?`
+		args = []any{pattern, pattern}
+	}
+	statement += ` ORDER BY updated_at DESC`
+	rows, err := s.db.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := make([]Knowledge, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		item, err := s.KnowledgeByID(ctx, id)
+		item, err := scanKnowledge(rows)
 		if err != nil {
 			return nil, err
 		}
